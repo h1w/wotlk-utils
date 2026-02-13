@@ -1,4 +1,5 @@
 ﻿#include "glog_custom_formatter.hpp"
+#include "dx11_app.hpp"
 
 void setupLogger(const char* program_name)
 {
@@ -46,10 +47,9 @@ int main(int argc, char** argv)
 {
 	setupLogger(argv[0]);
 
-	// тестирование логирования
-	LOG(INFO) << "Приложение запущено";
-	LOG(WARNING) << "Это предупреждение";
-	LOG(ERROR) << "Это ошибка";
+	dx11_app::Initialize({.window_title = argv[0], .window_width = 1280, .window_height = 800});
+	dx11_app::Run(nullptr);  // shows demo window
+	dx11_app::Shutdown();
 
 	return 0;
 }

@@ -21,9 +21,15 @@
     <ClCompile Include="glog_custom_formatter.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="dx11_app.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="glog_custom_formatter.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="dx11_app.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
