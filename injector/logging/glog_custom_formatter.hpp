@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <glog/logging.h>
 
@@ -55,7 +55,7 @@ public:
 	// жизненный цикл
 	// инициализация glog и применение конфигурации
 	// @param cfg структура конфигурации
-	// @param argv0 имя программы 
+	// @param argv0 имя программы
 	void Initialize(const Config& cfg, const char* argv0 = "app");
 
 	// корректное завершение работы логгера, закрытие файлов, остановка, фоновый поток ротации

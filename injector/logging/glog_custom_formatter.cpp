@@ -1,4 +1,4 @@
-﻿#include "glog_custom_formatter.hpp"
+#include "glog_custom_formatter.hpp"
 
 // Объявление только нужных WinAPI-функций напрямую,
 // <Windows.h> тащит макросы FormatMessage, min, max
@@ -42,7 +42,7 @@ void GlogCustomFormatter::Initialize(const Config& cfg, const char* argv0)
 	// Переключение консоли Windows на UTF-8 для корректного вывода кириллицы
 	SetConsoleOutputCP(65001); // CP_UTF8
 	SetConsoleCP(65001);
-	
+
 	// подготовка директории
 	if (config_.file_enabled)
 	{

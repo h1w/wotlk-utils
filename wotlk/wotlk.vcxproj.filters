@@ -13,24 +13,32 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="logging">
+      <UniqueIdentifier>{B2A6D3A0-1F7E-4D5C-9E3B-8A4C6F2D1E0A}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="main.cpp">
+    <ClInclude Include="logging\glog_custom_formatter.hpp">
+      <Filter>logging</Filter>
+    </ClInclude>
+    <ClInclude Include="logging\logger_setup.hpp">
+      <Filter>logging</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="dllmain.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="glog_custom_formatter.cpp">
-      <Filter>Source Files</Filter>
+    <ClCompile Include="logging\glog_custom_formatter.cpp">
+      <Filter>logging</Filter>
     </ClCompile>
-    <ClCompile Include="dx11_app.cpp">
-      <Filter>Source Files</Filter>
+    <ClCompile Include="logging\logger_setup.cpp">
+      <Filter>logging</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="glog_custom_formatter.hpp">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="dx11_app.hpp">
-      <Filter>Header Files</Filter>
-    </ClInclude>
+    <None Include="docs\plan.md">
+      <Filter>Resource Files</Filter>
+    </None>
   </ItemGroup>
 </Project>
