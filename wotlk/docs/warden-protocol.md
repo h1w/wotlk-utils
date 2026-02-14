@@ -941,10 +941,12 @@ jmp [jump_table + eax*4]             ; Переход
 **Наши методы обхода:**
 
 1. **Return-address hijack** для чтения расшифрованных SMSG
-2. **RC4 S-box cloning** для расшифровки CMSG
-3. **XOR-anchored scan** для извлечения таблицы типов
-4. **Module dumping** для офлайн-анализа
-5. **Internal RC4 hook** для прямого захвата CMSG plaintext (warden_rc4_hook.cpp)
+2. **Internal RC4 multi-hook** (PRIMARY) для прямого захвата CMSG plaintext (warden_rc4_hook.cpp)
+   - До 4 одновременных хуков на RC4 PRGA функции внутри модуля
+   - 6 поддерживаемых calling conventions (auto-detection)
+3. **RC4 S-box cloning** (FALLBACK) для расшифровки CMSG (warden_rc4.cpp)
+4. **XOR-anchored scan** для извлечения таблицы типов
+5. **Module dumping** для офлайн-анализа
 
 **Следующие шаги:**
 

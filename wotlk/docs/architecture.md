@@ -248,9 +248,9 @@ Warden-модуль загружается в память процесса `Wow
 
 Функция: `warden_scan::FindModuleInMemory()`
 
-#### 9a. DLL: устанавливает внутренний RC4 хук в модуле
+#### 9a. DLL: устанавливает внутренние RC4 хуки в модуле
 
-После нахождения модуля в памяти, `warden_rc4_hook::Install()` сканирует runtime-код модуля для поиска RC4 PRGA функции. Использует кластерный анализ инструкций с displacement 0x100/0x101. Если функция найдена — MinHook устанавливает хук. Все последующие RC4 вызовы внутри модуля проходят через наш detour, позволяя захватить plaintext CMSG.
+После нахождения модуля в памяти, `warden_rc4_hook::Install()` сканирует runtime-код модуля для поиска **ВСЕХ** RC4 PRGA функций. Использует кластерный анализ инструкций с displacement 0x100/0x101, группирует в кластеры, отбирает кластеры с обеими ссылками (i+j). Устанавливает до 4 одновременных MinHook хуков (каждый со своим naked stub и trampoline). Все последующие RC4 вызовы внутри модуля проходят через наш detour, позволяя захватить plaintext CMSG. Это решает проблему модулей, где main thread и module thread используют разные RC4 функции.
 
 #### 10. DLL: сканирует память процесса для поиска RC4 S-box'ов
 
@@ -535,28 +535,31 @@ FreeLibraryAndExitThread(hModule, 0);
 ### **warden/warden_rc4_hook.cpp** — внутренний хук RC4 (PRIMARY)
 
 **Что делает:**
-- Сканирует runtime-память Warden модуля для поиска функции RC4 PRGA
+- Сканирует runtime-память Warden модуля для поиска **ВСЕХ** функций RC4 PRGA
 - Использует кластерный анализ: ищет инструкции с displacement 0x100/0x101 (позиции i/j в RC4 контексте)
-- Устанавливает MinHook на найденную функцию
+- Группирует совпадения в кластеры, отбирает кластеры с обеими ссылками (i + j)
+- Устанавливает до **4 одновременных** MinHook хуков на найденные функции
 - Захватывает plaintext CMSG ДО шифрования RC4
 
+**Multi-hook архитектура:**
+- 4 отдельных naked stub'а (`HookedRC4Naked_0`—`_3`), каждый с собственным trampoline
+- Общий `RC4DetourHandler` для всех слотов (convention detection shared)
+- Решает проблему модулей, где main thread и module thread используют разные RC4 функции (напр. модуль 0BE6B21C)
+
 **Жизненный цикл:**
-- Install: после MODULE_INITIALIZE (когда модуль загружен в память)
-- Remove: перед MODULE_USE (когда загружается новый модуль) и при Shutdown
+- Install: после MODULE_INITIALIZE — сканирует и хукает все найденные RC4 функции
+- Remove: перед MODULE_USE (когда загружается новый модуль) и при Shutdown — снимает все хуки
 - ConsumePlaintext: one-shot получение данных (очищает буфер после чтения)
 
-**Calling convention:**
-- __thiscall с ret 8: ECX=ctx (на входе), stk1=data, stk2=len
-- Однако тело функции использует EAX как указатель контекста
-- Авто-определение конвенции через проверку S-box пермутации
+**Calling convention (6 вариантов, auto-detection):**
+- ECX=ctx / EDX=ctx / EAX=ctx (register-based, проверяются первыми)
+- stk1=ctx (stack-based __cdecl, проверяется последним)
+- Для каждого: normal (stk1=data, stk2=len) или swapped (stk1=len, stk2=data)
+- Авто-определение через `LooksLikeRC4Context` + S-box permutation check
 
-**Различие SMSG/CMSG вызовов:**
-- SMSG decryption: ECX содержит малые значения → convention detection отклоняет
-- CMSG encryption: ECX указывает на валидную память → захват данных
+**Fallback:** Если ни одна RC4 функция не найдена → `Install()` возвращает false → SendPacket использует `warden_rc4::DecryptCmsg()` (S-box клонирование)
 
-**Fallback:** Если pattern scan не находит функцию → `Install()` возвращает false → SendPacket использует `warden_rc4::DecryptCmsg()` (S-box клонирование)
-
-**Потокобезопасность:** CRITICAL_SECTION (RC4 вызывается из потока Warden модуля)
+**Потокобезопасность:** CRITICAL_SECTION + InterlockedIncrement (RC4 вызывается из потока Warden модуля)
 
 ---
 

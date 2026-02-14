@@ -165,9 +165,14 @@ injector.exe --eject
 ### Warden RC4
 
 - Warden модуль использует свой RC4 для шифрования payload
-- Мы ищем **S-box** (массив uint8_t[256]) в MEM_PRIVATE памяти
-- Клонируем все найденные состояния S-box перед обработкой SMSG
-- В SendPacket пробуем расшифровать CMSG каждым клоном и проверяем структуру
+- **PRIMARY** (warden_rc4_hook.cpp): хукаем RC4 PRGA функции **внутри** Warden модуля
+  - До 4 одновременных хуков (для модулей с несколькими RC4 функциями)
+  - 6 поддерживаемых calling conventions (ECX/EDX/EAX/stack-based)
+  - Захват plaintext ДО шифрования — 100% success rate
+- **FALLBACK** (warden_rc4.cpp): S-box cloning
+  - Ищем **S-box** (массив uint8_t[256]) в MEM_PRIVATE памяти
+  - Клонируем все найденные состояния S-box перед обработкой SMSG
+  - В SendPacket пробуем расшифровать CMSG каждым клоном и проверяем структуру
 
 ### Модули Warden
 

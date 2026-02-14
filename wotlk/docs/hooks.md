@@ -513,4 +513,6 @@ __except(EXCEPTION_EXECUTE_HANDLER) {
 - **CDataStore** — структура для чтения бинарных пакетов (buffer + size + readPos)
 - **Naked functions** — для нестандартных calling conventions
 
+Дополнительно, **warden_rc4_hook.cpp** устанавливает до 4 хуков на RC4 PRGA функции **внутри** Warden модуля (не WoW.exe). Эти хуки захватывают CMSG plaintext ДО шифрования и являются основным методом расшифровки CMSG.
+
 Все хуки работают вместе для полного анализа Warden системы античита.

@@ -13,25 +13,30 @@
 #include <iomanip>
 
 // ===========================================================================
-// Internal RC4 hook: hooks the RC4 PRGA function INSIDE the Warden module
-// blob to capture CMSG plaintext directly before encryption.
+// Internal RC4 hook: hooks RC4 PRGA functions INSIDE the Warden module blob
+// to capture CMSG plaintext directly before encryption.
 //
 // The Warden module's RC4 context uses [S[256]][i][j] layout, so i/j fields
 // are at offsets +0x100 and +0x101 from the context base pointer.
-// The scanner finds the RC4 function by looking for MOVZX/MOV instructions
+// The scanner finds RC4 functions by looking for MOVZX/MOV instructions
 // with these distinctive displacements.
+//
+// Modules may contain multiple RC4 implementations (main thread vs module
+// thread), so we hook ALL viable clusters, not just the largest one.
 // ===========================================================================
 
 namespace {
 
 static constexpr size_t kMaxCaptureSize = 4096;
+static constexpr int    kMaxRC4Hooks    = 4;
 
 // ---------------------------------------------------------------------------
-// Hook state
+// Multi-hook state: up to kMaxRC4Hooks simultaneous hooks
 // ---------------------------------------------------------------------------
-static void* g_originalRC4 = nullptr;
-static bool  g_hookActive  = false;
-static uintptr_t g_hookedAddr = 0;
+static void*     g_trampolines[kMaxRC4Hooks] = {};
+static uintptr_t g_hookedAddrs[kMaxRC4Hooks] = {};
+static bool      g_hooksActive[kMaxRC4Hooks] = {};
+static int       g_numHooks = 0;
 
 // Module memory range (for diagnostics/validation)
 static uintptr_t g_moduleBase = 0;
@@ -52,7 +57,7 @@ static CRITICAL_SECTION g_lock;
 static bool g_lockInit = false;
 
 // ---------------------------------------------------------------------------
-// Calling convention detection
+// Calling convention detection (shared across all hook slots)
 // ---------------------------------------------------------------------------
 static int  g_callCount       = 0;
 static bool g_conventionKnown = false;
@@ -60,6 +65,9 @@ static bool g_conventionKnown = false;
 // 1 = __thiscall: ECX=ctx, stk1=data, stk2=len
 // 2 = __cdecl:    stk1=ctx, stk2=data, stk3=len
 // 3 = variant:    ECX=ctx, stk1=len, stk2=data
+// 4 = EDX:        EDX=ctx, stk1=data, stk2=len
+// 5 = EAX:        EAX=ctx, stk1=data, stk2=len
+// 6 = EAX-variant: EAX=ctx, stk1=len, stk2=data
 static int  g_convention = 0;
 
 static void EnsureLock()
@@ -174,7 +182,7 @@ static std::string BytesToHex(const uint8_t* data, size_t len)
 }
 
 // ===========================================================================
-// Pattern scanner: find RC4 PRGA function in runtime module memory.
+// Pattern scanner: find ALL RC4 PRGA functions in runtime module memory.
 //
 // Looks for instructions referencing displacements 0x100 and 0x101, which
 // correspond to the i/j fields in an [S[256]][i][j] RC4 context layout.
@@ -193,8 +201,7 @@ struct PatternMatch {
     uint32_t disp;
 };
 
-// Check if a ModRM byte has mod=10 (32-bit displacement) and extract disp position.
-// Returns displacement offset from instruction start, or 0 if not mod=10.
+// Check if a ModRM byte has mod=10 (32-bit displacement).
 // hasSIB: set if rm=4 (SIB byte present).
 static bool DecodeModRM_Mod10(uint8_t modrm, bool& hasSIB)
 {
@@ -208,8 +215,6 @@ static bool DecodeModRM_Mod10(uint8_t modrm, bool& hasSIB)
 static void ScanForDispReferences(const uint8_t* buf, size_t size,
                                    std::vector<PatternMatch>& matches)
 {
-    // Opcodes to scan: each has ModRM at different offset from opcode start
-    // {opcode_byte, modrm_offset, is_two_byte_opcode}
     struct OpcodeInfo {
         uint8_t firstByte;
         uint8_t secondByte;  // 0 if single-byte opcode
@@ -256,80 +261,9 @@ static void ScanForDispReferences(const uint8_t* buf, size_t size,
     }
 }
 
-static uintptr_t ScanRuntimeForRC4(uintptr_t base, size_t size)
+// Walk backward from clusterStart to find function prologue in buf.
+static size_t FindFunctionPrologue(const uint8_t* buf, size_t size, size_t clusterStart)
 {
-    if (size < 512) {
-        LOG(INFO) << "[RC4_HOOK] Module too small (" << size << " bytes)";
-        return 0;
-    }
-
-    // Read entire module memory
-    std::vector<uint8_t> buf(size);
-    if (!SafeReadBytes(reinterpret_cast<const void*>(base), buf.data(), size)) {
-        LOG(WARNING) << "[RC4_HOOK] Failed to read module memory at 0x"
-                     << std::hex << base;
-        return 0;
-    }
-
-    // Scan for instructions referencing 0x100/0x101
-    std::vector<PatternMatch> matches;
-    ScanForDispReferences(buf.data(), size, matches);
-
-    if (matches.empty()) {
-        LOG(INFO) << "[RC4_HOOK] No instructions referencing 0x100/0x101 found in module";
-        return 0;
-    }
-
-    LOG(INFO) << "[RC4_HOOK] Found " << std::dec << matches.size()
-              << " instructions referencing 0x100/0x101 in module memory";
-
-    // Sort by offset
-    std::sort(matches.begin(), matches.end(),
-              [](const PatternMatch& a, const PatternMatch& b) {
-                  return a.offset < b.offset;
-              });
-
-    // Find best cluster (most matches within 120-byte window)
-    size_t bestI = 0, bestJ = 0, bestCount = 0;
-    for (size_t i = 0; i < matches.size(); ++i) {
-        size_t j = i;
-        while (j < matches.size() &&
-               matches[j].offset - matches[i].offset <= 120)
-            ++j;
-        if (j - i > bestCount) {
-            bestCount = j - i;
-            bestI = i;
-            bestJ = j;
-        }
-    }
-
-    if (bestCount < 2) {
-        LOG(INFO) << "[RC4_HOOK] No cluster with >= 2 references to 0x100/0x101";
-        return 0;
-    }
-
-    // Check cluster has both 0x100 and 0x101 references
-    bool has100 = false, has101 = false;
-    for (size_t k = bestI; k < bestJ; ++k) {
-        if (matches[k].disp == 0x100) has100 = true;
-        if (matches[k].disp == 0x101) has101 = true;
-    }
-
-    size_t clusterStart = matches[bestI].offset;
-    size_t clusterEnd   = matches[bestJ - 1].offset;
-
-    LOG(INFO) << "[RC4_HOOK] Best cluster: " << std::dec << bestCount
-              << " matches at module offsets 0x" << std::hex << clusterStart
-              << "-0x" << clusterEnd
-              << (has100 ? " [has i]" : " [NO i]")
-              << (has101 ? " [has j]" : " [NO j]");
-
-    if (!has100 || !has101) {
-        LOG(WARNING) << "[RC4_HOOK] Cluster missing reference to i(0x100) or j(0x101)"
-                     << " — may not be RC4 PRGA";
-    }
-
-    // Walk backward from cluster start to find function prologue
     size_t funcOffset = clusterStart;
     for (size_t back = 1; back <= 256 && back <= clusterStart; ++back) {
         size_t pos = clusterStart - back;
@@ -338,7 +272,6 @@ static uintptr_t ScanRuntimeForRC4(uintptr_t base, size_t size)
         if (pos + 2 < size &&
             buf[pos] == 0x55 && buf[pos + 1] == 0x8B && buf[pos + 2] == 0xEC)
         {
-            // Verify preceded by function boundary
             if (pos == 0 ||
                 buf[pos - 1] == 0xCC ||   // INT3 padding
                 buf[pos - 1] == 0x90 ||   // NOP padding
@@ -369,23 +302,139 @@ static uintptr_t ScanRuntimeForRC4(uintptr_t base, size_t size)
             break;
         }
     }
+    return funcOffset;
+}
 
-    uintptr_t absoluteAddr = base + funcOffset;
-    LOG(INFO) << "[RC4_HOOK] RC4 PRGA function at runtime address 0x"
-              << std::hex << std::setfill('0') << std::setw(8) << absoluteAddr
-              << " (module+0x" << funcOffset << ")"
-              << " cluster at module+0x" << clusterStart << "-0x" << clusterEnd;
+// Scan module memory and return ALL viable RC4 function addresses.
+// Groups matches into clusters (120-byte gap between adjacent matches),
+// then for each cluster with both 0x100 and 0x101 references, walks back
+// to find the function prologue.
+static std::vector<uintptr_t> ScanRuntimeForAllRC4(uintptr_t base, size_t size)
+{
+    std::vector<uintptr_t> result;
 
-    // Log first bytes at function start for diagnostics
-    size_t dumpLen = (size - funcOffset < 32) ? (size - funcOffset) : 32;
-    LOG(INFO) << "[RC4_HOOK] Function prologue bytes: ["
-              << BytesToHex(buf.data() + funcOffset, dumpLen) << "]";
+    if (size < 512) {
+        LOG(INFO) << "[RC4_HOOK] Module too small (" << size << " bytes)";
+        return result;
+    }
 
-    return absoluteAddr;
+    // Read entire module memory
+    std::vector<uint8_t> buf(size);
+    if (!SafeReadBytes(reinterpret_cast<const void*>(base), buf.data(), size)) {
+        LOG(WARNING) << "[RC4_HOOK] Failed to read module memory at 0x"
+                     << std::hex << base;
+        return result;
+    }
+
+    // Scan for instructions referencing 0x100/0x101
+    std::vector<PatternMatch> matches;
+    ScanForDispReferences(buf.data(), size, matches);
+
+    if (matches.empty()) {
+        LOG(INFO) << "[RC4_HOOK] No instructions referencing 0x100/0x101 found in module";
+        return result;
+    }
+
+    LOG(INFO) << "[RC4_HOOK] Found " << std::dec << matches.size()
+              << " instructions referencing 0x100/0x101 in module memory";
+
+    // Sort by offset
+    std::sort(matches.begin(), matches.end(),
+              [](const PatternMatch& a, const PatternMatch& b) {
+                  return a.offset < b.offset;
+              });
+
+    // Group matches into clusters: consecutive matches within 120 bytes of
+    // each other belong to the same cluster.
+    struct Cluster {
+        size_t startIdx;
+        size_t endIdx;   // exclusive
+    };
+    std::vector<Cluster> clusters;
+    {
+        size_t i = 0;
+        while (i < matches.size()) {
+            size_t j = i + 1;
+            while (j < matches.size() &&
+                   matches[j].offset - matches[j - 1].offset <= 120)
+                ++j;
+            clusters.push_back({ i, j });
+            i = j;
+        }
+    }
+
+    LOG(INFO) << "[RC4_HOOK] " << std::dec << clusters.size()
+              << " cluster(s) found in module";
+
+    // For each cluster: check quality and find function prologue
+    for (size_t ci = 0; ci < clusters.size(); ++ci) {
+        size_t count = clusters[ci].endIdx - clusters[ci].startIdx;
+        size_t startIdx = clusters[ci].startIdx;
+        size_t endIdx   = clusters[ci].endIdx;
+
+        bool has100 = false, has101 = false;
+        for (size_t k = startIdx; k < endIdx; ++k) {
+            if (matches[k].disp == 0x100) has100 = true;
+            if (matches[k].disp == 0x101) has101 = true;
+        }
+
+        size_t clusterStart = matches[startIdx].offset;
+        size_t clusterEnd   = matches[endIdx - 1].offset;
+
+        LOG(INFO) << "[RC4_HOOK] Cluster #" << std::dec << (ci + 1)
+                  << ": " << count << " matches at module+0x"
+                  << std::hex << clusterStart << "-0x" << clusterEnd
+                  << (has100 ? " [has i]" : " [NO i]")
+                  << (has101 ? " [has j]" : " [NO j]");
+
+        // Skip clusters without both i and j references
+        if (!has100 || !has101) {
+            LOG(INFO) << "[RC4_HOOK]   -> skipped (missing i or j reference)";
+            continue;
+        }
+
+        // Skip tiny clusters (likely false positives)
+        if (count < 2) {
+            LOG(INFO) << "[RC4_HOOK]   -> skipped (only " << std::dec << count << " match)";
+            continue;
+        }
+
+        // Find function prologue
+        size_t funcOffset = FindFunctionPrologue(buf.data(), size, clusterStart);
+        uintptr_t absoluteAddr = base + funcOffset;
+
+        // Check for duplicates (different clusters might resolve to same function)
+        bool duplicate = false;
+        for (const auto& addr : result) {
+            if (addr == absoluteAddr) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) {
+            LOG(INFO) << "[RC4_HOOK]   -> skipped (duplicate of already-found function at 0x"
+                      << std::hex << absoluteAddr << ")";
+            continue;
+        }
+
+        // Log prologue bytes for diagnostics
+        size_t dumpLen = (size - funcOffset < 32) ? (size - funcOffset) : 32;
+        LOG(INFO) << "[RC4_HOOK]   -> function at 0x"
+                  << std::hex << std::setfill('0') << std::setw(8) << absoluteAddr
+                  << " (module+0x" << funcOffset << ")"
+                  << " prologue=[" << BytesToHex(buf.data() + funcOffset, dumpLen) << "]";
+
+        result.push_back(absoluteAddr);
+
+        if (result.size() >= static_cast<size_t>(kMaxRC4Hooks))
+            break;
+    }
+
+    return result;
 }
 
 // ===========================================================================
-// Naked hook and detour handler
+// Naked hook stubs and detour handler
 // ===========================================================================
 
 // Stack layout after pushad+pushfd (36 bytes):
@@ -397,25 +446,35 @@ static void __cdecl RC4DetourHandler(uintptr_t savedEsp)
 {
     uint32_t* s = reinterpret_cast<uint32_t*>(savedEsp);
 
+    uint32_t eax  = s[8];
     uint32_t ecx  = s[7];
     uint32_t edx  = s[6];
+    uint32_t ebx  = s[5];
+    uint32_t esi  = s[2];
+    uint32_t edi  = s[1];
     uint32_t stk1 = s[10];
     uint32_t stk2 = s[11];
     uint32_t stk3 = s[12];
 
-    int callNum = ++g_callCount;
+    int callNum = InterlockedIncrement(reinterpret_cast<volatile LONG*>(&g_callCount));
 
-    // Diagnostic logging for first few calls
-    if (callNum <= 5) {
+    // Diagnostic logging for first few calls — dump ALL registers + stack args
+    if (callNum <= 8) {
         LOG(INFO) << "[RC4_HOOK] call#" << std::dec << callNum
-                  << " ECX=0x" << std::hex << std::setfill('0') << std::setw(8) << ecx
+                  << " EAX=0x" << std::hex << std::setfill('0') << std::setw(8) << eax
+                  << " ECX=0x" << std::setw(8) << ecx
                   << " EDX=0x" << std::setw(8) << edx
+                  << " EBX=0x" << std::setw(8) << ebx
+                  << " ESI=0x" << std::setw(8) << esi
+                  << " EDI=0x" << std::setw(8) << edi
                   << " stk1=0x" << std::setw(8) << stk1
                   << " stk2=0x" << std::setw(8) << stk2
                   << " stk3=0x" << std::setw(8) << stk3;
     }
 
     // --- Calling convention auto-detection ---
+    // Order: register-based (most specific) before stack-based (least specific)
+    // to avoid false positives where a stack arg coincidentally looks like an S-box.
     if (!g_conventionKnown) {
         // Try __thiscall: ECX=ctx, stk1=data, stk2=len
         if (LooksLikeRC4Context(ecx) &&
@@ -426,15 +485,6 @@ static void __cdecl RC4DetourHandler(uintptr_t savedEsp)
             LOG(INFO) << "[RC4_HOOK] Convention detected: __thiscall"
                       << " (ECX=ctx, stk1=data, stk2=len)";
         }
-        // Try __cdecl: stk1=ctx, stk2=data, stk3=len
-        else if (LooksLikeRC4Context(stk1) &&
-                 IsValidPointer(stk2) && IsReasonableLength(stk3))
-        {
-            g_convention = 2;
-            g_conventionKnown = true;
-            LOG(INFO) << "[RC4_HOOK] Convention detected: __cdecl"
-                      << " (stk1=ctx, stk2=data, stk3=len)";
-        }
         // Try variant: ECX=ctx, stk1=len, stk2=data
         else if (LooksLikeRC4Context(ecx) &&
                  IsReasonableLength(stk1) && IsValidPointer(stk2))
@@ -444,7 +494,7 @@ static void __cdecl RC4DetourHandler(uintptr_t savedEsp)
             LOG(INFO) << "[RC4_HOOK] Convention detected: variant"
                       << " (ECX=ctx, stk1=len, stk2=data)";
         }
-        // Try: EDX=ctx, stk1=data, stk2=len (unlikely but check)
+        // Try: EDX=ctx, stk1=data, stk2=len
         else if (LooksLikeRC4Context(edx) &&
                  IsValidPointer(stk1) && IsReasonableLength(stk2))
         {
@@ -453,16 +503,45 @@ static void __cdecl RC4DetourHandler(uintptr_t savedEsp)
             LOG(INFO) << "[RC4_HOOK] Convention detected: EDX-variant"
                       << " (EDX=ctx, stk1=data, stk2=len)";
         }
+        // Try: EAX=ctx, stk1=data, stk2=len
+        else if (LooksLikeRC4Context(eax) &&
+                 IsValidPointer(stk1) && IsReasonableLength(stk2))
+        {
+            g_convention = 5;
+            g_conventionKnown = true;
+            LOG(INFO) << "[RC4_HOOK] Convention detected: EAX-variant"
+                      << " (EAX=ctx, stk1=data, stk2=len)";
+        }
+        // Try: EAX=ctx, stk1=len, stk2=data
+        else if (LooksLikeRC4Context(eax) &&
+                 IsReasonableLength(stk1) && IsValidPointer(stk2))
+        {
+            g_convention = 6;
+            g_conventionKnown = true;
+            LOG(INFO) << "[RC4_HOOK] Convention detected: EAX-variant2"
+                      << " (EAX=ctx, stk1=len, stk2=data)";
+        }
+        // Try __cdecl: stk1=ctx, stk2=data, stk3=len (least specific — last)
+        else if (LooksLikeRC4Context(stk1) &&
+                 IsValidPointer(stk2) && IsReasonableLength(stk3))
+        {
+            g_convention = 2;
+            g_conventionKnown = true;
+            LOG(INFO) << "[RC4_HOOK] Convention detected: __cdecl"
+                      << " (stk1=ctx, stk2=data, stk3=len)";
+        }
     }
 
     // --- Extract parameters based on known convention ---
     uint32_t dataPtr = 0, dataLen = 0;
 
     switch (g_convention) {
-    case 1: dataPtr = stk1; dataLen = stk2; break;
-    case 2: dataPtr = stk2; dataLen = stk3; break;
-    case 3: dataPtr = stk2; dataLen = stk1; break;
-    case 4: dataPtr = stk1; dataLen = stk2; break;
+    case 1: dataPtr = stk1; dataLen = stk2; break;  // ECX=ctx
+    case 2: dataPtr = stk2; dataLen = stk3; break;  // stk1=ctx
+    case 3: dataPtr = stk2; dataLen = stk1; break;  // ECX=ctx, swapped
+    case 4: dataPtr = stk1; dataLen = stk2; break;  // EDX=ctx
+    case 5: dataPtr = stk1; dataLen = stk2; break;  // EAX=ctx
+    case 6: dataPtr = stk2; dataLen = stk1; break;  // EAX=ctx, swapped
     default:
         // Convention unknown — try heuristic for immediate capture
         if (IsValidPointer(stk1) && IsReasonableLength(stk2)) {
@@ -507,23 +586,76 @@ static void __cdecl RC4DetourHandler(uintptr_t savedEsp)
     }
 }
 
-__declspec(naked) static void HookedRC4Naked()
+// Each hook slot needs its own naked stub that jumps to its own trampoline.
+// MSVC inline asm allows static array indexing with compile-time offsets.
+
+__declspec(naked) static void HookedRC4Naked_0()
 {
     __asm {
         pushad
         pushfd
-
         mov eax, esp
         push eax
         call RC4DetourHandler
         add esp, 4
-
         popfd
         popad
-
-        jmp dword ptr [g_originalRC4]
+        jmp dword ptr [g_trampolines + 0]
     }
 }
+
+__declspec(naked) static void HookedRC4Naked_1()
+{
+    __asm {
+        pushad
+        pushfd
+        mov eax, esp
+        push eax
+        call RC4DetourHandler
+        add esp, 4
+        popfd
+        popad
+        jmp dword ptr [g_trampolines + 4]
+    }
+}
+
+__declspec(naked) static void HookedRC4Naked_2()
+{
+    __asm {
+        pushad
+        pushfd
+        mov eax, esp
+        push eax
+        call RC4DetourHandler
+        add esp, 4
+        popfd
+        popad
+        jmp dword ptr [g_trampolines + 8]
+    }
+}
+
+__declspec(naked) static void HookedRC4Naked_3()
+{
+    __asm {
+        pushad
+        pushfd
+        mov eax, esp
+        push eax
+        call RC4DetourHandler
+        add esp, 4
+        popfd
+        popad
+        jmp dword ptr [g_trampolines + 12]
+    }
+}
+
+typedef void (*NakedHookFn)();
+static NakedHookFn g_nakedStubs[kMaxRC4Hooks] = {
+    HookedRC4Naked_0,
+    HookedRC4Naked_1,
+    HookedRC4Naked_2,
+    HookedRC4Naked_3,
+};
 
 } // anonymous namespace
 
@@ -552,9 +684,10 @@ bool Install(uintptr_t moduleBase, size_t moduleSize)
 {
     EnsureLock();
 
-    if (g_hookActive) {
-        LOG(INFO) << "[RC4_HOOK] Already active at 0x" << std::hex << g_hookedAddr
-                  << ", removing before reinstall";
+    // Remove any existing hooks first
+    if (g_numHooks > 0) {
+        LOG(INFO) << "[RC4_HOOK] " << g_numHooks
+                  << " hook(s) already active, removing before reinstall";
         Remove();
     }
 
@@ -570,71 +703,89 @@ bool Install(uintptr_t moduleBase, size_t moduleSize)
     g_convention      = 0;
     LeaveCriticalSection(&g_lock);
 
-    uintptr_t funcAddr = ScanRuntimeForRC4(moduleBase, moduleSize);
-    if (funcAddr == 0) {
-        LOG(WARNING) << "[RC4_HOOK] RC4 PRGA function not found in module at 0x"
+    std::vector<uintptr_t> funcAddrs = ScanRuntimeForAllRC4(moduleBase, moduleSize);
+    if (funcAddrs.empty()) {
+        LOG(WARNING) << "[RC4_HOOK] No RC4 functions found in module at 0x"
                      << std::hex << moduleBase << " (size=0x" << moduleSize << ")";
         return false;
     }
 
-    MH_STATUS status = MH_CreateHook(
-        reinterpret_cast<LPVOID>(funcAddr),
-        reinterpret_cast<LPVOID>(&HookedRC4Naked),
-        &g_originalRC4);
+    int installed = 0;
+    for (size_t i = 0; i < funcAddrs.size() && installed < kMaxRC4Hooks; ++i) {
+        uintptr_t funcAddr = funcAddrs[i];
 
-    if (status != MH_OK) {
-        LOG(ERROR) << "[RC4_HOOK] MH_CreateHook(0x" << std::hex << funcAddr
-                   << ") failed: " << MH_StatusToString(status);
+        MH_STATUS status = MH_CreateHook(
+            reinterpret_cast<LPVOID>(funcAddr),
+            reinterpret_cast<LPVOID>(g_nakedStubs[installed]),
+            &g_trampolines[installed]);
+
+        if (status != MH_OK) {
+            LOG(ERROR) << "[RC4_HOOK] MH_CreateHook(0x" << std::hex << funcAddr
+                       << ") failed: " << MH_StatusToString(status);
+            continue;
+        }
+
+        status = MH_EnableHook(reinterpret_cast<LPVOID>(funcAddr));
+        if (status != MH_OK) {
+            LOG(ERROR) << "[RC4_HOOK] MH_EnableHook(0x" << std::hex << funcAddr
+                       << ") failed: " << MH_StatusToString(status);
+            MH_RemoveHook(reinterpret_cast<LPVOID>(funcAddr));
+            g_trampolines[installed] = nullptr;
+            continue;
+        }
+
+        g_hookedAddrs[installed] = funcAddr;
+        g_hooksActive[installed] = true;
+        ++installed;
+
+        LOG(INFO) << "[RC4_HOOK] Hook #" << installed << " installed at 0x"
+                  << std::hex << std::setfill('0') << std::setw(8) << funcAddr
+                  << " (module base=0x" << std::setw(8) << moduleBase
+                  << " size=0x" << moduleSize << ")";
+    }
+
+    g_numHooks = installed;
+
+    if (installed == 0) {
+        LOG(WARNING) << "[RC4_HOOK] Failed to install any hooks";
         return false;
     }
 
-    status = MH_EnableHook(reinterpret_cast<LPVOID>(funcAddr));
-    if (status != MH_OK) {
-        LOG(ERROR) << "[RC4_HOOK] MH_EnableHook(0x" << std::hex << funcAddr
-                   << ") failed: " << MH_StatusToString(status);
-        MH_RemoveHook(reinterpret_cast<LPVOID>(funcAddr));
-        return false;
-    }
-
-    g_hookedAddr = funcAddr;
-    g_hookActive = true;
-
-    LOG(INFO) << "[RC4_HOOK] Hook installed at 0x"
-              << std::hex << std::setfill('0') << std::setw(8) << funcAddr
-              << " (module base=0x" << std::setw(8) << moduleBase
-              << " size=0x" << moduleSize << ")";
+    LOG(INFO) << "[RC4_HOOK] " << installed << " hook(s) installed successfully"
+              << " (out of " << funcAddrs.size() << " candidate(s))";
     return true;
 }
 
 void Remove()
 {
-    if (!g_hookActive)
-        return;
+    for (int i = 0; i < kMaxRC4Hooks; ++i) {
+        if (!g_hooksActive[i])
+            continue;
 
-    MH_STATUS status = MH_DisableHook(reinterpret_cast<LPVOID>(g_hookedAddr));
-    if (status != MH_OK) {
-        LOG(WARNING) << "[RC4_HOOK] MH_DisableHook(0x" << std::hex << g_hookedAddr
-                     << ") failed: " << MH_StatusToString(status);
+        MH_STATUS status = MH_DisableHook(reinterpret_cast<LPVOID>(g_hookedAddrs[i]));
+        if (status != MH_OK) {
+            LOG(WARNING) << "[RC4_HOOK] MH_DisableHook(0x" << std::hex << g_hookedAddrs[i]
+                         << ") failed: " << MH_StatusToString(status);
+        }
+
+        status = MH_RemoveHook(reinterpret_cast<LPVOID>(g_hookedAddrs[i]));
+        if (status != MH_OK) {
+            LOG(WARNING) << "[RC4_HOOK] MH_RemoveHook(0x" << std::hex << g_hookedAddrs[i]
+                         << ") failed: " << MH_StatusToString(status);
+        }
+
+        g_hooksActive[i]  = false;
+        g_hookedAddrs[i]  = 0;
+        g_trampolines[i]  = nullptr;
     }
 
-    status = MH_RemoveHook(reinterpret_cast<LPVOID>(g_hookedAddr));
-    if (status != MH_OK) {
-        LOG(WARNING) << "[RC4_HOOK] MH_RemoveHook(0x" << std::hex << g_hookedAddr
-                     << ") failed: " << MH_StatusToString(status);
-    }
-
-    LOG(INFO) << "[RC4_HOOK] Hook removed from 0x"
-              << std::hex << std::setfill('0') << std::setw(8) << g_hookedAddr
-              << " (total calls: " << std::dec << g_callCount << ")";
-
-    g_hookActive    = false;
-    g_hookedAddr    = 0;
-    g_originalRC4   = nullptr;
+    LOG(INFO) << "[RC4_HOOK] All hooks removed (total calls: " << std::dec << g_callCount << ")";
+    g_numHooks = 0;
 }
 
 bool IsActive()
 {
-    return g_hookActive;
+    return g_numHooks > 0;
 }
 
 bool ConsumePlaintext(uint8_t* out, size_t outSize, size_t* outLen)

@@ -132,13 +132,13 @@ Warden общается по схеме request-response:
 5. Если да — сохраняем plaintext в thread-safe буфер
 6. SendPacketHandler забирает plaintext через ConsumePlaintext()
 
-### 4.2 Pattern Scanner (ScanRuntimeForRC4)
+### 4.2 Pattern Scanner (ScanRuntimeForAllRC4)
 
-**Цель**: найти RC4 PRGA функцию в runtime памяти Warden модуля
+**Цель**: найти **ВСЕ** RC4 PRGA функции в runtime памяти Warden модуля
 
-**Проблема**: нет стабильной byte signature (разные модули — разные регистры, разный код)
+**Проблема**: нет стабильной byte signature (разные модули — разные регистры, разный код). Более того, некоторые модули используют **разные RC4 функции** для main thread и module thread.
 
-**Решение**: сканируем инструкции, которые **обращаются к полям RC4 context**
+**Решение**: сканируем инструкции, которые **обращаются к полям RC4 context**, и хукаем **все** найденные функции (до 4).
 
 **Context layout**:
 ```
@@ -155,38 +155,50 @@ Warden общается по схеме request-response:
 **Алгоритм**:
 1. Сканируем runtime память модуля (найденную в MODULE_INITIALIZE)
 2. Для каждого адреса проверяем: есть ли инструкция с disp32=0x100 или 0x101?
-3. Собираем все совпадения в clusters
-4. Выбираем самый большой cluster (обычно 6+ совпадений)
-5. От cluster идём назад до prologue функции:
-   - `push ebp; mov ebp, esp` (55 8B EC) — стандартный frame
+3. Группируем совпадения в кластеры (gap <= 120 байт между соседними совпадениями)
+4. Для каждого кластера проверяем:
+   - >= 2 совпадения в кластере
+   - Есть ссылки на ОБОИХ (0x100 и 0x101)
+5. Для каждого подходящего кластера вызываем `FindFunctionPrologue`:
+   - Ищем назад `push ebp; mov ebp, esp` (55 8B EC) — стандартный frame
    - Или INT3 (0xCC) / RET (0xC2/0xC3) boundary
-6. Адрес prologue = адрес RC4 PRGA функции
+6. Дедупликация: разные кластеры могут резолвиться в одну функцию
+7. Результат: вектор уникальных адресов (до `kMaxRC4Hooks=4`)
 
 **Результат**:
 ```
 [RC4_HOOK] Found 15 instructions referencing 0x100/0x101 in module memory
-[RC4_HOOK] Best cluster: 6 matches at module offsets 0x10ed-0x111d [has i] [has j]
-[RC4_HOOK] RC4 PRGA function at runtime address 0x1bea10e0 (module+0x10e0)
+[RC4_HOOK] 3 cluster(s) found in module
+[RC4_HOOK] Cluster #1: 6 matches at module+0x10ed-0x111d [has i] [has j]
+[RC4_HOOK]   -> function at 0x1bea10e0 (module+0x10e0) prologue=[55 8B EC ...]
+[RC4_HOOK] Cluster #2: 4 matches at module+0x13c7-0x13d7 [has i] [has j]
+[RC4_HOOK]   -> function at 0x1bea13b0 (module+0x13b0) prologue=[55 8B EC ...]
+[RC4_HOOK] 2 hook(s) installed successfully (out of 2 candidate(s))
 ```
 
 **Тестирование**:
 - 10/10 модулей offline (Python анализ дампов): все нашли PRGA
 - Runtime (игра): все протестированные модули успешно хукаются
+- Модули с несколькими RC4 функциями (0BE6B21C): все функции хукаются
 
 ### 4.3 Calling Convention
 
-**Confirmed на 10/10 модулях**: `__thiscall` с `ret 8`
+**Поддерживается 6 конвенций** (auto-detection при первом вызове):
 
-**Сигнатура**:
-```cpp
-void __thiscall RC4_Process(void* ctx, uint8_t* data, uint32_t len);
-// ECX = ctx (указатель на context)
-// stk1 = data (указатель на данные)
-// stk2 = len (длина данных)
-// ret 8 (caller pops 8 bytes)
-```
+| # | Convention | Context | Data | Length |
+|---|-----------|---------|------|--------|
+| 1 | __thiscall | ECX | stk1 | stk2 |
+| 3 | variant | ECX | stk2 | stk1 |
+| 4 | EDX-variant | EDX | stk1 | stk2 |
+| 5 | EAX-variant | EAX | stk1 | stk2 |
+| 6 | EAX-variant2 | EAX | stk2 | stk1 |
+| 2 | __cdecl | stk1 | stk2 | stk3 |
 
-**НО**: внутри функции используется **EAX** как context pointer, не ECX (compiler optimization)
+**Порядок проверки**: регистровые конвенции первыми (более специфичные), stack-based __cdecl последним (наименее специфичный — стековый аргумент может случайно совпасть с S-box).
+
+**Примеры модулей**:
+- Большинство модулей: ECX=ctx (__thiscall)
+- Модуль **0BE6B21C**: EAX=ctx (convention 5)
 
 **Context layout** (подтверждён):
 ```cpp
@@ -199,60 +211,67 @@ struct RC4_Context {
 
 **Prologue**:
 - Стандартный frame: `push ebp; mov ebp, esp` (55 8B EC)
-- Выбор регистров varies (EDI/ESI/EBX), но frame всегда одинаковый
+- Выбор регистров varies (EDI/ESI/EBX/EAX), но frame всегда одинаковый
 
-**Auto-detection**:
-При первом вызове функции проверяем:
-1. `LooksLikeRC4Context(ECX)` — ECX указывает на readable memory?
-2. Читаем S[256] по адресу ECX
-3. Проверяем: это перестановка 0-255?
-4. Если да — convention = `__thiscall`, запоминаем
-5. Если нет — проверяем другие варианты (stk1, stk2...)
+**Auto-detection** (через `LooksLikeRC4Context` + permutation check):
+1. Проверяем каждый регистр: ECX, EDX, EAX (от специфичных к общим)
+2. Для каждого: `LooksLikeRC4Context(reg)` — readable memory? S[256] is permutation?
+3. Если найден — определяем порядок data/len по `IsValidPointer` + `IsReasonableLength`
+4. Если ни один регистр не подошёл — проверяем stk1 как ctx (__cdecl)
+5. Convention shared across all hook slots (определяется один раз)
+
+**Диагностика**: первые 8 вызовов логируют ВСЕ регистры (EAX, ECX, EDX, EBX, ESI, EDI) + stk1-3 для отладки
 
 **Результат**: 100% автоматическое определение без hardcode
 
-### 4.4 Hook Implementation
+### 4.4 Hook Implementation (Multi-Hook)
 
-**Detour функция**:
+**Архитектура**: до 4 одновременных хуков, каждый со своим naked stub и trampoline.
+
+**4 отдельных naked stub'а** (необходимы, потому что каждый прыгает в свой trampoline):
 ```cpp
-void __declspec(naked) RC4DetourNaked() {
+__declspec(naked) static void HookedRC4Naked_0() {
     __asm {
-        pushad          // Сохраняем все регистры
-        pushfd          // Сохраняем флаги
-    }
-
-    // Достаём параметры из стека
-    void* ctx;
-    uint8_t* data;
-    uint32_t len;
-    __asm {
-        mov eax, [esp + 0x24]      // ECX (ctx) — сохранён в pushad
-        mov ctx, eax
-        mov eax, [esp + 0x28]      // stk1 (data)
-        mov data, eax
-        mov eax, [esp + 0x2C]      // stk2 (len)
-        mov len, eax
-    }
-
-    // Проверяем convention + валидируем CMSG + сохраняем plaintext
-    HandleRC4Call(ctx, data, len);
-
-    __asm {
-        popfd           // Восстанавливаем флаги
-        popad           // Восстанавливаем регистры
-        jmp [g_originalRC4]  // Tail-call к оригиналу (ret 8 вернёт к реальному caller'у)
+        pushad
+        pushfd
+        mov eax, esp
+        push eax
+        call RC4DetourHandler    // Общий handler для всех слотов
+        add esp, 4
+        popfd
+        popad
+        jmp dword ptr [g_trampolines + 0]   // Trampoline слота 0
     }
 }
+
+// HookedRC4Naked_1 → g_trampolines + 4
+// HookedRC4Naked_2 → g_trampolines + 8
+// HookedRC4Naked_3 → g_trampolines + 12
 ```
 
-**MinHook**:
+**Общий detour handler** (`RC4DetourHandler`):
+- Получает ESP, извлекает ВСЕ регистры из pushad/pushfd стека
+- Convention detection и plaintext capture — shared для всех слотов
+- Thread-safe call counting через `InterlockedIncrement`
+
+**Массивы состояния**:
 ```cpp
-MH_STATUS status = MH_CreateHook(
-    rc4Addr,           // Адрес найденной RC4 функции
-    RC4DetourNaked,    // Наш detour
-    &g_originalRC4     // Trampoline (указатель на оригинал)
-);
-MH_EnableHook(rc4Addr);
+static constexpr int kMaxRC4Hooks = 4;
+static void*     g_trampolines[kMaxRC4Hooks];  // Trampoline для каждого хука
+static uintptr_t g_hookedAddrs[kMaxRC4Hooks];  // Адрес хука
+static bool      g_hooksActive[kMaxRC4Hooks];  // Активен ли хук
+static int       g_numHooks;                    // Сколько хуков установлено
+```
+
+**MinHook** (для каждой найденной функции):
+```cpp
+for (size_t i = 0; i < funcAddrs.size() && installed < kMaxRC4Hooks; ++i) {
+    MH_CreateHook(funcAddrs[i], g_nakedStubs[installed], &g_trampolines[installed]);
+    MH_EnableHook(funcAddrs[i]);
+    g_hookedAddrs[installed] = funcAddrs[i];
+    g_hooksActive[installed] = true;
+    ++installed;
+}
 ```
 
 **Thread safety**: CRITICAL_SECTION защищает:
@@ -354,35 +373,41 @@ bool LooksLikeRC4Context(void* ptr) {
 **Installation** (в MODULE_INITIALIZE handler):
 ```cpp
 // 1. Находим модуль в памяти (FindModuleInMemory)
-// 2. Сканируем RC4 PRGA (ScanRuntimeForRC4)
-void* rc4Addr = ScanRuntimeForRC4(moduleAddr, moduleSize);
-if (!rc4Addr) {
-    LOG(ERROR) << "RC4 PRGA not found, falling back to S-box cloning";
+// 2. Сканируем ВСЕ RC4 PRGA функции (ScanRuntimeForAllRC4)
+std::vector<uintptr_t> funcAddrs = ScanRuntimeForAllRC4(moduleAddr, moduleSize);
+if (funcAddrs.empty()) {
+    LOG(ERROR) << "No RC4 functions found, falling back to S-box cloning";
     return;
 }
 
-// 3. Устанавливаем хук
-MH_CreateHook(rc4Addr, RC4DetourNaked, &g_originalRC4);
-MH_EnableHook(rc4Addr);
-g_rc4HookActive = true;
+// 3. Устанавливаем хуки (до kMaxRC4Hooks=4)
+for (size_t i = 0; i < funcAddrs.size() && installed < kMaxRC4Hooks; ++i) {
+    MH_CreateHook(funcAddrs[i], g_nakedStubs[installed], &g_trampolines[installed]);
+    MH_EnableHook(funcAddrs[i]);
+    // ... track in g_hookedAddrs[], g_hooksActive[]
+}
+g_numHooks = installed;
 
-LOG(INFO) << "RC4 hook installed at " << rc4Addr;
+LOG(INFO) << installed << " hook(s) installed successfully";
 ```
 
 **Removal** (в MODULE_USE handler + Shutdown):
 ```cpp
-// MODULE_USE: сервер загружает новый модуль → старый хук станет invalid
-if (g_rc4HookActive) {
-    MH_DisableHook(MH_ALL_HOOKS);
-    MH_RemoveHook(MH_ALL_HOOKS);
-    g_rc4HookActive = false;
+// MODULE_USE: сервер загружает новый модуль → старые хуки станут invalid
+for (int i = 0; i < kMaxRC4Hooks; ++i) {
+    if (!g_hooksActive[i]) continue;
+    MH_DisableHook(g_hookedAddrs[i]);
+    MH_RemoveHook(g_hookedAddrs[i]);
+    g_hooksActive[i] = false;
+    g_hookedAddrs[i] = 0;
+    g_trampolines[i] = nullptr;
 }
-
-// Shutdown: перед MH_Uninitialize
-DeleteCriticalSection(&g_rc4CS);
+g_numHooks = 0;
 ```
 
-**Thread safety**: CRITICAL_SECTION инициализируется в DllMain (PROCESS_ATTACH)
+**IsActive**: возвращает `g_numHooks > 0`
+
+**Thread safety**: CRITICAL_SECTION инициализируется через `EnsureLock()` (lazy init)
 
 ## 5. Fallback: клонирование S-box (warden_rc4.cpp)
 
@@ -449,23 +474,24 @@ if (decrypted) {
 
 ## 6. Реальные результаты из лога
 
-### Установка хука
+### Установка хуков (multi-hook)
 ```
-[RC4_HOOK] Scanning for RC4 PRGA in module memory [0x1bea0000..0x1bea7252]
 [RC4_HOOK] Found 15 instructions referencing 0x100/0x101 in module memory
-[RC4_HOOK] Cluster 0: 3 matches at module offsets 0x0fc3-0x0fd3 [has i]
-[RC4_HOOK] Cluster 1: 6 matches at module offsets 0x10ed-0x111d [has i] [has j]
-[RC4_HOOK] Cluster 2: 4 matches at module offsets 0x13c7-0x13d7 [has i] [has j]
-[RC4_HOOK] Best cluster: 6 matches (cluster #1)
-[RC4_HOOK] Walking back from 0x1bea10ed to find prologue...
-[RC4_HOOK] Found prologue at 0x1bea10e0 (55 8B EC = push ebp; mov ebp, esp)
-[RC4_HOOK] RC4 PRGA function at runtime address 0x1bea10e0 (module+0x10e0)
-[RC4_HOOK] Hook installed at 0x1bea10e0
+[RC4_HOOK] 3 cluster(s) found in module
+[RC4_HOOK] Cluster #1: 3 matches at module+0x0fc3-0x0fd3 [has i] [NO j]
+[RC4_HOOK]   -> skipped (missing i or j reference)
+[RC4_HOOK] Cluster #2: 6 matches at module+0x10ed-0x111d [has i] [has j]
+[RC4_HOOK]   -> function at 0x1bea10e0 (module+0x10e0) prologue=[55 8B EC ...]
+[RC4_HOOK] Cluster #3: 4 matches at module+0x13c7-0x13d7 [has i] [has j]
+[RC4_HOOK]   -> function at 0x1bea13b0 (module+0x13b0) prologue=[55 8B EC ...]
+[RC4_HOOK] Hook #1 installed at 0x1bea10e0
+[RC4_HOOK] Hook #2 installed at 0x1bea13b0
+[RC4_HOOK] 2 hook(s) installed successfully (out of 2 candidate(s))
 ```
 
-**Cluster #1** (6 matches) = RC4 PRGA основная функция
-**Cluster #0** (3 matches) = KSA (Key Scheduling Algorithm)
-**Cluster #2** (4 matches) = дубликат PRGA или helper function
+**Cluster #1** (3 matches, only i) = KSA (Key Scheduling Algorithm) — пропущен
+**Cluster #2** (6 matches, i+j) = RC4 PRGA основная функция — хук #1
+**Cluster #3** (4 matches, i+j) = вторая RC4 функция (module thread) — хук #2
 
 ### Захват CMSG
 ```
@@ -576,8 +602,9 @@ bool ConsumePlaintext(uint8_t* out, uint32_t outSize, uint32_t* outLen) {
 - **Статус**: ПОЛНОСТЬЮ РАБОТАЕТ
 - **Success rate**: 100% (6/6 CMSG packets decrypted)
 - **Pattern scanner**: работает на 10/10 модулях (offline Python analysis + runtime)
-- **Calling convention**: auto-detected (`__thiscall ret 8`)
-- **Thread safety**: CRITICAL_SECTION (Warden module thread vs main thread)
+- **Multi-hook**: до 4 одновременных хуков (для модулей с несколькими RC4 функциями)
+- **Calling convention**: auto-detected (6 вариантов: ECX/EDX/EAX/stack-based, обычный/swapped порядок)
+- **Thread safety**: CRITICAL_SECTION + InterlockedIncrement (Warden module thread vs main thread)
 - **Stability**: нет crashes, нет disconnects, Warden integrity checks pass
 
 ### FALLBACK (warden_rc4.cpp)
@@ -645,24 +672,18 @@ bool ConsumePlaintext(uint8_t* out, uint32_t outSize, uint32_t* outLen) {
 - Начать с простых модификаций (HASH_RESULT spoofing)
 - Добавить artificial delay для MEM checks (имитация реального чтения памяти)
 
-### 9.4 Multiple module support
-**Текущее состояние**: hook переустанавливается на каждом MODULE_USE
+### 9.4 Multiple RC4 functions per module (РЕШЕНО)
+**Проблема**: некоторые модули используют разные RC4 функции для main thread и module thread (например, 0BE6B21C — EAX-based convention).
 
-**Проблема**: если сервер часто меняет модули (каждые 5 минут) → overhead
+**Решение** (реализовано): `ScanRuntimeForAllRC4` находит ВСЕ RC4 функции, `Install` хукает до 4 одновременно. Каждый hook slot имеет свой naked stub и trampoline. Convention detection shared — определяется один раз при первом вызове.
+
+### 9.5 Module RC4 offset caching (TODO)
+**Текущее состояние**: hook'и переустанавливаются на каждом MODULE_USE (scan + hook)
 
 **Optimization**:
 - Кешировать найденные RC4 PRGA offsets для известных модулей (по module ID hash)
 - При MODULE_USE: проверить cache → если есть, использовать cached offset
 - Если нет в cache → scanner → добавить в cache
-
-**Cache format**:
-```cpp
-struct ModuleRC4Cache {
-    uint32_t moduleHash;   // Hash из MODULE_USE (4 байта после opcode)
-    uint32_t rc4Offset;    // Offset RC4 PRGA от начала модуля
-};
-std::map<uint32_t, uint32_t> g_moduleRC4Cache;
-```
 
 ### 9.5 Error handling improvements
 **Текущие gaps**:
@@ -684,7 +705,9 @@ std::map<uint32_t, uint32_t> g_moduleRC4Cache;
 - 100% success rate на протестированных модулях
 - Нет timing dependency (в отличие от S-box cloning)
 - Module-agnostic pattern scanner (работает на 10/10 offline modules)
-- Thread-safe implementation (CRITICAL_SECTION)
+- Multi-hook: до 4 одновременных хуков (решает проблему модулей с несколькими RC4 функциями)
+- 6 поддерживаемых calling conventions (ECX/EDX/EAX/stack-based)
+- Thread-safe implementation (CRITICAL_SECTION + InterlockedIncrement)
 - Two-tier architecture (primary + fallback)
 
 **Что мы теперь видим**:

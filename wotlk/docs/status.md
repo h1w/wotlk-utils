@@ -259,39 +259,44 @@ Check section: [0x8E] [4 байта адрес] [1 байт length] [0x1F] [0x91
 
 ### 10. RC4 CMSG расшифровка через внутренний хук
 
-**Описание**: перехват RC4 PRGA функции ВНУТРИ бинарного модуля Warden для захвата plaintext CMSG ответов.
+**Описание**: перехват RC4 PRGA функций ВНУТРИ бинарного модуля Warden для захвата plaintext CMSG ответов.
 
 **Проблема**: S-box cloning (warden_rc4.cpp) не работал — к моменту клонирования состояние уже менялось.
 
-**Решение**: хук на RC4 PRGA функцию внутри модуля (warden_rc4_hook.cpp)
+**Решение**: хук на RC4 PRGA функции внутри модуля (warden_rc4_hook.cpp). Некоторые модули используют **разные RC4 функции** для main thread и module thread, поэтому хукаем **все** найденные функции (до 4 одновременно).
 
 **Алгоритм**:
-1. **Pattern scanner**: MOVZX/MOV cluster detection с диsp32=0x100/0x101
+1. **Pattern scanner** (`ScanRuntimeForAllRC4`): MOVZX/MOV cluster detection с disp32=0x100/0x101
    - Ищем инструкции вида `movzx r32, byte [reg+0x100]` (чтение i) и `movzx r32, byte [reg+0x101]` (чтение j)
    - RC4 context layout: `[S[256]][i][j]` — i смещён на 0x100, j на 0x101
-2. **Cluster detection**:
-   - Находим 15 инструкций MOVZX/MOV с нужными смещениями
-   - Группируем по функциям (push ebp; mov ebp, esp)
-   - Выбираем функцию с наибольшим кластером (8 совпадений = PRGA)
-3. **Function found**: module+0x10e0
-   - Prologue: `55 8B EC` (push ebp; mov ebp, esp)
-   - Calling convention: `__thiscall` с `ret 8` — ECX=ctx, stk1=data, stk2=len
-   - Фактический prologue использует EAX как context (не ECX) — не влияет на захват, нужны только data+len
-4. **Auto-detection**: при первом вызове через `LooksLikeRC4Context(ECX)`
-   - Проверяем: ECX указывает на валидный S-box (permutation test)?
-   - Если да → `__thiscall`, иначе проверяем stk1
-5. **ConsumePlaintext**: one-shot retrieval
-   - Plaintext сохраняется в g_lastPlaintext (std::vector<uint8_t>)
-   - После чтения очищается (thread-safe через CRITICAL_SECTION)
-6. **Lifecycle**:
-   - Installed: после MODULE_INITIALIZE (FindModuleInMemory)
-   - Removed: на MODULE_USE и при Shutdown
-7. **Fallback**: если pattern scan fail → используем S-box cloning (warden_rc4.cpp)
+2. **Multi-cluster detection**:
+   - Группируем совпадения в кластеры (120-byte gap между соседними)
+   - Отбираем кластеры с >= 2 совпадениями и обеими ссылками (0x100 + 0x101)
+   - Для каждого кластера находим пролог функции (`FindFunctionPrologue`)
+   - Дедупликация: разные кластеры могут резолвиться в одну функцию
+   - Результат: вектор уникальных адресов RC4 функций (до `kMaxRC4Hooks=4`)
+3. **Multi-hook installation**:
+   - 4 отдельных naked stub'а (`HookedRC4Naked_0` — `HookedRC4Naked_3`), каждый с собственным trampoline
+   - Каждый stub вызывает общий `RC4DetourHandler`, передавая ESP
+   - MH_CreateHook/MH_EnableHook для каждой найденной функции
+4. **Auto-detection calling convention** (6 вариантов, от специфичных к общим):
+   - Convention 1: ECX=ctx, stk1=data, stk2=len (__thiscall)
+   - Convention 3: ECX=ctx, stk1=len, stk2=data (variant)
+   - Convention 4: EDX=ctx, stk1=data, stk2=len
+   - Convention 5: EAX=ctx, stk1=data, stk2=len
+   - Convention 6: EAX=ctx, stk1=len, stk2=data
+   - Convention 2: stk1=ctx, stk2=data, stk3=len (__cdecl, последний — наименее специфичный)
+   - Порядок проверки: регистровые конвенции первыми, stack-based последними (избежание false positive)
+5. **Diagnostics**: первые 8 вызовов логируют ВСЕ регистры (EAX, ECX, EDX, EBX, ESI, EDI) + stk1-3
+6. **ConsumePlaintext**: one-shot retrieval (thread-safe через CRITICAL_SECTION, InterlockedIncrement для callCount)
+7. **Lifecycle**:
+   - Installed: после MODULE_INITIALIZE (FindModuleInMemory) — до 4 хуков одновременно
+   - Removed: на MODULE_USE и при Shutdown — все хуки снимаются
+8. **Fallback**: если ни одна RC4 функция не найдена → используем S-box cloning (warden_rc4.cpp)
 
-**Confirmed calling convention** (10/10 modules):
-- Tested across all captured modules: 7C4ABC97, DA3BF29E, 9A95D199, CB9E43D6, и другие
-- Все модули используют `ret 8` (2 stack args)
-- Context передаётся через ECX (thiscall)
+**Поддержка модулей с разными RC4 функциями**:
+- Модуль **0BE6B21C**: RC4 использует EAX как context register (не ECX). Module thread может использовать отдельную RC4 функцию
+- Multi-hook решает эту проблему: хукаем ВСЕ RC4 функции в модуле, convention detection определяет формат каждой
 
 **Результаты**:
 ```
