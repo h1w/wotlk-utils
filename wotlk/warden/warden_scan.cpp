@@ -59,6 +59,10 @@ int  g_consecutiveDfsFailures = 0;
 std::unordered_set<uint8_t> g_typeIDs;
 std::unordered_map<uint8_t, int> g_typeSizes; // type -> data size (-1 = unknown)
 
+// Cached module runtime address/size (set by FindModuleInMemory)
+uintptr_t g_moduleRuntimeBase = 0;
+size_t    g_moduleRuntimeSize = 0;
+
 // ---------------------------------------------------------------------------
 // SEH-safe memory copy (separate function — no C++ objects allowed with SEH)
 // ---------------------------------------------------------------------------
@@ -1404,6 +1408,8 @@ void Reset()
     g_consecutiveDfsFailures = 0;
     g_typeIDs.clear();
     g_typeSizes.clear();
+    g_moduleRuntimeBase = 0;
+    g_moduleRuntimeSize = 0;
     LOG(INFO) << "[WARDEN_SCAN] State reset for new module";
 }
 
@@ -1625,6 +1631,8 @@ uintptr_t FindModuleInMemory(const uint8_t* moduleBinary, size_t moduleSize)
                                   << " region=0x" << std::setw(8) << regionBase
                                   << " allocBase=0x" << std::setw(8) << allocBase
                                   << " regionSize=0x" << std::setw(6) << mbi.RegionSize;
+                        g_moduleRuntimeBase = allocBase;
+                        g_moduleRuntimeSize = mbi.RegionSize;
                         return allocBase;
                     }
                 }
@@ -1793,6 +1801,16 @@ const char* GetTypeName(uint8_t id)
     case 27: return "MEM_CHECK";
     default: return "UNKNOWN";
     }
+}
+
+uintptr_t GetModuleRuntimeAddress()
+{
+    return g_moduleRuntimeBase;
+}
+
+size_t GetModuleRuntimeSize()
+{
+    return g_moduleRuntimeSize;
 }
 
 } // namespace warden_scan

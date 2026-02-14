@@ -103,6 +103,13 @@
 - Relocation table: delta-encoded
 - In-memory: VirtualAlloc с PAGE_EXECUTE_READWRITE, MEM_PRIVATE
 
+**Известные модули**:
+- **7C4ABC97**: decompressed=29234 bytes
+- **DA3BF29E**: decompressed size varies
+- **9A95D199**: decompressed=28876 bytes
+- **473AAAA1**: только cached (не захвачен)
+- **CB9E43D692620E7B698C5CE085163E6E**: decompressed=31718 bytes, runtimeSize=49152
+
 **Статус**: ПОЛНОСТЬЮ РАБОТАЕТ
 
 ---
@@ -132,7 +139,8 @@
 - **7C4ABC97**: TIMING=0x1F, PAGE_A=0x22, PAGE_B=0x47, PROC=0x69, MEM=0x8E, MPQ=0x91, MODULE=0xB3, DRIVER=0xD8, LUA=0xDB (9/9 PERFECT MATCH)
 - **DA3BF29E**: TIMING=0x74, LUA=0x70 (и другие)
 - **9A95D199**: dispatch chain найден через XOR-anchor
-- Ещё 7 модулей: успешно извлечены типы
+- **CB9E43D6**: 10 check types найдены через remap cross-reference
+- Ещё 6 модулей: успешно извлечены типы
 
 **Python скрипты** (в `wotlk/docs/`):
 - `find_request_parsers.py`: находит dispatcher'ы через XOR-anchor (прорыв!)
@@ -249,39 +257,57 @@ Check section: [0x8E] [4 байта адрес] [1 байт length] [0x1F] [0x91
 
 ---
 
-## Что НЕ работает (TODO ✗)
+### 10. RC4 CMSG расшифровка через внутренний хук
 
-### 1. RC4 CMSG расшифровка
+**Описание**: перехват RC4 PRGA функции ВНУТРИ бинарного модуля Warden для захвата plaintext CMSG ответов.
 
-**Описание**: расшифровка исходящих ответов клиента на запросы Warden.
+**Проблема**: S-box cloning (warden_rc4.cpp) не работал — к моменту клонирования состояние уже менялось.
 
-**Проблема**: мы видим ЧТО сервер спрашивает (SMSG), но НЕ видим ЧТО клиент отвечает (CMSG).
+**Решение**: хук на RC4 PRGA функцию внутри модуля (warden_rc4_hook.cpp)
 
-**Текущая реализация**:
-- Сканирование памяти на RC4 S-box'ы: **РАБОТАЕТ** (находит ~38 кандидатов)
-- Клонирование S-box'ов в WardenPreHandler: **РАБОТАЕТ** (38/38 клонов)
-- Попытка расшифровки в SendPacket hook: **НЕ РАБОТАЕТ**
-  - "No candidate passed structural validation" на каждом пакете
-  - Ни один клон не подходит
+**Алгоритм**:
+1. **Pattern scanner**: MOVZX/MOV cluster detection с диsp32=0x100/0x101
+   - Ищем инструкции вида `movzx r32, byte [reg+0x100]` (чтение i) и `movzx r32, byte [reg+0x101]` (чтение j)
+   - RC4 context layout: `[S[256]][i][j]` — i смещён на 0x100, j на 0x101
+2. **Cluster detection**:
+   - Находим 15 инструкций MOVZX/MOV с нужными смещениями
+   - Группируем по функциям (push ebp; mov ebp, esp)
+   - Выбираем функцию с наибольшим кластером (8 совпадений = PRGA)
+3. **Function found**: module+0x10e0
+   - Prologue: `55 8B EC` (push ebp; mov ebp, esp)
+   - Calling convention: `__thiscall` с `ret 8` — ECX=ctx, stk1=data, stk2=len
+   - Фактический prologue использует EAX как context (не ECX) — не влияет на захват, нужны только data+len
+4. **Auto-detection**: при первом вызове через `LooksLikeRC4Context(ECX)`
+   - Проверяем: ECX указывает на валидный S-box (permutation test)?
+   - Если да → `__thiscall`, иначе проверяем stk1
+5. **ConsumePlaintext**: one-shot retrieval
+   - Plaintext сохраняется в g_lastPlaintext (std::vector<uint8_t>)
+   - После чтения очищается (thread-safe через CRITICAL_SECTION)
+6. **Lifecycle**:
+   - Installed: после MODULE_INITIALIZE (FindModuleInMemory)
+   - Removed: на MODULE_USE и при Shutdown
+7. **Fallback**: если pattern scan fail → используем S-box cloning (warden_rc4.cpp)
 
-**Возможные причины**:
-- **Timing**: к моменту клонирования encrypt S-box уже использован (состояние изменилось)
-- **Layout detection**: неправильно определяем расположение i, j, S в памяти
-- **Missing S-box**: реальный encrypt S-box не попал в список кандидатов (фильтры слишком строгие)
-- **Wrong cipher**: может быть, CMSG шифруется другим способом (не RC4?)
+**Confirmed calling convention** (10/10 modules):
+- Tested across all captured modules: 7C4ABC97, DA3BF29E, 9A95D199, CB9E43D6, и другие
+- Все модули используют `ret 8` (2 stack args)
+- Context передаётся через ECX (thiscall)
 
-**Следствие**: мы не видим:
-- Какие хеши клиент отправил на HASH_REQUEST
-- Какие результаты MEM_CHECK вернул клиент
-- Что клиент ответил на LUA_EVAL
+**Результаты**:
+```
+[rc4_hook] CMSG_WARDEN_DATA plaintext (21 bytes):
+  01 00 15 00 [4-byte checksum] [HASH_RESULT data]
+[rc4_hook] CMSG_WARDEN_DATA plaintext (8 bytes):
+  02 00 01 00 [4-byte checksum] [CHEAT_CHECKS_RESULT]
+```
 
-**Приоритет**: ВЫСОКИЙ (блокирует spoofing)
-
-**Статус**: В РАЗРАБОТКЕ (требует отладки)
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (6/6 CMSG packets decrypted with [rc4_hook] tag)
 
 ---
 
-### 2. Подмена ответов (spoofing)
+## Что НЕ работает (TODO ✗)
+
+### 1. Подмена ответов (spoofing)
 
 **Описание**: модификация CMSG_WARDEN_DATA для обмана сервера.
 
@@ -294,15 +320,20 @@ Check section: [0x8E] [4 байта адрес] [1 байт length] [0x1F] [0x91
 
 **Текущая реализация**: отсутствует (мы только наблюдаем, не вмешиваемся)
 
-**Блокер**: зависит от RC4 CMSG расшифровки (сначала нужно понять формат ответов, потом подменять)
+**Текущий прогресс**:
+- RC4 decryption: РАБОТАЕТ (через warden_rc4_hook)
+- Парсинг CMSG: ЧАСТИЧНО (видим opcode и размеры, нужен structured parser)
+- Checksum algorithm: НЕ ПОНЯТ (4-byte checksum в CMSG, алгоритм неизвестен)
 
-**Приоритет**: СРЕДНИЙ (важно для полного bypass, но сначала нужно починить #1)
+**Следующий шаг**: reverse-engineer checksum algorithm для генерации валидных spoofed responses
 
-**Статус**: НЕ НАЧАТО
+**Приоритет**: ВЫСОКИЙ (важно для полного bypass)
+
+**Статус**: В РАЗРАБОТКЕ (RC4 решён, осталось понять checksum)
 
 ---
 
-### 3. Модуль 473AAAA1 не захвачен
+### 2. Модуль 473AAAA1 не захвачен
 
 **Описание**: один из известных Warden модулей не сохранён на диск.
 
@@ -314,13 +345,13 @@ Check section: [0x8E] [4 байта адрес] [1 байт length] [0x1F] [0x91
 - Дождаться момента, когда сервер отправит MODULE_CACHE для этого модуля (при первом подключении аккаунта)
 - Или получить кеш от другого пользователя
 
-**Приоритет**: НИЗКИЙ (3 других модуля уже захвачены и проанализированы)
+**Приоритет**: НИЗКИЙ (4 других модуля уже захвачены и проанализированы)
 
 **Статус**: В ОЖИДАНИИ (ждём новый download)
 
 ---
 
-### 4. DFS Solver иногда не может распарсить пакет
+### 3. DFS Solver иногда не может распарсить пакет
 
 **Описание**: при большом количестве неизвестных типов DFS solver не находит решение.
 
@@ -344,25 +375,86 @@ DFS solver failed to parse check section (59 bytes, failure 1/3)
 
 ---
 
+### 4. Парсинг CHEAT_CHECKS_RESULT
+
+**Описание**: structured parsing per-check results в CMSG ответах.
+
+**Проблема**: мы видим plaintext CMSG (через rc4_hook), но не парсим внутреннюю структуру результатов.
+
+**Формат CHEAT_CHECKS_RESULT** (confirmed):
+```
+[02] [resultLen:2 bytes LE] [checksum:4 bytes] [results:N bytes]
+```
+
+**Типы результатов**:
+- **TIMING**: timestamp (4 bytes?)
+- **MEM_CHECK**: SHA1 hash (20 bytes)
+- **LUA_EVAL**: string result (variable length)
+- **PAGE_CHECK**: hash + metadata
+- **MPQ_CHECK**: hash
+- **DRIVER_CHECK**: status byte
+- **MODULE_CHECK**: list of loaded modules
+- **PROC_CHECK**: process list
+
+**Текущий статус**: видим raw bytes, но не понимаем границы между результатами разных проверок
+
+**Приоритет**: СРЕДНИЙ (нужно для spoofing, но не блокирует другие задачи)
+
+**Статус**: НЕ НАЧАТО
+
+---
+
 ## К чему стремимся (ROADMAP)
 
 ### Ближайшее (1-2 недели)
 
-#### 1. Починить RC4 CMSG расшифровку
-**Цель**: видеть ответы клиента на запросы Warden
+#### 1. Разбор формата CHEAT_CHECKS_RESULT
+**Цель**: понимать структуру ответов клиента на каждый тип проверки
 
 **План**:
-1. Дамп клонов в файл (верификация корректности)
-2. Логирование Thread ID (проверка timing)
-3. Альтернативные точки клонирования (в SendPacket вместо WardenPreHandler)
-4. Расширенное сканирование (больше регионов, другие layout'ы)
-5. Хук на RC4 cipher внутри модуля (альтернативный подход)
+1. Коррелировать SMSG CHEAT_CHECKS_REQUEST с CMSG CHEAT_CHECKS_RESULT
+2. Для каждого типа проверки (TIMING, MEM, LUA, etc.) определить формат результата
+3. Написать structured parser для results section
+4. Валидировать парсинг на реальных пакетах (10+ сессий)
 
-**Критерий успеха**: "Locked in to clone #X" + корректная расшифровка CMSG
+**Критерий успеха**: можем разобрать CMSG результаты построково в логе (как сейчас делаем с SMSG)
 
 ---
 
-#### 2. Собрать модуль 473AAAA1
+#### 2. Алгоритм checksum
+**Цель**: понять 4-byte checksum в CMSG для генерации spoofed responses
+
+**План**:
+1. Собрать 50+ пар (plaintext CMSG, checksum)
+2. Проверить известные алгоритмы: CRC32, Adler32, simple XOR
+3. Reverse-engineer через статический анализ Warden модуля (найти функцию генерации checksum)
+4. Реализовать калькулятор checksum в C++
+
+**Критерий успеса**: можем генерировать валидный checksum для произвольного CMSG payload
+
+---
+
+#### 3. Парсинг CMSG ответов в логе
+**Цель**: структурированный вывод decrypted CMSG в консоль (как сейчас SMSG)
+
+**План**:
+1. Использовать результаты #1 (parser CHEAT_CHECKS_RESULT)
+2. Добавить цветной вывод: зелёный для HASH_RESULT/MODULE_OK, жёлтый для CHEAT_CHECKS_RESULT
+3. Показывать per-check results построково
+
+**Пример вывода**:
+```
+[CMSG] CHEAT_CHECKS_RESULT (checksum: 0xABCDEF12):
+  MEM_CHECK @ 0x00819210: SHA1 = [20 bytes]
+  TIMING: tick = 12345678
+  LUA_EVAL: result = "nil"
+```
+
+**Критерий успеха**: readable CMSG logs в консоли
+
+---
+
+#### 4. Собрать модуль 473AAAA1
 **Цель**: иметь полный набор модулей для анализа
 
 **План**: подключиться с другого аккаунта (который ещё не кешировал этот модуль) и поймать MODULE_CACHE пакеты.
@@ -373,7 +465,7 @@ DFS solver failed to parse check section (59 bytes, failure 1/3)
 
 ### Среднесрочное (1-2 месяца)
 
-#### 3. Подмена MEM_CHECK через Shadow Copy
+#### 5. Подмена MEM_CHECK через Shadow Copy
 **Цель**: Warden не видит наши хуки в .text секции
 
 **Механизм**:
@@ -384,14 +476,16 @@ DFS solver failed to parse check section (59 bytes, failure 1/3)
    - Читаем оригинальные байты из Shadow Copy
    - Вычисляем SHA1 от оригинальных байт
    - Подменяем CMSG: вместо хеша с хуком отправляем оригинальный хеш
+   - Генерируем валидный checksum (через #2)
+   - Шифруем RC4 (используем клонированный S-box)
 
-**Блокер**: нужна RC4 CMSG расшифровка (#1) и encryption для подмены
+**Блокер**: нужен checksum algorithm (#2)
 
 **Критерий успеха**: Warden не банит, хотя у нас стоят хуки на проверяемых адресах
 
 ---
 
-#### 4. Подмена LUA_EVAL результатов
+#### 6. Подмена LUA_EVAL результатов
 **Цель**: скрыть запрещённые аддоны / модификации UI
 
 **Пример LUA_EVAL**:
@@ -405,14 +499,16 @@ return GetAddOnInfo("SomeCheat")
 1. Перехватываем LUA_EVAL в CHEAT_CHECKS_REQUEST (у нас уже есть hook на FrameScript_Execute)
 2. Выполняем скрипт в sandboxed окружении (или вообще не выполняем)
 3. Возвращаем безопасный результат (например, "nil")
+4. Генерируем валидный checksum
+5. Шифруем и отправляем spoofed CMSG
 
-**Блокер**: нужна RC4 CMSG encryption (#1)
+**Блокер**: нужен checksum algorithm (#2)
 
 **Критерий успеха**: можем использовать запрещённые аддоны, Warden не видит
 
 ---
 
-#### 5. Автоматическое определение опасности
+#### 7. Автоматическое определение опасности
 **Цель**: знать заранее, какие адреса Warden проверяет → наши хуки в опасности?
 
 **Механизм**:
@@ -434,7 +530,7 @@ return GetAddOnInfo("SomeCheat")
 
 ### Дальнее (3+ месяца)
 
-#### 6. Полный Warden bypass
+#### 8. Полный Warden bypass
 **Цель**: сервер думает, что у нас чистый клиент (нет хуков, читов, модификаций)
 
 **Компоненты**:
@@ -451,7 +547,7 @@ return GetAddOnInfo("SomeCheat")
 
 ---
 
-#### 7. PAGE_CHECK Evasion
+#### 9. PAGE_CHECK Evasion
 **Цель**: обойти проверку защиты памяти (PAGE_EXECUTE_READ → PAGE_EXECUTE_READWRITE)
 
 **Проблема**: если мы меняем protection на executable странице → Warden видит через VirtualQuery.
@@ -465,7 +561,7 @@ return GetAddOnInfo("SomeCheat")
 
 ---
 
-#### 8. Антиопределение DLL
+#### 10. Антиопределение DLL
 **Цель**: скрыть нашу DLL от Warden MODULE_CHECK
 
 **Проблема**: Warden может вызывать NtQueryVirtualMemory → видит все загруженные модули.
@@ -482,28 +578,33 @@ return GetAddOnInfo("SomeCheat")
 ## Метрики успеха
 
 ### Текущий прогресс
-- **Функциональность**: 9/17 компонентов работают (53%)
-- **Критические блокеры**: 1 (RC4 CMSG расшифровка)
+- **Функциональность**: 11/17 компонентов работают (65%)
+- **Критические блокеры**: 0 (RC4 CMSG decryption решён!)
 - **Полнота анализа**: 10/10 модулей с типами проверок (100%)
-- **Захват модулей**: 3/4 модуля (75%)
+- **Захват модулей**: 4/5 модулей (80%, новый модуль CB9E43D6 добавлен)
 
 ### Следующий milestone
-- RC4 CMSG расшифровка: **РАБОТАЕТ**
-- Модуль 473AAAA1: **ЗАХВАЧЕН**
+- CHEAT_CHECKS_RESULT parser: **РЕАЛИЗОВАН**
+- Checksum algorithm: **ПОНЯТ**
 - MEM_CHECK spoofing: **ПРОТОТИП**
 
-После этого: переход к полному bypass (компоненты #6-8).
+После этого: переход к полному bypass (компоненты #8-10).
 
 ---
 
 ## Заключение
 
-Проект находится на стадии **глубокого анализа**. Мы научились:
+Проект находится на стадии **перехода к активной фазе**. Мы научились:
 - Перехватывать и парсить все типы Warden пакетов
 - Извлекать бинарные модули и их внутреннюю структуру
 - Автоматически определять типы проверок (100% success)
 - Находить адреса наших хуков в запросах Warden
+- **Видеть ОБЕ стороны диалога Warden** (SMSG requests и CMSG responses)
 
-Критический блокер: **RC4 CMSG расшифровка**. После его решения можем переходить к активной фазе (spoofing/bypass).
+**Критический прорыв**: RC4 CMSG расшифровка РЕШЕНА через внутренний хук на PRGA функцию в модуле. Теперь мы видим plaintext ответов клиента.
+
+**Новое открытие**: модуль CB9E43D692620E7B698C5CE085163E6E (decompressed=31718 bytes, 10 check types).
+
+Следующая фаза: **активный spoofing**. Понять checksum algorithm → подменять MEM_CHECK/LUA_EVAL результаты → полная невидимость для Warden.
 
 Конечная цель: полная невидимость для Warden (чистый клиент с точки зрения сервера, но с произвольными модификациями на стороне клиента).

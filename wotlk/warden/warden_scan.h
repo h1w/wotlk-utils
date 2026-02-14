@@ -45,4 +45,9 @@ bool AllSizesKnown();
 // Get human-readable name for a dynamic type ID (based on solved size)
 const char* GetTypeName(uint8_t id);
 
+// Get cached runtime address/size of the Warden module (set by FindModuleInMemory).
+// Returns 0 if not yet found.
+uintptr_t GetModuleRuntimeAddress();
+size_t    GetModuleRuntimeSize();
+
 } // namespace warden_scan

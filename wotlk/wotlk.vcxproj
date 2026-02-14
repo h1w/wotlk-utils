@@ -141,6 +141,7 @@
     <ClInclude Include="warden\module_dump.h" />
     <ClInclude Include="warden\shadow_copy.h" />
     <ClInclude Include="warden\warden_rc4.h" />
+    <ClInclude Include="warden\warden_rc4_hook.h" />
     <ClInclude Include="warden\warden_scan.h" />
     <ClInclude Include="warden\warden_types.h" />
     <ClInclude Include="logging\glog_custom_formatter.hpp" />
@@ -158,6 +159,7 @@
     <ClCompile Include="warden\module_dump.cpp" />
     <ClCompile Include="warden\shadow_copy.cpp" />
     <ClCompile Include="warden\warden_rc4.cpp" />
+    <ClCompile Include="warden\warden_rc4_hook.cpp" />
     <ClCompile Include="warden\warden_scan.cpp" />
     <ClCompile Include="logging\glog_custom_formatter.cpp" />
     <ClCompile Include="logging\logger_setup.cpp" />

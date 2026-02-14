@@ -9,6 +9,7 @@
 #include "../warden/module_dump.h"
 #include "../warden/warden_scan.h"
 #include "../warden/warden_rc4.h"
+#include "../warden/warden_rc4_hook.h"
 
 #include <cstdint>
 #include <cstring>
@@ -567,6 +568,7 @@ static void __cdecl WardenPostHandlerImpl()
 
         // Module capture → dump to disk
         if (firstByte == WARDEN_SMSG_MODULE_USE) {
+            warden_rc4_hook::Remove();
             warden_scan::Reset();
             warden_rc4::Reset();
             module_dump::Reset();
@@ -588,10 +590,17 @@ static void __cdecl WardenPostHandlerImpl()
                 if (!warden_scan::ScanModuleBinary(moduleData, moduleLen))
                     warden_scan::ScanAndExtractTypeIDs();
                 warden_scan::FindModuleInMemory(moduleData, moduleLen);
+
+                // Try to install internal RC4 hook (primary CMSG decryption)
+                uintptr_t moduleAddr = warden_scan::GetModuleRuntimeAddress();
+                size_t moduleRtSize  = warden_scan::GetModuleRuntimeSize();
+                if (moduleAddr != 0 && moduleRtSize > 0)
+                    warden_rc4_hook::Install(moduleAddr, moduleRtSize);
             } else {
                 warden_scan::ScanAndExtractTypeIDs();
             }
 
+            // S-box cloning as fallback (runs regardless of RC4 hook status)
             warden_rc4::ScanForRC4States();
         }
     } else {
@@ -808,19 +817,35 @@ static void __cdecl SendPacketHandler(uintptr_t savedEsp)
     if (latency > 0)
         oss << " latency=" << latency << "ms";
 
-    // Try to decrypt via RC4 S-box clone
+    // Try to decrypt CMSG payload:
+    // 1. Internal RC4 hook (captures plaintext before encryption — no race condition)
+    // 2. S-box cloning fallback (warden_rc4::DecryptCmsg)
     uint8_t plaintext[kMaxWardenPayload];
-    if (copyLen > 0 && warden_rc4::DecryptCmsg(localBuf, copyLen, plaintext, sizeof(plaintext))) {
-        size_t ptDump = (copyLen < kMaxDecryptedDump) ? copyLen : kMaxDecryptedDump;
+    size_t plainLen = 0;
+    bool decrypted = false;
+
+    if (warden_rc4_hook::IsActive())
+        decrypted = warden_rc4_hook::ConsumePlaintext(plaintext, sizeof(plaintext), &plainLen);
+
+    if (!decrypted && copyLen > 0) {
+        decrypted = warden_rc4::DecryptCmsg(localBuf, copyLen, plaintext, sizeof(plaintext));
+        if (decrypted)
+            plainLen = copyLen;
+    }
+
+    if (decrypted && plainLen > 0) {
+        size_t ptDump = (plainLen < kMaxDecryptedDump) ? plainLen : kMaxDecryptedDump;
         std::string ptHex = BytesToHex(plaintext, ptDump);
         oss << "\n  decrypted=[" << ptHex;
-        if (copyLen > ptDump)
+        if (plainLen > ptDump)
             oss << " ...";
         oss << "]";
 
         uint8_t clientOp = plaintext[0];
         oss << " warden_op=0x" << std::hex << std::setfill('0') << std::setw(2)
             << (int)clientOp << " (" << WardenClientOpcodeToString(clientOp) << ")";
+        if (warden_rc4_hook::IsActive())
+            oss << " [rc4_hook]";
     } else {
         oss << " data=[" << hex;
         if (payloadSize > dumpLen)
@@ -960,6 +985,9 @@ bool Initialize()
 
 void Shutdown()
 {
+    warden_rc4_hook::Remove();
+    warden_rc4_hook::Cleanup();
+
     MH_DisableHook(reinterpret_cast<LPVOID>(kARC4Process));
     MH_DisableHook(reinterpret_cast<LPVOID>(kSendPacket));
     MH_DisableHook(reinterpret_cast<LPVOID>(kWardenHandler));
