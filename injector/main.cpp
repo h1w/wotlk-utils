@@ -127,12 +127,13 @@ bool InjectDLL(DWORD pid, const std::string& dllPath)
 	DWORD dataSize = kHeaderSize + (DWORD)dllPath.size() + 1;
 
 	// x86 shellcode (stdcall):
-	// Вызывает LoadLibraryExA(dllPath, NULL, LOAD_WITH_ALTERED_SEARCH_PATH)
-	// Флаг 0x08 заставляет Windows искать зависимости в папке DLL
+	// Вызывает LoadLibraryExA(dllPath, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)
+	// 0x1100 = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR (0x100) | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS (0x1000)
+	// Явно указывает Windows: искать зависимости в папке DLL + системных директориях
 	unsigned char shellcode[] = {
-		0x8B, 0x5C, 0x24, 0x04,  // mov ebx, [esp+4]
-		0x6A, 0x08,              // push 8 (LOAD_WITH_ALTERED_SEARCH_PATH)
-		0x6A, 0x00,              // push 0 (hFile = NULL)
+		0x8B, 0x5C, 0x24, 0x04,              // mov ebx, [esp+4]
+		0x68, 0x00, 0x11, 0x00, 0x00,        // push 0x1100
+		0x6A, 0x00,                           // push 0 (hFile = NULL)
 		0x8D, 0x43, 0x10,        // lea eax, [ebx+16]
 		0x50,                    // push eax
 		0xFF, 0x13,              // call [ebx] (LoadLibraryExA)

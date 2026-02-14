@@ -17,7 +17,7 @@ namespace logger
 		cfg.console_pattern = "[%L] %T [%F:%N] %M";
 
 		// файл
-		cfg.file_enabled = false;
+		cfg.file_enabled = true;
 		cfg.log_directory = opts.log_directory;
 		cfg.base_filename = opts.base_filename;
 		cfg.file_pattern = "%l%T %P %I %F:%N] %M";

@@ -60,10 +60,12 @@
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
     <Import Project="..\shared\glog-common.props" />
+    <Import Project="..\shared\minhook-static.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
     <Import Project="..\shared\glog-common.props" />
+    <Import Project="..\shared\minhook-static.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -135,13 +137,34 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="hooks\hooks.h" />
+    <ClInclude Include="warden\module_dump.h" />
+    <ClInclude Include="warden\shadow_copy.h" />
+    <ClInclude Include="warden\warden_rc4.h" />
+    <ClInclude Include="warden\warden_scan.h" />
+    <ClInclude Include="warden\warden_types.h" />
     <ClInclude Include="logging\glog_custom_formatter.hpp" />
     <ClInclude Include="logging\logger_setup.hpp" />
+    <ClInclude Include="third_party\miniz.h" />
+    <ClInclude Include="third_party\miniz_common.h" />
+    <ClInclude Include="third_party\miniz_export.h" />
+    <ClInclude Include="third_party\miniz_tdef.h" />
+    <ClInclude Include="third_party\miniz_tinfl.h" />
+    <ClInclude Include="third_party\miniz_zip.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp" />
+    <ClCompile Include="hooks\hooks.cpp" />
+    <ClCompile Include="warden\module_dump.cpp" />
+    <ClCompile Include="warden\shadow_copy.cpp" />
+    <ClCompile Include="warden\warden_rc4.cpp" />
+    <ClCompile Include="warden\warden_scan.cpp" />
     <ClCompile Include="logging\glog_custom_formatter.cpp" />
     <ClCompile Include="logging\logger_setup.cpp" />
+    <ClCompile Include="third_party\miniz.c" />
+    <ClCompile Include="third_party\miniz_tdef.c" />
+    <ClCompile Include="third_party\miniz_tinfl.c" />
+    <ClCompile Include="third_party\miniz_zip.c" />
   </ItemGroup>
   <ItemGroup>
     <None Include="docs\plan.md" />

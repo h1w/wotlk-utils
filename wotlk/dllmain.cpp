@@ -3,6 +3,8 @@
 #include <windows.h>
 
 #include "logging/logger_setup.hpp"
+#include "hooks/hooks.h"
+#include "warden/shadow_copy.h"
 #include <glog/logging.h>
 
 #include <cstdio>
@@ -36,6 +38,18 @@ DWORD WINAPI MainThread(LPVOID lpParam)
 
     LOG(INFO) << "wotlk DLL loaded successfully";
 
+    if (shadow::Initialize()) {
+        LOG(INFO) << "Shadow copy initialized";
+    } else {
+        LOG(WARNING) << "Shadow copy initialization failed (non-fatal)";
+    }
+
+    if (hooks::Initialize()) {
+        LOG(INFO) << "Hooks initialized successfully";
+    } else {
+        LOG(ERROR) << "Failed to initialize hooks";
+    }
+
     // Ожидание сигнала выгрузки
     HANDLE hEvent = CreateEventA(nullptr, TRUE, FALSE, kUnloadEventName);
     if (hEvent)
@@ -46,6 +60,12 @@ DWORD WINAPI MainThread(LPVOID lpParam)
 
     // Cleanup — безопасно, т.к. мы НЕ в DllMain
     LOG(INFO) << "Unloading wotlk DLL...";
+
+    // Даём время завершиться вызовам хуков, которые могут быть in-flight
+    // в основном потоке игры (FrameScript_Execute вызывается из main thread)
+    Sleep(200);
+    hooks::Shutdown();
+    shadow::Shutdown();
     logger::Shutdown();
 
     // Закрыть file handle-ы от freopen_s, иначе консоль не закроется
@@ -68,7 +88,8 @@ BOOL APIENTRY DllMain( HMODULE hModule,
     {
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(hModule);
-        CreateThread(nullptr, 0, MainThread, hModule, 0, nullptr);
+        if (HANDLE hThread = CreateThread(nullptr, 0, MainThread, hModule, 0, nullptr))
+            CloseHandle(hThread);
         break;
     case DLL_PROCESS_DETACH:
         // Cleanup уже сделан в MainThread перед FreeLibraryAndExitThread
