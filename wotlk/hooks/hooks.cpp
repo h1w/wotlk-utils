@@ -232,10 +232,12 @@ static void __cdecl WardenPreHandler(uintptr_t savedEsp)
     g_wardenArc4CallNum = 0;
     g_wardenHandlerStartTick = GetTickCount();
 
-    // Clone all RC4 S-box candidates BEFORE the handler runs
-    // (handler will use the encrypt state to encrypt the CMSG response)
-    if (warden_rc4::HasEncryptState() || warden_rc4::HasCandidates())
-        warden_rc4::CloneAllStates();
+    // Clone all RC4 S-box candidates BEFORE the handler runs (fallback only)
+    // Skip if internal RC4 hook is active (primary method doesn't need cloning)
+    if (!warden_rc4_hook::IsActive()) {
+        if (warden_rc4::HasEncryptState() || warden_rc4::HasCandidates())
+            warden_rc4::CloneAllStates();
+    }
 
     // Restore original bytes at all hook targets so Warden sees clean memory
     if (!g_hooksDisabled) {
@@ -600,8 +602,9 @@ static void __cdecl WardenPostHandlerImpl()
                 warden_scan::ScanAndExtractTypeIDs();
             }
 
-            // S-box cloning as fallback (runs regardless of RC4 hook status)
-            warden_rc4::ScanForRC4States();
+            // S-box cloning as fallback (only if internal RC4 hook failed)
+            if (!warden_rc4_hook::IsActive())
+                warden_rc4::ScanForRC4States();
         }
     } else {
         LOG(WARNING) << "[WARDEN] pkt#" << std::dec << pktNum
