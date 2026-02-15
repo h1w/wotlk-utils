@@ -4,7 +4,7 @@
 
 ---
 
-## Что уже работает (DONE ✓)
+## Что уже работает (DONE)
 
 ### 1. Инжекция и выгрузка DLL
 
@@ -136,37 +136,20 @@
 4. **Blind memory scan** (`ScanAndExtractTypeIDs`): последний resort — все MEM_PRIVATE регионы
 
 **Алгоритм извлечения типов**:
-1. **Anchor search**: ищем паттерн `xor r8, [reg+4]` (опкод `32 [40-7F, rm≠4] 04`)
-   - Это начало dispatcher'а (request parser)
-   - XOR снимает xorByte, получаем реальный type ID
+1. **Anchor search**: ищем паттерн `xor r8, [reg+4]` (опкод `32 [40-7F, rm!=4] 04`)
 2. **movzx detection**: следующая инструкция `movzx eax, al` (расширяет type до 32-bit)
 3. **Dispatch chain walker**: BFS queue-based обход дерева сравнений
    - **BFS с visited set**: max 16 branches, 400-byte scan limit, per-branch accumulator
    - **Union of ALL dispatch chains**: если модуль имеет несколько цепочек, объединяем типы
-   - **cmp** (immediate): `cmp r32, imm8/imm32` → type ID прямо в opcode
-   - **cmp** (register): `cmp r32, r32` → отслеживаем `mov r32, imm32` назад
    - **CMP values always inserted**: для greater/less family jumps (BST pivots are real type IDs)
-   - **sub/dec + je/jne**: `sub r8, imm8` + `jne target` → обрабатываем вычитание, следуем по jne
-4. **Register tracking**: если `cmp eax, ecx` → ищем назад `mov ecx, 0x8E` (пример)
+4. **Register tracking**: если `cmp eax, ecx` — ищем назад `mov ecx, 0x8E`
 5. **Remap table supplement**: после dispatch chain дополняем типами из remap table
-   - `ExtractFromSingleRemap`: для одиночных таблиц — default handler = самое частое значение, остальные = type IDs
-   - Remap cross-reference: пересечение singletons + pairs + triplets для множественных таблиц
-   - Last-resort: chain extraction retried on remap-classified XOR sites
 
 **Результаты**: Протестировано 15 модулей
-- **11/15 FULL**: 9+ типов из dispatch chains (7C4ABC97, DA3BF29E, 9A95D199, 952860B1, 32F1D632, и др.)
+- **11/15 FULL**: 9+ типов из dispatch chains
 - **1/15 PARTIAL**: 5 типов из dispatch chain + дополнение из remap
 - **3/15 REMAP ONLY**: все типы из remap tables (ExtractFromSingleRemap)
 - **In-memory scan**: 10/10 типов с первого раза, 0 unknown types в живых тестах
-
-**Python скрипты** (в `wotlk/docs/scripts/`):
-- `dispatch/comprehensive_analysis_v2.py`: улучшенный анализ (MOVZX window 18 bytes, BFS walker)
-- `dispatch/remap_crossref_test.py`: тестирование remap cross-reference
-- `dispatch/find_request_parsers.py`: находит dispatcher'ы через XOR-anchor (прорыв!)
-- `dispatch/extract_all_types.py`: извлекает типы из всех модулей
-- `dispatch/group_sizes.py`: группирует модули по размерам
-- `verification/investigate_missing.py`: анализирует модули без dispatch chain
-- `module_format/unpack_rle.py`: RLE-распаковщик модулей (Python, проверен на 10/10 дампах)
 
 **Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (15 модулей, 0 unknown types в живых тестах)
 
@@ -187,13 +170,6 @@
 
 Это memcpy-подобная функция, присутствует во всех известных модулях.
 
-**Алгоритм**:
-1. Перебираем MEM_PRIVATE регионы (VirtualQuery)
-2. Сканируем каждый регион на наличие сигнатуры
-3. Вычисляем runtime base address модуля
-
-**Применение**: нужно для XOR-anchored scan (извлечение типов проверок в runtime)
-
 **Статус**: ПОЛНОСТЬЮ РАБОТАЕТ
 
 ---
@@ -202,22 +178,22 @@
 
 **Описание**: PE mapping WoW.exe с диска для получения неизменённых (unhook) байт кода.
 
-**Проблема**: наши хуки модифицируют .text секцию → Warden MEM_CHECK видит изменения.
+**Проблема**: наши хуки модифицируют .text секцию — Warden MEM_CHECK видит изменения.
 
 **Решение**: читаем оригинальные байты из файла на диске (не из памяти процесса).
 
 **Алгоритм**:
-1. Открываем Wow.exe с диска (GetModuleFileNameA)
-2. Создаём file mapping (CreateFileMappingA)
+1. Открываем Wow.exe с диска (GetModuleFileNameW)
+2. Создаём file mapping (CreateFileMappingW)
 3. Маппим в память (MapViewOfFile)
-4. Парсим PE header (IMAGE_DOS_HEADER, IMAGE_NT_HEADERS)
+4. Парсим PE header (IMAGE_DOS_HEADER, IMAGE_NT_HEADERS32)
 5. Находим .text секцию (IMAGE_SECTION_HEADER)
-6. Конвертируем RVA (Relative Virtual Address) в file offset
+6. Конвертируем runtime address в file offset
 7. Читаем байты из mapped view
 
-**Применение**: в будущем для подмены MEM_CHECK результатов (возвращать оригинальные хеши вместо хешей с хуками).
+**Применение**: активно используется спуфером `warden_spoof.cpp` для подмены MEM_CHECK результатов.
 
-**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (но пока не используется для spoofing)
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (используется для spoofing)
 
 ---
 
@@ -225,26 +201,9 @@
 
 **Описание**: автоматическое определение длины данных для каждого типа проверки при первой встрече.
 
-**Проблема**: CHEAT_CHECKS_REQUEST содержит массив проверок разных типов, без разделителей. Мы не знаем, сколько байт занимает каждый тип.
+**Проблема**: CHEAT_CHECKS_REQUEST содержит массив проверок разных типов, без разделителей.
 
 **Решение**: Детерминированный парсер с структурной валидацией (НЕ brute-force).
-
-**Алгоритм**:
-1. Читаем check section (известной общей длины)
-2. Для каждого check:
-   - Читаем xor'd type byte
-   - XOR с xorByte → реальный type ID
-   - Если размер типа известен (в g_typeIDs) → пропускаем N байт
-   - Если неизвестен → вызываем `TryAssignSize`
-3. **TryAssignSize**: пробует кандидаты в порядке [31, 29, 25, 24, 6, 1, 0] (largest-first)
-   - **Address validity**: `IsValidAddress(0x1000 - 0x7FFFFFFF)` для MEM/PAGE/PROC
-   - **String index validation**: `strIdx <= numStrings` (relaxed, was `<`)
-   - **SHA1 seed heuristic**: для MODULE/DRIVER/PAGE/PROC
-   - **Look-ahead**: проверка, что остаток байт достаточен
-   - Размер присваивается **на первом же успехе**, без backtracking
-4. **Strict mode**: типы ДОЛЖНЫ быть извлечены из модуля до парсинга пакета
-   - Если тип не в `g_typeIDs` → парсинг завершается с ошибкой
-   - Никакого динамического обнаружения типов из пакетов — все типы из module scanning
 
 **Фиксированные размеры** (confirmed from AzerothCore source):
 - TIMING=0, MPQ=1, LUA=1, MEM=6, MODULE=24, DRIVER=25, PAGE_A=29, PAGE_B=29, PROC=31
@@ -254,14 +213,6 @@
 - PAGE: seed(4)+SHA1(20)+addr(4)+readLen(1)
 - PROC: seed(4)+SHA1(20)+modIdx(1)+procIdx(1)+addr(4)+readLen(1)
 
-**Пример**:
-```
-Check section: [0x8E] [unk][addr:4][len:1] [0x1F] [0x91] [strIdx]
-               ^MEM   ^data (6 bytes)      ^TIMING  ^MPQ   ^data (1 byte)
-```
-
-При первой встрече типа: TryAssignSize(0x8E) → пробует 31,29,25,24,6 → валидация успешна на 6 → запомнили.
-
 **Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (0 ошибок парсинга при корректном извлечении типов из модуля)
 
 ---
@@ -269,19 +220,6 @@ Check section: [0x8E] [unk][addr:4][len:1] [0x1F] [0x91] [strIdx]
 ### 9. ScanForHookAddresses (детектирование проверок наших хуков)
 
 **Описание**: module-agnostic поиск адресов наших хуков в сырых байтах CHEAT_CHECKS_REQUEST.
-
-**Проблема**: мы не всегда знаем типы проверок (DFS solver может fail на сложных пакетах).
-
-**Решение**: сканируем весь check section на наличие 4-byte Little-Endian адресов из нашего списка хуков.
-
-**Алгоритм**:
-1. Список известных hook addresses (FrameScript_Execute, SendPacket, ARC4::Process, SMSG_WARDEN_DATA)
-2. Сканируем check section:
-   - Для каждого смещения читаем 4 байта как uint32_t (LE)
-   - Проверяем: это один из наших адресов?
-   - Если да → "ALERT! Found hook address 0x00819210 at offset X"
-
-**Применение**: даже если DFS solver fail — мы видим, что Warden проверяет наши хуки.
 
 **Статус**: ПОЛНОСТЬЮ РАБОТАЕТ
 
@@ -291,116 +229,28 @@ Check section: [0x8E] [unk][addr:4][len:1] [0x1F] [0x91] [strIdx]
 
 **Описание**: перехват RC4 PRGA функций ВНУТРИ бинарного модуля Warden для захвата plaintext CMSG ответов.
 
-**Проблема**: S-box cloning (warden_rc4.cpp) не работал — к моменту клонирования состояние уже менялось.
-
 **Решение**: хук на RC4 PRGA функции внутри модуля (warden_rc4_hook.cpp). Некоторые модули используют **разные RC4 функции** для main thread и module thread, поэтому хукаем **все** найденные функции (до 4 одновременно).
 
-**Алгоритм**:
-1. **Pattern scanner** (`ScanRuntimeForAllRC4`): MOVZX/MOV cluster detection с disp32=0x100/0x101
-   - Ищем инструкции вида `movzx r32, byte [reg+0x100]` (чтение i) и `movzx r32, byte [reg+0x101]` (чтение j)
-   - RC4 context layout: `[S[256]][i][j]` — i смещён на 0x100, j на 0x101
-2. **Multi-cluster detection**:
-   - Группируем совпадения в кластеры (120-byte gap между соседними)
-   - Отбираем кластеры с >= 2 совпадениями и обеими ссылками (0x100 + 0x101)
-   - Для каждого кластера находим пролог функции (`FindFunctionPrologue`)
-   - Дедупликация: разные кластеры могут резолвиться в одну функцию
-   - Результат: вектор уникальных адресов RC4 функций (до `kMaxRC4Hooks=4`)
-3. **Multi-hook installation**:
-   - 4 отдельных naked stub'а (`HookedRC4Naked_0` — `HookedRC4Naked_3`), каждый с собственным trampoline
-   - Каждый stub вызывает общий `RC4DetourHandler`, передавая ESP
-   - MH_CreateHook/MH_EnableHook для каждой найденной функции
-4. **Auto-detection calling convention** (6 вариантов, от специфичных к общим):
-   - Convention 1: ECX=ctx, stk1=data, stk2=len (__thiscall)
-   - Convention 3: ECX=ctx, stk1=len, stk2=data (variant)
-   - Convention 4: EDX=ctx, stk1=data, stk2=len
-   - Convention 5: EAX=ctx, stk1=data, stk2=len
-   - Convention 6: EAX=ctx, stk1=len, stk2=data
-   - Convention 2: stk1=ctx, stk2=data, stk3=len (__cdecl, последний — наименее специфичный)
-   - Порядок проверки: регистровые конвенции первыми, stack-based последними (избежание false positive)
-5. **Diagnostics**: первые 8 вызовов логируют ВСЕ регистры (EAX, ECX, EDX, EBX, ESI, EDI) + stk1-3
-6. **ConsumePlaintext**: one-shot retrieval (thread-safe через CRITICAL_SECTION, InterlockedIncrement для callCount)
-7. **Lifecycle**:
-   - Installed: после MODULE_INITIALIZE (FindModuleInMemory) — до 4 хуков одновременно
-   - Removed: на MODULE_USE и при Shutdown — все хуки снимаются
-8. **Fallback**: если ни одна RC4 функция не найдена → используем S-box cloning (warden_rc4.cpp)
+**Multi-hook архитектура**:
+- 4 отдельных naked stub'а (`HookedRC4Naked_0` — `HookedRC4Naked_3`), каждый с собственным trampoline
+- Общий `RC4DetourHandler` для всех слотов
+- Auto-detection calling convention (6 вариантов: ECX/EDX/EAX/stack-based, обычный/swapped порядок)
+- ConsumePlaintext: one-shot retrieval (thread-safe через CRITICAL_SECTION)
 
-**Поддержка модулей с разными RC4 функциями**:
-- Модуль **0BE6B21C**: RC4 использует EAX как context register (не ECX). Module thread может использовать отдельную RC4 функцию
-- Multi-hook решает эту проблему: хукаем ВСЕ RC4 функции в модуле, convention detection определяет формат каждой
+**Lifecycle**:
+- Installed: после MODULE_INITIALIZE (FindModuleInMemory) — до 4 хуков одновременно
+- Removed: на MODULE_USE и при Shutdown — все хуки снимаются
+- Fallback: если ни одна RC4 функция не найдена — используем S-box cloning (warden_rc4.cpp)
 
-**Результаты**:
-```
-[rc4_hook] CMSG_WARDEN_DATA plaintext (21 bytes):
-  01 00 15 00 [4-byte checksum] [HASH_RESULT data]
-[rc4_hook] CMSG_WARDEN_DATA plaintext (8 bytes):
-  02 00 01 00 [4-byte checksum] [CHEAT_CHECKS_RESULT]
-```
-
-**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (6/6 CMSG packets decrypted with [rc4_hook] tag)
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (100% success rate — все CMSG расшифрованы через [rc4_hook])
 
 ---
 
-## Что НЕ работает (TODO ✗)
+### 11. Checksum и request-response корреляция
 
-### 1. Подмена ответов (spoofing)
+**Описание**: алгоритм checksum и structured parsing CMSG CHEAT_CHECKS_RESULT.
 
-**Описание**: модификация CMSG_WARDEN_DATA для обмана сервера.
-
-**Цель**: отправлять "правильные" ответы, даже если у нас стоят хуки/читы.
-
-**Примеры**:
-- **MEM_CHECK**: вернуть хеш оригинальных байт (из Shadow Copy) вместо хеша с хуком
-- **LUA_EVAL**: вернуть безопасный результат вместо реального (например, скрыть запрещённые аддоны)
-- **PAGE_CHECK**: вернуть хеш оригинальной страницы памяти
-
-**Текущая реализация**: отсутствует (мы только наблюдаем, не вмешиваемся)
-
-**Текущий прогресс**:
-- RC4 decryption: РАБОТАЕТ (через warden_rc4_hook)
-- Парсинг CMSG: РАБОТАЕТ (request-response correlation через FIFO queue)
-- Checksum algorithm: РЕШЁН (SHA1 → 5 × uint32_t LE → XOR-fold → uint32_t)
-- Request-response correlation: РАБОТАЕТ (FIFO queue `std::deque<vector<PendingCheck>>`)
-
-**Следующий шаг**: реализовать подмену данных в CMSG (пока только наблюдаем)
-
-**Приоритет**: ВЫСОКИЙ (важно для полного bypass)
-
-**Статус**: В РАЗРАБОТКЕ (наблюдение работает полностью, подмена не начата)
-
----
-
-### 2. Remap cross-reference noise для некоторых модулей
-
-**Описание**: remap cross-reference может производить 30+ noise типов для remap-only модулей.
-
-**Пример**: модуль 46DCC0B8 — remap cross-ref выдал 33 типа, из них только 7 настоящих.
-
-**Причина**: remap table содержит много служебных записей, не все записи — реальные type IDs.
-
-**Решение**: `ExtractFromSingleRemap` + in-memory scan
-- In-memory scan (primary) + dispatch chain дополнение из remap table
-- `ExtractFromSingleRemap`: для одиночных remap tables — default handler (самый частый) отсеивается, остальные = type IDs
-- Детерминированный парсер использует только типы, извлечённые из модуля
-- Живой тест: 10/10 типов, 0 unknown types, все checksums VALID
-
-**Митигация**: noise типы отсеиваются, парсинг строго по типам из модуля
-
-**Приоритет**: НИЗКИЙ (in-memory scan решает проблему)
-
-**Статус**: RESOLVED (не блокирует функциональность)
-
----
-
-### 3. Парсинг CHEAT_CHECKS_RESULT
-
-**Описание**: structured parsing per-check results в CMSG ответах.
-
-**Формат CHEAT_CHECKS_RESULT** (confirmed):
-```
-[02] [resultLen:2 bytes LE] [checksum:4 bytes] [results:N bytes]
-```
-
-**Checksum algorithm**: SHA1(results) → 5 × uint32_t LE → XOR-fold → uint32_t
+**Checksum algorithm**: SHA1(results) -> 5 x uint32_t LE -> XOR-fold -> uint32_t
 - Реализовано в `warden_checksum.cpp` через WinCrypt CALG_SHA1
 - Все наблюдаемые checksums валидируются корректно
 
@@ -410,168 +260,190 @@ Check section: [0x8E] [unk][addr:4][len:1] [0x1F] [0x91] [strIdx]
 - При получении CMSG — pop из очереди для корреляции
 - Queue очищается на MODULE_USE
 
-**Типы результатов** (confirmed по категориям):
+**Per-check result parsing** (confirmed по категориям):
 - **TIMING**: 5 bytes always (flag:1 + ticks:4)
 - **MEM_CHECK**: 1 byte if fail / 1+readLen bytes if OK
 - **LUA_EVAL**: 1 byte if fail / 1+1+strlen bytes if OK
 - **PAGE/PROC/MODULE/DRIVER**: 1 byte (0xE9=pass)
 - **MPQ_CHECK**: 1 byte if fail / 1+20 bytes if OK
 
-**Текущий статус**: корреляция и checksum validation РАБОТАЮТ, per-check result parsing — РАБОТАЕТ
-
-**Приоритет**: СРЕДНИЙ (наблюдение готово, нужно перейти к spoofing)
-
-**Статус**: РАБОТАЕТ (correlation + checksum + per-check parsing)
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ
 
 ---
 
-## К чему стремимся (ROADMAP)
+### 12. MEM_CHECK / PAGE_CHECK Spoofing (Variant A)
 
-### Выполнено (DONE ✓)
+**Описание**: подмена результатов MEM_CHECK и PAGE_CHECK в CMSG plaintext ДО RC4 шифрования, чтобы сервер не видел наши inline hooks.
 
-#### ~~1. Разбор формата CHEAT_CHECKS_RESULT~~
-**Реализовано**: request-response correlation через FIFO queue, per-check result parsing по категориям, checksum validation.
+**Проблема**: MinHook перезаписывает 5+ байт JMP-инструкцией на адресах хуков. Если MEM_CHECK попадает на эти адреса — сервер видит JMP-патч вместо оригинального пролога.
 
-#### ~~2. Алгоритм checksum~~
-**Реализовано**: SHA1(results) → 5 × uint32_t LE → XOR-fold → uint32_t. Реализовано в `warden_checksum.cpp` через WinCrypt CALG_SHA1.
+**Подход**: **Variant A** — модификация plaintext CMSG в RC4 hook, перед шифрованием.
 
-#### ~~3. Парсинг CMSG ответов~~
-**Реализовано**: structured parsing с correlation. Результаты коррелируются с SMSG request'ами, delta и checksum проверяются.
+**Почему Variant A, а не Variant D (disable hooks)**:
+- Variant D был реализован и протестирован первым
+- Variant D провалился: Warden модуль обрабатывает проверки **асинхронно** на отдельном потоке (17-28 секунд задержка после SMSG)
+- Хуки отключались на ~1мс во время SMSG handler'а, но модуль читал память 20+ секунд позже, когда хуки уже обратно включены
+- Variant A не имеет этой проблемы: подменяем данные в момент шифрования, когда ответ уже сформирован
+
+**Реализация** (файлы: `warden_spoof.h`, `warden_spoof.cpp`):
+
+1. **FIFO queue** (`PushPendingChecks` / `PopPendingChecks`): хранит вектора PendingCheck с полями `checkAddr` и `readLen` для MEM/PAGE проверок
+2. **SpoofCmsgIfNeeded()**: вызывается из `RC4DetourHandler` в `warden_rc4_hook.cpp` ДО шифрования
+   - Peek front очереди (не pop — pop делает ParseCheatChecksResult позже)
+   - Ходит по results секции CMSG в порядке checks
+   - Для каждого MEM_CHECK с result=0x00 (success), чей адрес пересекается с нашими хуками:
+     - Читает оригинальные байты из **shadow_copy** (`shadow::GetCleanBytes`)
+     - Заменяет данные в CMSG на чистые байты
+   - Для каждого PAGE_CHECK, чей адрес пересекается с нашими хуками:
+     - Форсирует result byte = 0xE9 (pass)
+   - Если были изменения — пересчитывает checksum (`warden_checksum::BuildChecksum`)
+3. **Write-back**: если spoofer модифицировал буфер — `SafeReadBytes` записывает обратно в буфер модуля перед RC4
+
+**Защищённые адреса** (kHookTargets):
+| Адрес | Функция | Patch size |
+|-------|---------|-----------|
+| 0x00819210 | FrameScript_Execute | 8 bytes |
+| 0x007DA850 | WardenHandler | 8 bytes |
+| 0x00632B50 | SendPacket | 8 bytes |
+| 0x00774EA0 | ARC4::Process | 8 bytes |
+
+**Thread safety**: peek (SpoofCmsgIfNeeded) и pop (ParseCheatChecksResult) происходят последовательно на одном потоке модуля. Main thread пушит только в BACK очереди.
+
+**Тестирование** (2026-02-15):
+- Сборка: OK (Debug|Win32)
+- Живой тест: все checksums VALID, RC4 hook захватывает 100% CMSG, queue depth корректен
+- Спуфер **пока не срабатывал** — ни один MEM_CHECK за сессию не попал на наши адреса
+- Логика result walker'а идентична протестированному ParseCheatChecksResult
+
+**Статус**: РЕАЛИЗОВАНО, ожидает боевого теста (MEM_CHECK на наш адрес)
 
 ---
 
-### Ближайшее (1-2 недели)
+## Что НЕ работает (TODO)
 
-#### 1. Подмена MEM_CHECK через Shadow Copy
-**Цель**: Warden не видит наши хуки в .text секции
+### 1. Подмена LUA_EVAL результатов
 
-**Механизм**:
-1. Перехватываем CHEAT_CHECKS_REQUEST (уже работает)
-2. Парсим MEM_CHECK: адрес + длина (уже работает)
-3. Проверяем: адрес в нашем hook list? (ScanForHookAddresses уже работает)
-4. Если да:
-   - Читаем оригинальные байты из Shadow Copy (уже работает)
-   - Вычисляем SHA1 от оригинальных байт
-   - Подменяем результат в CMSG: оригинальный хеш вместо хеша с хуком
-   - Генерируем валидный checksum (алгоритм уже известен)
-   - Шифруем RC4 (ключ из RC4 hook уже доступен)
-
-**Критерий успеха**: Warden не банит, хотя у нас стоят хуки на проверяемых адресах
-
----
-
-### Среднесрочное (1-2 месяца)
-
-#### 2. Подмена LUA_EVAL результатов
-**Цель**: скрыть запрещённые аддоны / модификации UI
+**Описание**: модификация LUA_EVAL ответов в CMSG для сокрытия запрещённых аддонов.
 
 **Пример LUA_EVAL**:
 ```lua
 return GetAddOnInfo("SomeCheat")
 ```
 
-Если аддон установлен → клиент вернёт его имя → бан.
+Если аддон установлен — клиент вернёт его имя — возможен бан.
 
 **Механизм**:
-1. Перехватываем LUA_EVAL в CHEAT_CHECKS_REQUEST (у нас уже есть hook на FrameScript_Execute)
-2. Выполняем скрипт в sandboxed окружении (или вообще не выполняем)
-3. Возвращаем безопасный результат (например, "nil")
-4. Генерируем валидный checksum
-5. Шифруем и отправляем spoofed CMSG
+1. Перехватываем LUA_EVAL в CHEAT_CHECKS_REQUEST (уже есть hook на FrameScript_Execute)
+2. В SpoofCmsgIfNeeded: находим LUA result в CMSG, подменяем на безопасный результат
+3. Пересчитываем checksum и resultLen
 
-**Критерий успеха**: можем использовать запрещённые аддоны, Warden не видит
+**Приоритет**: СРЕДНИЙ
+
+**Статус**: НЕ НАЧАТО
 
 ---
 
-#### 3. Автоматическое определение опасности
-**Цель**: знать заранее, какие адреса Warden проверяет → наши хуки в опасности?
+### 2. Антиопределение DLL (MODULE_CHECK evasion)
+
+**Описание**: скрыть нашу DLL от Warden MODULE_CHECK.
+
+**Проблема**: Warden может вызывать NtQueryVirtualMemory — видит все загруженные модули.
+
+**Решение** (варианты):
+- Manual mapping: загружаем DLL без LoadLibrary (не попадает в PEB.Ldr lists)
+- Hook на NtQueryVirtualMemory: скрываем наши регионы из результатов
+
+**Приоритет**: НИЗКИЙ (пока MODULE_CHECK не целится на нашу DLL)
+
+**Статус**: НЕ НАЧАТО
+
+---
+
+### 3. HASH_REQUEST spoofing
+
+**Описание**: подмена ответа на HASH_REQUEST (opcode 0x05).
+
+**Текущее состояние**: HASH_REQUEST получается и логируется, HASH_RESULT (21 bytes) отправляется клиентом. Алгоритм вычисления хеша — внутри модуля, пока не реверсирован.
+
+**Приоритет**: НИЗКИЙ (HASH_REQUEST не связан с detection наших хуков напрямую)
+
+**Статус**: НЕ НАЧАТО
+
+---
+
+## Roadmap
+
+### Выполнено
+
+- ~~Разбор формата CHEAT_CHECKS_RESULT~~ — request-response correlation, per-check parsing
+- ~~Алгоритм checksum~~ — SHA1 XOR-fold, `warden_checksum.cpp`
+- ~~Парсинг CMSG ответов~~ — structured parsing с correlation
+- ~~MEM_CHECK spoofing через Shadow Copy~~ — **Variant A** реализован (`warden_spoof.cpp`)
+- ~~PAGE_CHECK spoofing~~ — покрыт Variant A (force 0xE9 pass)
+
+### Ближайшее
+
+#### 1. Боевой тест MEM_CHECK spoofing
+**Цель**: дождаться MEM_CHECK на один из наших 4 hook-адресов и убедиться, что спуфер сработает корректно.
+
+**Критерий успеха**: в логе появится `[SPOOF] MEM_CHECK ... replaced with clean bytes`, checksum VALID, нет дисконнекта.
+
+#### 2. Подмена LUA_EVAL результатов
+**Цель**: скрыть запрещённые аддоны / модификации UI.
+
+**Механизм**: расширить SpoofCmsgIfNeeded для обработки LUA category.
+
+### Среднесрочное (1-2 месяца)
+
+#### 3. Автоматическое определение опасности (dashboard)
+**Цель**: знать заранее, какие адреса Warden проверяет.
 
 **Механизм**:
 1. Собираем статистику проверок (из всех CHEAT_CHECKS_REQUEST)
-2. Если адрес нашего хука появляется в MEM_CHECK → ALERT
+2. Если адрес нашего хука появляется в MEM_CHECK — ALERT
 3. Считаем частоту: сколько раз в час Warden проверяет этот адрес
-4. Выводим dashboard в консоль:
-   ```
-   FrameScript_Execute (0x00819210): checked 5 times in last hour [HIGH RISK]
-   SendPacket (0x00632B50): checked 1 time [MEDIUM RISK]
-   ARC4::Process (0x00774EA0): never checked [LOW RISK]
-   ```
 
-**Применение**: решать, стоит ли ставить хук на конкретный адрес (risk assessment)
-
-**Критерий успеха**: dashboard обновляется в реальном времени
-
----
+#### 4. Антиопределение DLL
+**Цель**: скрыть нашу DLL от Warden MODULE_CHECK.
 
 ### Дальнее (3+ месяца)
 
-#### 4. Полный Warden bypass
-**Цель**: сервер думает, что у нас чистый клиент (нет хуков, читов, модификаций)
+#### 5. Полный Warden bypass
 
-**Компоненты**:
-- MEM_CHECK spoofing: ✓ (через Shadow Copy)
-- LUA_EVAL spoofing: ✓ (безопасные результаты)
-- PAGE_CHECK spoofing: ✗ (ещё не реализовано)
-- HASH_REQUEST spoofing: ✗ (нужен анализ алгоритма)
-- MODULE_CHECK spoofing: ✗ (проверка загруженных DLL — скрыть нашу DLL)
-- DRIVER_CHECK spoofing: ✗ (проверка драйверов — если используем kernel-mode cheat)
-- MPQ_CHECK spoofing: ✗ (проверка целостности game files)
-- PROC_CHECK spoofing: ✗ (проверка списка процессов — скрыть подозрительные)
-
-**Критерий успеха**: можем использовать любые читы, Warden никогда не банит
-
----
-
-#### 5. PAGE_CHECK Evasion
-**Цель**: обойти проверку защиты памяти (PAGE_EXECUTE_READ → PAGE_EXECUTE_READWRITE)
-
-**Проблема**: если мы меняем protection на executable странице → Warden видит через VirtualQuery.
-
-**Решение**:
-- Hook на NtProtectVirtualMemory (kernel32!VirtualProtect → ntdll!NtProtectVirtualMemory)
-- Временно меняем protection для записи, сразу возвращаем обратно
-- Или используем hardware breakpoints (DR0-DR3) вместо inline hooks (не модифицируют память)
-
-**Критерий успеха**: можем писать в .text секцию, PAGE_CHECK не видит изменений
-
----
-
-#### 6. Антиопределение DLL
-**Цель**: скрыть нашу DLL от Warden MODULE_CHECK
-
-**Проблема**: Warden может вызывать NtQueryVirtualMemory → видит все загруженные модули.
-
-**Решение**:
-- Manual mapping: загружаем DLL без LoadLibrary (не попадает в PEB.Ldr lists)
-- Hook на NtQueryVirtualMemory: скрываем наши регионы из результатов
-- Или используем kernel-mode driver (DKOM — Direct Kernel Object Manipulation)
-
-**Критерий успеха**: Warden не видит нашу DLL в списке модулей
+| Компонент | Статус |
+|-----------|--------|
+| MEM_CHECK spoofing | РЕАЛИЗОВАНО (Variant A) |
+| PAGE_CHECK spoofing | РЕАЛИЗОВАНО (Variant A) |
+| LUA_EVAL spoofing | НЕ НАЧАТО |
+| HASH_REQUEST spoofing | НЕ НАЧАТО |
+| MODULE_CHECK evasion | НЕ НАЧАТО |
+| DRIVER_CHECK spoofing | НЕ НАЧАТО |
+| MPQ_CHECK spoofing | НЕ НАЧАТО |
+| PROC_CHECK spoofing | НЕ НАЧАТО |
 
 ---
 
 ## Метрики успеха
 
 ### Текущий прогресс
-- **Функциональность**: 13/14 наблюдательных компонентов работают (93%)
+- **Наблюдение**: 100% — все типы пакетов парсятся, CMSG расшифровывается
+- **Spoofing**: MEM_CHECK + PAGE_CHECK реализован (Variant A), ожидает боевого теста
 - **Критические блокеры**: 0
 - **Полнота анализа**: 15 модулей проанализировано (11/15 FULL dispatch chains, 1/15 partial, 3/15 remap-only)
-- **Захват модулей**: 15+ модулей (0BE6B21C, 952860B1, 32F1D632, 46DCC0B8, CB9E43D6 и др.)
-- **Извлечение типов**: in-memory scan как primary → 0 unknown types в живых тестах
+- **Извлечение типов**: in-memory scan — 0 unknown types в живых тестах
 - **RC4 CMSG**: расшифровка через internal hook — 100% success rate
-- **Checksum**: SHA1 XOR-fold — РЕШЁН, все наблюдаемые checksums VALID
+- **Checksum**: SHA1 XOR-fold — все наблюдаемые checksums VALID
 - **Request-response correlation**: FIFO queue — РАБОТАЕТ
 
 ### Следующий milestone
-- MEM_CHECK spoofing: **ПРОТОТИП** (все компоненты ready: Shadow Copy, checksum, RC4 hook)
-
-После этого: переход к полному bypass (LUA_EVAL spoofing, PAGE_CHECK evasion, DLL hiding).
+- Боевой тест MEM_CHECK spoofing (дождаться MEM_CHECK на hook-адрес)
+- После: LUA_EVAL spoofing
 
 ---
 
 ## Заключение
 
-Проект находится на стадии **готовности к активному spoofing**. Наблюдательная фаза практически завершена:
+Проект находится на стадии **активного spoofing**. Наблюдательная фаза завершена, первый spoofer (MEM_CHECK / PAGE_CHECK) реализован.
 
 **Что мы умеем**:
 - Перехватывать и парсить все типы Warden пакетов (SMSG и CMSG)
@@ -579,22 +451,21 @@ return GetAddOnInfo("SomeCheat")
 - Автоматически определять типы проверок из модуля (in-memory scan + dispatch chain + remap table)
 - Расшифровывать CMSG ответы через internal RC4 hook (multi-hook, до 4 функций)
 - Коррелировать SMSG requests с CMSG responses (FIFO queue)
-- Валидировать checksums (SHA1 XOR-fold)
+- Валидировать и пересчитывать checksums (SHA1 XOR-fold)
+- **Подменять MEM_CHECK / PAGE_CHECK результаты** на оригинальные байты из shadow copy
 - Находить адреса наших хуков в запросах Warden (ScanForHookAddresses)
 - Читать оригинальные байты .text секции (Shadow Copy)
 
-**Критические прорывы**:
-- **In-memory module scanning**: сканирование загруженного (распакованного, релоцированного) модуля — 0 unknown types
-- **RLE unpacking**: для fallback-сканирования packed бинарников — убраны артефакты RLE control words
-- **RC4 CMSG расшифровка** через multi-hook внутреннего PRGA (до 4 RC4 функций одновременно)
-- **Checksum algorithm решён**: SHA1(results) → XOR-fold → uint32_t — все наблюдаемые checksums VALID
-- **g_scanBaseAddr**: корректировка абсолютных адресов в in-memory модулях для remap table access
+**Ключевые компоненты Variant A spoofing**:
+- `warden_spoof.cpp` — core spoofing logic + FIFO queue
+- `warden_rc4_hook.cpp` — вызывает SpoofCmsgIfNeeded перед RC4 encrypt, пишет обратно в буфер модуля
+- `shadow_copy.cpp` — предоставляет оригинальные байты из Wow.exe на диске
+- `warden_checksum.cpp` — пересчёт checksum после модификации
 
 **Живые тесты** (2026-02-15):
 - In-memory scan: 10/10 типов, 0 unknown, все checksums VALID
-- Dispatch chain union + remap supplement: полное покрытие типов
-- Request-response correlation: delta=0, все результаты разобраны по категориям
+- RC4 hook: 100% CMSG captured [rc4_hook]
+- Spoofing: код готов, result walker идентичен доказанному ParseCheatChecksResult
+- Queue correlation: delta=0, все результаты разобраны по категориям
 
-Следующая фаза: **активный spoofing**. Все компоненты для MEM_CHECK spoofing готовы (Shadow Copy, checksum, RC4 hook). Осталось реализовать подмену данных в CMSG.
-
-Конечная цель: полная невидимость для Warden (чистый клиент с точки зрения сервера, но с произвольными модификациями на стороне клиента).
+Следующая фаза: **боевой тест spoofing** + расширение на LUA_EVAL.

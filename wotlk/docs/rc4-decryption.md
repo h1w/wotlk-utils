@@ -624,100 +624,54 @@ bool ConsumePlaintext(uint8_t* out, uint32_t outSize, uint32_t* outLen) {
 - Hook устанавливается без ошибок
 - Trampoline создаётся MinHook на PAGE_EXECUTE_READWRITE страницах
 
-## 9. Следующие шаги
+## 9. Что реализовано после RC4 расшифровки
 
-### 9.1 Parse CHEAT_CHECKS_RESULT per-check results
-**Текущее состояние**: видим raw bytes (01 F8 9E BE 00)
+### 9.1 Per-check result parsing (РЕШЕНО)
+Все форматы результатов разобраны и подтверждены:
+- TIMING: 5 bytes (flag:1 + ticks:4)
+- MEM: 1 byte if fail / 1+readLen if OK
+- PAGE/PROC/MODULE/DRIVER: 1 byte (0xE9=pass)
+- MPQ: 1 byte if fail / 1+20 (SHA1) if OK
+- LUA: 1 byte if fail / 1+1+strlen if OK
 
-**Цель**: понять формат per-check результатов
-- TIMING check: какой формат timestamp?
-- MEM check: как кодируется read result (байты памяти)?
-- PAGE_A/PAGE_B: формат hash?
-- MODULE/DRIVER: формат seed?
-- LUA: формат Lua result?
+Реализовано в `ParseCheatChecksResult()` (hooks.cpp).
 
-**Зависимости**: нужно понять, как server парсит эти результаты (реверс TC WorldSession::HandleWardenDataOpcode)
+### 9.2 Checksum algorithm (РЕШЕНО)
+**Алгоритм**: SHA1(results) -> 5 x uint32_t LE -> XOR-fold -> uint32_t
+Реализовано в `warden_checksum.cpp` через WinCrypt CALG_SHA1.
+Все наблюдаемые checksums валидируются корректно.
 
-### 9.2 Reverse-engineer checksum algorithm
-**Текущее состояние**: видим checksum (90 0D D5 28), но не знаем алгоритм
+### 9.3 CMSG modification — MEM_CHECK / PAGE_CHECK spoofing (РЕШЕНО)
+**Variant A** реализован в `warden_spoof.cpp`:
+1. `SpoofCmsgIfNeeded()` вызывается из RC4 hook ДО шифрования
+2. Peek front FIFO queue (pending checks с адресами)
+3. Walk results — для MEM_CHECK на hook-адрес: заменяет данные на оригинальные из shadow_copy
+4. Для PAGE_CHECK на hook-адрес: форсирует 0xE9 (pass)
+5. Пересчитывает checksum
+6. Записывает обратно в буфер модуля — оригинальный RC4 шифрует spoofed данные
 
-**Гипотезы**:
-- Adler32 (часто используется в WoW для быстрой валидации)
-- CRC32 (стандарт для integrity checks)
-- Кастомный XOR/ADD-based алгоритм
-
-**Как проверить**:
-1. Собрать несколько примеров CMSG с известным payload
-2. Вычислить Adler32/CRC32 от payload → сравнить с checksum
-3. Если не совпадает — дизассемблировать Warden модуль (найти код, который вычисляет checksum)
-
-### 9.3 Implement CMSG modification (spoofing)
-**Цель**: подменять ответы клиента (например, фейковые MEM check результаты)
-
-**Алгоритм**:
-1. В RC4 hook: детектируем payload type (CHEAT_CHECKS_RESULT / HASH_RESULT)
-2. Модифицируем plaintext (например, заменяем MEM check result на чистое значение)
-3. Пересчитываем checksum (используя reverse-engineered алгоритм)
-4. **НЕ** вызываем оригинальный RC4 (не шифруем оригинал)
-5. Шифруем модифицированный plaintext вручную (симулируем RC4_Process)
-6. Записываем зашифрованные данные в CDataStore
-
-**Риски**:
-- Неправильный checksum → сервер отклоняет пакет → disconnect
-- Неправильная длина payload → сервер парсит мусор → disconnect
-- Timing anomaly (слишком быстрый ответ на MEM check) → ban
-
-**Mitigation**:
-- Тестировать на приватных серверах (не retail!)
-- Начать с простых модификаций (HASH_RESULT spoofing)
-- Добавить artificial delay для MEM checks (имитация реального чтения памяти)
+**Variant D** (disable all hooks) был реализован и отброшен — Warden модуль работает асинхронно (17-28 сек задержка на отдельном потоке), отключение хуков на ~1мс в main thread бесполезно.
 
 ### 9.4 Multiple RC4 functions per module (РЕШЕНО)
-**Проблема**: некоторые модули используют разные RC4 функции для main thread и module thread (например, 0BE6B21C — EAX-based convention).
+`ScanRuntimeForAllRC4` находит ВСЕ RC4 функции, `Install` хукает до 4 одновременно.
 
-**Решение** (реализовано): `ScanRuntimeForAllRC4` находит ВСЕ RC4 функции, `Install` хукает до 4 одновременно. Каждый hook slot имеет свой naked stub и trampoline. Convention detection shared — определяется один раз при первом вызове.
-
-### 9.5 Module RC4 offset caching (TODO)
-**Текущее состояние**: hook'и переустанавливаются на каждом MODULE_USE (scan + hook)
-
-**Optimization**:
-- Кешировать найденные RC4 PRGA offsets для известных модулей (по module ID hash)
-- При MODULE_USE: проверить cache → если есть, использовать cached offset
-- Если нет в cache → scanner → добавить в cache
-
-### 9.5 Error handling improvements
-**Текущие gaps**:
-- Если pattern scanner fails → fallback молча включается (нет alert)
-- Если MinHook fails → crash (нет graceful degradation)
-
-**Improvements**:
-1. Логировать все failures с уровнем ERROR
-2. Metrics: track success rate per module (для статистики)
-3. Graceful fallback: если primary fails 3 раза подряд → disable primary, use only fallback
+### 9.5 Что осталось (TODO)
+- **LUA_EVAL spoofing**: подмена LUA results в CMSG
+- **Module RC4 offset caching**: кеширование offsets RC4 функций по hash модуля (optimization)
 
 ---
 
 ## Заключение
 
-**RC4 расшифровка CMSG полностью решена** через internal hook на RC4 PRGA функцию внутри Warden модуля.
+**RC4 расшифровка CMSG полностью решена** через internal hook на RC4 PRGA функцию внутри Warden модуля. **MEM_CHECK / PAGE_CHECK spoofing реализован** через Variant A (модификация plaintext перед RC4 шифрованием).
 
 **Ключевые достижения**:
-- 100% success rate на протестированных модулях
-- Нет timing dependency (в отличие от S-box cloning)
-- Module-agnostic pattern scanner (работает на 10/10 offline modules)
-- Multi-hook: до 4 одновременных хуков (решает проблему модулей с несколькими RC4 функциями)
-- 6 поддерживаемых calling conventions (ECX/EDX/EAX/stack-based)
-- Thread-safe implementation (CRITICAL_SECTION + InterlockedIncrement)
-- Two-tier architecture (primary + fallback)
-
-**Что мы теперь видим**:
-- Полный диалог Warden ↔ клиент (SMSG + CMSG)
-- Хеши, отправляемые на HASH_REQUEST
-- Результаты MEM/PAGE/MODULE/DRIVER/LUA checks
-- Checksum'ы (пока не понимаем алгоритм, но видим значения)
-
-**Следующие задачи**:
-- Parse per-check results (формат TIMING/MEM/PAGE/etc.)
-- Reverse checksum algorithm (Adler32/CRC32/custom?)
-- Implement spoofing (модификация ответов клиента)
-- Cache RC4 offsets для multiple modules (optimization)
+- 100% success rate расшифровки CMSG
+- Module-agnostic pattern scanner (10/10 offline modules, все runtime-тесты)
+- Multi-hook: до 4 одновременных хуков (модули с несколькими RC4 функциями)
+- 6 поддерживаемых calling conventions (auto-detection)
+- Checksum: SHA1 XOR-fold — решён, валидируется, пересчитывается
+- **Spoofing (Variant A)**: MEM_CHECK/PAGE_CHECK результаты подменяются на оригинальные байты из shadow copy
+- Request-response correlation через FIFO queue
+- Thread-safe (CRITICAL_SECTION + InterlockedIncrement)
+- Two-tier architecture (primary RC4 hook + S-box cloning fallback)

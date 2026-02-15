@@ -11,13 +11,13 @@
 #include "../warden/warden_rc4.h"
 #include "../warden/warden_rc4_hook.h"
 #include "../warden/warden_checksum.h"
+#include "../warden/warden_spoof.h"
 
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
-#include <deque>
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
@@ -155,41 +155,10 @@ static int  g_wardenArc4CallNum   = 0;
 static DWORD g_wardenHandlerStartTick = 0;
 
 // ===========================================================================
-// Request-Response correlation: save parsed check info from SMSG request
-// for structured parsing of CMSG result
+// Request-Response correlation: types and queue live in warden_spoof module
 // ===========================================================================
-
-enum class CheckCategory : uint8_t {
-    TIMING, MEM, PAGE, PROC, MODULE, DRIVER, MPQ, LUA
-};
-
-static const char* CheckCategoryToString(CheckCategory cat)
-{
-    switch (cat) {
-    case CheckCategory::TIMING: return "TIMING";
-    case CheckCategory::MEM:    return "MEM";
-    case CheckCategory::PAGE:   return "PAGE";
-    case CheckCategory::PROC:   return "PROC";
-    case CheckCategory::MODULE: return "MODULE";
-    case CheckCategory::DRIVER: return "DRIVER";
-    case CheckCategory::MPQ:    return "MPQ";
-    case CheckCategory::LUA:    return "LUA";
-    default:                    return "UNKNOWN";
-    }
-}
-
-struct PendingCheck {
-    uint8_t       realType;  // module-specific type ID
-    CheckCategory category;  // for result format selection
-    uint8_t       readLen;   // MEM_CHECK: memory read length
-    std::string   context;   // human-readable context (address, string, etc.)
-};
-
-// FIFO queue: each SMSG request pushes one entry, each CMSG response pops front.
-// Warden can send multiple requests before waiting for responses.
-static std::deque<std::vector<PendingCheck>> g_pendingChecksQueue;
-static CRITICAL_SECTION g_checksLock;
-static bool g_checksLockInit = false;
+using warden_spoof::CheckCategory;
+using warden_spoof::PendingCheck;
 
 // Форматирование байтов в hex-строку
 static std::string BytesToHex(const uint8_t* data, size_t len)
@@ -277,7 +246,7 @@ static void __cdecl WardenPreHandler(uintptr_t savedEsp)
     if (warden_rc4::HasEncryptState() || warden_rc4::HasCandidates())
         warden_rc4::CloneAllStates();
 
-    // Restore original bytes at all hook targets so Warden sees clean memory
+    // Temporarily disable FrameScript and Warden hooks to avoid re-entrance
     if (!g_hooksDisabled) {
         g_hooksDisabled = true;
         MH_DisableHook(reinterpret_cast<LPVOID>(kFrameScriptExecute));
@@ -424,11 +393,7 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
 
     if (checkStart >= checkEnd) {
         // Empty request — push empty vector to keep queue in sync
-        if (g_checksLockInit) {
-            EnterCriticalSection(&g_checksLock);
-            g_pendingChecksQueue.push_back({});
-            LeaveCriticalSection(&g_checksLock);
-        }
+        warden_spoof::PushPendingChecks({});
         LOG(INFO) << "[WARDEN]   empty request, queued empty pending checks";
         return;
     }
@@ -523,8 +488,9 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
 
         // Build PendingCheck for response correlation
         PendingCheck pending;
-        pending.realType = realType;
-        pending.readLen  = 0;
+        pending.realType  = realType;
+        pending.readLen   = 0;
+        pending.checkAddr = 0;
 
         // Extract and log fields based on data size
         if (dataSize == 0) {
@@ -553,8 +519,9 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
 
             memCheckCount++;
 
-            pending.category = CheckCategory::MEM;
-            pending.readLen  = readLen;
+            pending.category  = CheckCategory::MEM;
+            pending.readLen   = readLen;
+            pending.checkAddr = addr;
             {
                 std::ostringstream ctx;
                 ctx << "0x" << std::hex << std::setfill('0') << std::setw(8) << addr
@@ -594,7 +561,9 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
             info << " addr=0x" << std::hex << std::setfill('0') << std::setw(8) << addr
                  << " len=" << std::dec << (int)readLen;
 
-            pending.category = CheckCategory::PAGE;
+            pending.category  = CheckCategory::PAGE;
+            pending.checkAddr = addr;
+            pending.readLen   = readLen;
             {
                 std::ostringstream ctx;
                 ctx << "0x" << std::hex << std::setfill('0') << std::setw(8) << addr;
@@ -652,15 +621,12 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
 
     // Always push to queue (even if truncated) to keep SMSG→CMSG correlation in sync.
     // Warden sends multiple requests before waiting for responses.
-    if (g_checksLockInit) {
-        EnterCriticalSection(&g_checksLock);
-        g_pendingChecksQueue.push_back(std::move(tempChecks));
-        size_t queuedCount = g_pendingChecksQueue.back().size();
-        size_t queueDepth  = g_pendingChecksQueue.size();
-        LeaveCriticalSection(&g_checksLock);
+    {
+        size_t queuedCount = tempChecks.size();
+        warden_spoof::PushPendingChecks(std::move(tempChecks));
         LOG(INFO) << "[WARDEN]   queued " << std::dec << queuedCount
                   << " pending checks" << (truncated ? " (PARTIAL)" : "")
-                  << " queue depth=" << queueDepth;
+                  << " queue depth=" << warden_spoof::GetQueueDepth();
     }
 
     // Module-agnostic fallback: scan raw check data for our hook addresses.
@@ -728,11 +694,7 @@ static void __cdecl WardenPostHandlerImpl()
             warden_rc4::Reset();
             module_dump::Reset();
             // Clear pending checks queue (new module = new session)
-            if (g_checksLockInit) {
-                EnterCriticalSection(&g_checksLock);
-                g_pendingChecksQueue.clear();
-                LeaveCriticalSection(&g_checksLock);
-            }
+            warden_spoof::ClearPendingChecks();
             module_dump::OnModuleUse(localBuf, copyLen);
             // Proactively try to load from disk cache
             if (copyLen >= 17)
@@ -782,6 +744,7 @@ static void __cdecl WardenPostHandlerImpl()
                      << " data=[" << hex
                      << (payloadSize > dumpLen ? " ..." : "") << "]";
     }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -792,7 +755,7 @@ static void __cdecl WardenPostHandler()
 {
     WardenPostHandlerImpl();
 
-    // Re-install hooks now that Warden handler has finished
+    // Re-install hooks disabled during PreHandler
     if (g_hooksDisabled) {
         MH_EnableHook(reinterpret_cast<LPVOID>(kFrameScriptExecute));
         MH_EnableHook(reinterpret_cast<LPVOID>(kWardenHandler));
@@ -970,16 +933,7 @@ static void ParseCheatChecksResult(const uint8_t* plaintext, size_t len)
 
     // Pop oldest pending checks from FIFO queue
     std::vector<PendingCheck> checks;
-    bool hadEntry = false;
-    if (g_checksLockInit) {
-        EnterCriticalSection(&g_checksLock);
-        if (!g_pendingChecksQueue.empty()) {
-            checks = std::move(g_pendingChecksQueue.front());
-            g_pendingChecksQueue.pop_front();
-            hadEntry = true;
-        }
-        LeaveCriticalSection(&g_checksLock);
-    }
+    bool hadEntry = warden_spoof::PopPendingChecks(checks);
 
     if (!hadEntry) {
         LOG(INFO) << "[CMSG]   no pending checks in queue (request not parsed?)";
@@ -1007,14 +961,14 @@ static void ParseCheatChecksResult(const uint8_t* plaintext, size_t len)
 
         if (pos >= resultLen) {
             LOG(WARNING) << "[CMSG]   #" << std::dec << (i + 1)
-                         << " " << CheckCategoryToString(chk.category)
+                         << " " << warden_spoof::CheckCategoryToString(chk.category)
                          << ": no data (ran out of result bytes at pos=" << pos << ")";
             break;
         }
 
         std::ostringstream info;
         info << "[CMSG]   #" << std::dec << (i + 1)
-             << " " << CheckCategoryToString(chk.category);
+             << " " << warden_spoof::CheckCategoryToString(chk.category);
 
         if (!chk.context.empty())
             info << " " << chk.context;
@@ -1252,13 +1206,10 @@ static void __cdecl SendPacketHandler(uintptr_t savedEsp)
         // Pop pending checks queue to keep in sync even when we can't decrypt.
         // After CHEAT_CHECKS_REQUEST starts, all CMSGs are CHEAT_CHECKS_RESULT.
         // Encrypted CMSGs still consume the queue entry they correspond to.
-        if (g_checksLockInit) {
-            EnterCriticalSection(&g_checksLock);
-            if (!g_pendingChecksQueue.empty()) {
-                g_pendingChecksQueue.pop_front();
-                oss << " (popped queue, depth=" << g_pendingChecksQueue.size() << ")";
-            }
-            LeaveCriticalSection(&g_checksLock);
+        {
+            std::vector<PendingCheck> discarded;
+            if (warden_spoof::PopPendingChecks(discarded))
+                oss << " (popped queue, depth=" << warden_spoof::GetQueueDepth() << ")";
         }
     }
 
@@ -1291,11 +1242,8 @@ namespace hooks {
 
 bool Initialize()
 {
-    // Initialize critical section for request-response correlation
-    if (!g_checksLockInit) {
-        InitializeCriticalSection(&g_checksLock);
-        g_checksLockInit = true;
-    }
+    // Initialize request-response correlation queue
+    warden_spoof::Initialize();
 
     MH_STATUS status = MH_Initialize();
     if (status != MH_OK) {
@@ -1417,10 +1365,7 @@ void Shutdown()
                   << ", CMSG warden packets: " << g_cmsgWardenCount << ")";
     }
 
-    if (g_checksLockInit) {
-        DeleteCriticalSection(&g_checksLock);
-        g_checksLockInit = false;
-    }
+    warden_spoof::Shutdown();
 }
 
 } // namespace hooks

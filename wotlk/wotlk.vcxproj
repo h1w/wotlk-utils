@@ -144,6 +144,7 @@
     <ClInclude Include="warden\warden_rc4_hook.h" />
     <ClInclude Include="warden\warden_scan.h" />
     <ClInclude Include="warden\warden_checksum.h" />
+    <ClInclude Include="warden\warden_spoof.h" />
     <ClInclude Include="warden\warden_types.h" />
     <ClInclude Include="logging\glog_custom_formatter.hpp" />
     <ClInclude Include="logging\logger_setup.hpp" />
@@ -163,6 +164,7 @@
     <ClCompile Include="warden\warden_rc4.cpp" />
     <ClCompile Include="warden\warden_rc4_hook.cpp" />
     <ClCompile Include="warden\warden_scan.cpp" />
+    <ClCompile Include="warden\warden_spoof.cpp" />
     <ClCompile Include="logging\glog_custom_formatter.cpp" />
     <ClCompile Include="logging\logger_setup.cpp" />
     <ClCompile Include="third_party\miniz.c" />

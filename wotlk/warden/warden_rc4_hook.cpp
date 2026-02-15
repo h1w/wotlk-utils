@@ -1,5 +1,6 @@
 #include "warden_rc4_hook.h"
 #include "warden_types.h"
+#include "warden_spoof.h"
 
 #define NOMINMAX
 #include <Windows.h>
@@ -568,7 +569,15 @@ static void __cdecl RC4DetourHandler(uintptr_t savedEsp)
     if (!ValidateDecryptedCmsg(localBuf, dataLen))
         return;
 
-    // Valid CMSG plaintext captured
+    // Spoof MEM_CHECK/PAGE_CHECK results BEFORE encryption.
+    // Modify localBuf in-place, then write back to original buffer.
+    if (warden_spoof::SpoofCmsgIfNeeded(localBuf, dataLen)) {
+        // Write spoofed plaintext back to the original buffer so RC4
+        // encrypts the modified data (module's buffer is writable).
+        SafeReadBytes(localBuf, reinterpret_cast<void*>(dataPtr), dataLen);
+    }
+
+    // Capture (possibly spoofed) plaintext
     EnterCriticalSection(&g_lock);
     std::memcpy(g_capturedPlaintext, localBuf, dataLen);
     g_capturedLen   = dataLen;

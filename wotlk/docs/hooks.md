@@ -203,11 +203,12 @@ Payload в `CMSG_WARDEN_DATA` **зашифрован RC4** Warden модуля. 
 - `MEM_CHECKS_RESULT` (0x04) — переменная длина
 
 **ВАЖНО:**
-НЕ отключаем этот хук в `WardenPreHandler`! CMSG ответ отправляется **ВО ВРЕМЯ** выполнения SMSG handler'а (синхронно).
+Warden модуль обрабатывает проверки **асинхронно** — на отдельном потоке, через 17-28 секунд после получения SMSG. Отключение хуков во время SMSG handler'а (Variant D) бесполезно. Вместо этого используется **Variant A** — подмена результатов в plaintext CMSG через RC4 hook (`warden_spoof::SpoofCmsgIfNeeded`).
 
 **Что логируем:**
 - Опкод пакета
-- Для CMSG_WARDEN_DATA: расшифрованный payload (если удалось)
+- Для CMSG_WARDEN_DATA: расшифрованный (и возможно spoofed) payload
+- Per-check result parsing с request-response корреляцией
 - Размер и время отправки
 
 ---
@@ -513,6 +514,6 @@ __except(EXCEPTION_EXECUTE_HANDLER) {
 - **CDataStore** — структура для чтения бинарных пакетов (buffer + size + readPos)
 - **Naked functions** — для нестандартных calling conventions
 
-Дополнительно, **warden_rc4_hook.cpp** устанавливает до 4 хуков на RC4 PRGA функции **внутри** Warden модуля (не WoW.exe). Эти хуки захватывают CMSG plaintext ДО шифрования и являются основным методом расшифровки CMSG.
+Дополнительно, **warden_rc4_hook.cpp** устанавливает до 4 хуков на RC4 PRGA функции **внутри** Warden модуля (не WoW.exe). Эти хуки захватывают CMSG plaintext ДО шифрования и являются основным методом расшифровки CMSG. Кроме того, именно в этой точке вызывается **warden_spoof::SpoofCmsgIfNeeded** — подмена MEM_CHECK / PAGE_CHECK результатов на оригинальные байты из shadow copy перед RC4 шифрованием (Variant A spoofing).
 
-Все хуки работают вместе для полного анализа Warden системы античита.
+Все хуки работают вместе для полного анализа и обхода Warden системы античита.

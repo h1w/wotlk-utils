@@ -45,6 +45,15 @@
     <ClInclude Include="warden\warden_types.h">
       <Filter>warden</Filter>
     </ClInclude>
+    <ClInclude Include="warden\warden_rc4_hook.h">
+      <Filter>warden</Filter>
+    </ClInclude>
+    <ClInclude Include="warden\warden_checksum.h">
+      <Filter>warden</Filter>
+    </ClInclude>
+    <ClInclude Include="warden\warden_spoof.h">
+      <Filter>warden</Filter>
+    </ClInclude>
     <ClInclude Include="logging\glog_custom_formatter.hpp">
       <Filter>logging</Filter>
     </ClInclude>
@@ -87,6 +96,15 @@
       <Filter>warden</Filter>
     </ClCompile>
     <ClCompile Include="warden\warden_scan.cpp">
+      <Filter>warden</Filter>
+    </ClCompile>
+    <ClCompile Include="warden\warden_rc4_hook.cpp">
+      <Filter>warden</Filter>
+    </ClCompile>
+    <ClCompile Include="warden\warden_checksum.cpp">
+      <Filter>warden</Filter>
+    </ClCompile>
+    <ClCompile Include="warden\warden_spoof.cpp">
       <Filter>warden</Filter>
     </ClCompile>
     <ClCompile Include="logging\glog_custom_formatter.cpp">
