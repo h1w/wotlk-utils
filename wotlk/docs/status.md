@@ -103,12 +103,16 @@
 - Relocation table: delta-encoded
 - In-memory: VirtualAlloc с PAGE_EXECUTE_READWRITE, MEM_PRIVATE
 
-**Известные модули**:
+**Известные модули** (16+ модулей захвачено и проанализировано):
 - **7C4ABC97**: decompressed=29234 bytes
 - **DA3BF29E**: decompressed size varies
 - **9A95D199**: decompressed=28876 bytes
 - **473AAAA1**: только cached (не захвачен)
 - **CB9E43D692620E7B698C5CE085163E6E**: decompressed=31718 bytes, runtimeSize=49152
+- **0BE6B21C**: decompressed=30132 bytes, runtimeSize=45056 (RC4 uses EAX register)
+- **952860B1**: decompressed=26065 bytes, runtimeSize=40960
+- **32F1D632**: 10 types via union of 2 dispatch chains
+- **46DCC0B811CD2D7BB870A2F714CD2A61**: decompressed=33057 bytes, runtimeSize=49152 (remap-only, dynamic discovery)
 
 **Статус**: ПОЛНОСТЬЮ РАБОТАЕТ
 
@@ -120,35 +124,44 @@
 
 **Проблема**: каждый модуль использует свои ID для типов проверок (не совпадают с TC константами).
 
-**Решение**: XOR-anchored scan + recursive DFS walker
+**Решение**: XOR-anchored scan + BFS queue-based chain walker + dynamic discovery
 
 **Алгоритм**:
 1. **Anchor search**: ищем паттерн `xor r8, [reg+4]` (опкод `32 [40-7F, rm≠4] 04`)
    - Это начало dispatcher'а (request parser)
    - XOR снимает xorByte, получаем реальный type ID
 2. **movzx detection**: следующая инструкция `movzx eax, al` (расширяет type до 32-bit)
-3. **Dispatch chain walker**: рекурсивно обходим дерево сравнений
+3. **Dispatch chain walker**: BFS queue-based обход дерева сравнений
+   - **BFS с visited set**: max 16 branches, 400-byte scan limit, per-branch accumulator
+   - **Union of ALL dispatch chains**: если модуль имеет несколько цепочек, объединяем типы
    - **cmp** (immediate): `cmp r32, imm8/imm32` → type ID прямо в opcode
    - **cmp** (register): `cmp r32, r32` → отслеживаем `mov r32, imm32` назад
+   - **CMP values always inserted**: для greater/less family jumps (BST pivots are real type IDs)
    - **sub/dec + je/jne**: `sub r8, imm8` + `jne target` → обрабатываем вычитание, следуем по jne
-   - **jne following**: важно! На каждом узле с jne следуем по jne target (не только je)
 4. **Register tracking**: если `cmp eax, ecx` → ищем назад `mov ecx, 0x8E` (пример)
-5. **Remap cross-reference**: если dispatch chain не найден — ищем remap table (200+ entries) и извлекаем IDs оттуда
+5. **Remap cross-reference**: если dispatch chain не найден — ищем remap table (200+ entries)
+   - Пересечение singletons + pairs + triplets (groups ≤3 entries)
+   - Last-resort: chain extraction retried on remap-classified XOR sites
+6. **Dynamic type discovery**: если тип появляется в пакете, но не найден статически
+   - `TryAssignSize` определяет размер через структурную валидацию
+   - Добавляет тип в g_typeIDs on-the-fly
+   - Работает даже для remap-only модулей
 
-**Результаты**: 10/10 модулей = 100% success
-- **7C4ABC97**: TIMING=0x1F, PAGE_A=0x22, PAGE_B=0x47, PROC=0x69, MEM=0x8E, MPQ=0x91, MODULE=0xB3, DRIVER=0xD8, LUA=0xDB (9/9 PERFECT MATCH)
-- **DA3BF29E**: TIMING=0x74, LUA=0x70 (и другие)
-- **9A95D199**: dispatch chain найден через XOR-anchor
-- **CB9E43D6**: 10 check types найдены через remap cross-reference
-- Ещё 6 модулей: успешно извлечены типы
+**Результаты**: Протестировано 15+ модулей
+- **11/15 FULL**: 9+ типов из dispatch chains (7C4ABC97, DA3BF29E, 9A95D199, 952860B1, 32F1D632, и др.)
+- **1/15 PARTIAL**: 5 типов из цепочки
+- **3/15 REMAP ONLY**: 0 типов из цепочки, все типы найдены динамически (46DCC0B8 — 7/7 динамически)
+- **100% парсинг пакетов** во всех живых тестах благодаря динамической типизации
 
 **Python скрипты** (в `wotlk/docs/`):
+- `comprehensive_analysis_v2.py`: улучшенный анализ (MOVZX window 18 bytes, BFS walker)
+- `remap_crossref_test.py`: тестирование remap cross-reference
 - `find_request_parsers.py`: находит dispatcher'ы через XOR-anchor (прорыв!)
 - `extract_all_types.py`: извлекает типы из всех модулей
 - `group_sizes.py`: группирует модули по размерам
 - `investigate_missing.py`: анализирует модули без dispatch chain
 
-**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (100% success rate)
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (15+ модулей, 100% парсинг пакетов)
 
 ---
 
@@ -201,38 +214,47 @@
 
 ---
 
-### 8. DFS Solver для размеров типов проверок
+### 8. Детерминированный парсер (определение размеров типов)
 
-**Описание**: автоматическое определение длины данных для каждого типа проверки.
+**Описание**: автоматическое определение длины данных для каждого типа проверки при первой встрече.
 
 **Проблема**: CHEAT_CHECKS_REQUEST содержит массив проверок разных типов, без разделителей. Мы не знаем, сколько байт занимает каждый тип.
 
-**Решение**: Depth-First Search по всем возможным комбинациям размеров.
+**Решение**: Детерминированный парсер с структурной валидацией (НЕ brute-force).
 
 **Алгоритм**:
 1. Читаем check section (известной общей длины)
 2. Для каждого check:
    - Читаем xor'd type byte
    - XOR с xorByte → реальный type ID
-   - Если размер типа известен → пропускаем N байт
-   - Если неизвестен → пробуем ВСЕ варианты (1..остаток_байт)
-3. Рекурсия: DFS пытается дойти до конца буфера
-4. Если удалось → запоминаем маппинг (type → size)
-5. **Self-validation**: если второй раз тот же тип с тем же размером → "validated mapping"
-6. **Self-recovery**: если 3 подряд DFS fail для типа → сбрасываем как false positive
+   - Если размер типа известен (в g_typeIDs) → пропускаем N байт
+   - Если неизвестен → вызываем `TryAssignSize`
+3. **TryAssignSize**: пробует кандидаты в порядке [31, 29, 25, 24, 6, 1, 0] (largest-first)
+   - **Address validity**: `IsValidAddress(0x1000 - 0x7FFFFFFF)` для MEM/PAGE/PROC
+   - **String index validation**: `strIdx <= numStrings` (relaxed, was `<`)
+   - **SHA1 seed heuristic**: для MODULE/DRIVER/PAGE/PROC
+   - **Look-ahead**: проверка, что остаток байт достаточен
+   - Размер присваивается **на первом же успехе**, без backtracking
+4. **Dynamic discovery**: если тип не был в dispatch chain set → добавляется в g_typeIDs
+   - Критично для remap-only модулей (модуль 46DCC0B8: все 7 типов найдены динамически)
+
+**Фиксированные размеры** (confirmed from AzerothCore source):
+- TIMING=0, MPQ=1, LUA=1, MEM=6, MODULE=24, DRIVER=25, PAGE_A=29, PAGE_B=29, PROC=31
+- MEM: unk(1)+addr(4)+readLen(1)
+- MODULE: seed(4)+SHA1(20)
+- DRIVER: seed(4)+SHA1(20)+strIdx(1)
+- PAGE: seed(4)+SHA1(20)+addr(4)+readLen(1)
+- PROC: seed(4)+SHA1(20)+modIdx(1)+procIdx(1)+addr(4)+readLen(1)
 
 **Пример**:
 ```
-Check section: [0x8E] [4 байта адрес] [1 байт length] [0x1F] [0x91] [...]
-               ^MEM   ^data (5 байт)                 ^TIMING  ^MPQ
+Check section: [0x8E] [unk][addr:4][len:1] [0x1F] [0x91] [strIdx]
+               ^MEM   ^data (6 bytes)      ^TIMING  ^MPQ   ^data (1 byte)
 ```
 
-После нескольких пакетов выучиваем:
-- MEM (0x8E) = 5 байт
-- TIMING (0x1F) = 0 байт
-- MPQ (0x91) = ? байт (пока неизвестно)
+При первой встрече типа: TryAssignSize(0x8E) → пробует 31,29,25,24,6 → валидация успешна на 6 → запомнили.
 
-**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (постепенно обучается)
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (100% парсинг пакетов, 0 ошибок во всех живых тестах)
 
 ---
 
@@ -356,27 +378,24 @@ Check section: [0x8E] [4 байта адрес] [1 байт length] [0x1F] [0x91
 
 ---
 
-### 3. DFS Solver иногда не может распарсить пакет
+### 3. Remap cross-reference noise для некоторых модулей
 
-**Описание**: при большом количестве неизвестных типов DFS solver не находит решение.
+**Описание**: remap cross-reference может производить 30+ noise типов для remap-only модулей.
 
-**Пример из лога**:
-```
-DFS solver failed to parse check section (59 bytes, failure 1/3)
-```
+**Пример**: модуль 46DCC0B8 — remap cross-ref выдал 33 типа, из них только 7 настоящих.
 
-**Причина**: комбинаторный взрыв
-- Если 10 неизвестных типов, каждый может быть от 1 до 50 байт → 50^10 вариантов (нереально)
+**Причина**: remap table содержит много служебных записей, не все записи — реальные type IDs.
 
-**Решение**: постепенное обучение
-- После нескольких простых пакетов (1-2 типа) выучиваем размеры
-- Сложные пакеты (10+ типов) парсятся позже, когда большинство типов известны
+**Решение**: динамическая типизация компенсирует
+- Детерминированный парсер игнорирует noise типы (структурная валидация fails)
+- Только реальные типы (с корректными данными) добавляются в g_typeIDs
+- Живой тест модуля 46DCC0B8: 13 пакетов, 0 ошибок, все 7 типов найдены динамически
 
-**Self-recovery**: если 3 подряд DFS fail с теми же типами → сбрасываем как false positive (возможно, ошибка в extraction типов)
+**Митигация**: noise типы тратят немного памяти, но не влияют на парсинг
 
-**Приоритет**: НИЗКИЙ (решается со временем, не критично)
+**Приоритет**: НИЗКИЙ (динамическая типизация обрабатывает все наблюдаемые случаи)
 
-**Статус**: ЧАСТИЧНО РАБОТАЕТ (улучшается по мере сбора данных)
+**Статус**: RESOLVED (не блокирует функциональность)
 
 ---
 
@@ -585,8 +604,9 @@ return GetAddOnInfo("SomeCheat")
 ### Текущий прогресс
 - **Функциональность**: 11/17 компонентов работают (65%)
 - **Критические блокеры**: 0 (RC4 CMSG decryption решён!)
-- **Полнота анализа**: 10/10 модулей с типами проверок (100%)
-- **Захват модулей**: 4/5 модулей (80%, новый модуль CB9E43D6 добавлен)
+- **Полнота анализа**: 15+ модулей проанализировано (11/15 FULL dispatch chains, 3/15 remap-only)
+- **Захват модулей**: 16+/17 модулей (новые: 0BE6B21C, 952860B1, 32F1D632, 46DCC0B8)
+- **Динамическая типизация**: 100% парсинг пакетов во всех живых тестах (0 ошибок)
 
 ### Следующий milestone
 - CHEAT_CHECKS_RESULT parser: **РЕАЛИЗОВАН**
@@ -601,14 +621,22 @@ return GetAddOnInfo("SomeCheat")
 
 Проект находится на стадии **перехода к активной фазе**. Мы научились:
 - Перехватывать и парсить все типы Warden пакетов
-- Извлекать бинарные модули и их внутреннюю структуру
-- Автоматически определять типы проверок (100% success)
+- Извлекать бинарные модули и их внутреннюю структуру (16+ модулей)
+- Автоматически определять типы проверок (BFS chain walker + union of dispatch chains)
+- **Динамически обнаруживать новые типы** при парсинге пакетов (100% success rate)
 - Находить адреса наших хуков в запросах Warden
 - **Видеть ОБЕ стороны диалога Warden** (SMSG requests и CMSG responses)
 
-**Критический прорыв**: RC4 CMSG расшифровка РЕШЕНА через внутренний хук на PRGA функцию в модуле. Теперь мы видим plaintext ответов клиента.
+**Критические прорывы**:
+- **RC4 CMSG расшифровка** через multi-hook внутреннего PRGA (до 4 RC4 функций одновременно)
+- **Детерминированный парсер** вместо DFS: размеры типов определяются структурной валидацией при первой встрече
+- **Динамическая типизация**: модуль 46DCC0B8 (remap-only) — все 7 типов найдены on-the-fly, 13 пакетов парсятся без ошибок
 
-**Новое открытие**: модуль CB9E43D692620E7B698C5CE085163E6E (decompressed=31718 bytes, 10 check types).
+**Живые тесты** (модуль 46DCC0B8, 2026-02-15):
+- 13 CHEAT_CHECKS_REQUEST пакетов: 0 ошибок парсинга
+- Динамически найдены: 0x15=TIMING, 0x71=LUA, 0xC3=DRIVER, 0xCD=PAGE, 0xF6=PAGE
+- PAGE checks с низкими адресами (0x60EC, 0xC6, 0x32B9): корректно обработаны
+- String index validation relaxed (strIdx ≤ numStrings): успешно
 
 Следующая фаза: **активный spoofing**. Понять checksum algorithm → подменять MEM_CHECK/LUA_EVAL результаты → полная невидимость для Warden.
 

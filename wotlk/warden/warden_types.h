@@ -43,29 +43,30 @@ enum WardenClientOpcode : uint8_t {
 // ---------------------------------------------------------------------------
 enum WardenCheckType : uint8_t {
     WARDEN_CHECK_TIMING   = 0x1F,  // 31  — Timing check (0 data bytes)
-    WARDEN_CHECK_PAGE_A   = 0x22,  // 34  — Page check variant A (25 data bytes)
-    WARDEN_CHECK_PAGE_B   = 0x47,  // 71  — Page check variant B (25 data bytes)
-    WARDEN_CHECK_PROC     = 0x69,  // 105 — Process/addr check (25 data bytes)
-    WARDEN_CHECK_MEM      = 0x8E,  // 142 — Memory hash check (27 data bytes)
-    WARDEN_CHECK_MPQ      = 0x91,  // 145 — MPQ/addr check (25 data bytes)
-    WARDEN_CHECK_MODULE   = 0xB3,  // 179 — Module check (1 data byte)
-    WARDEN_CHECK_DRIVER   = 0xD8,  // 216 — Driver check (1 data byte)
-    WARDEN_CHECK_LUA      = 0xDB,  // 219 — Lua/string check (2 data bytes)
+    WARDEN_CHECK_PAGE_A   = 0x22,  // 34  — Page check variant A (29 data bytes: seed(4)+SHA1(20)+addr(4)+readLen(1))
+    WARDEN_CHECK_PAGE_B   = 0x47,  // 71  — Page check variant B (29 data bytes: seed(4)+SHA1(20)+addr(4)+readLen(1))
+    WARDEN_CHECK_PROC     = 0x69,  // 105 — Process/addr check (31 data bytes: seed(4)+SHA1(20)+modIdx(1)+procIdx(1)+addr(4)+readLen(1))
+    WARDEN_CHECK_MEM      = 0x8E,  // 142 — Memory hash check (6 data bytes: unk(1)+addr(4)+readLen(1))
+    WARDEN_CHECK_MPQ      = 0x91,  // 145 — MPQ file check (1 data byte: stringIndex(1))
+    WARDEN_CHECK_MODULE   = 0xB3,  // 179 — Module check (24 data bytes: seed(4)+SHA1(20))
+    WARDEN_CHECK_DRIVER   = 0xD8,  // 216 — Driver check (25 data bytes: seed(4)+SHA1(20)+stringIndex(1))
+    WARDEN_CHECK_LUA      = 0xDB,  // 219 — Lua/string check (1 data byte: stringIndex(1))
 };
 
 // Data bytes consumed from stream per check type (AFTER the type byte)
+// Sizes verified from AzerothCore source and independent RE research.
 inline size_t WardenCheckDataSize(uint8_t type)
 {
     switch (type) {
-    case WARDEN_CHECK_TIMING:  return 0;
+    case WARDEN_CHECK_TIMING:  return 0;   // empty
     case WARDEN_CHECK_PAGE_A:
-    case WARDEN_CHECK_PAGE_B:
-    case WARDEN_CHECK_PROC:
-    case WARDEN_CHECK_MPQ:     return 25;  // 4 addr + 20 SHA1 + 1 len
-    case WARDEN_CHECK_MEM:     return 27;  // 4 addr + 20 SHA1 + 1 + 1 + 1 len
-    case WARDEN_CHECK_MODULE:
-    case WARDEN_CHECK_DRIVER:  return 1;
-    case WARDEN_CHECK_LUA:     return 2;
+    case WARDEN_CHECK_PAGE_B:  return 29;  // seed(4) + SHA1(20) + addr(4) + readLen(1)
+    case WARDEN_CHECK_PROC:    return 31;  // seed(4) + SHA1(20) + modIdx(1) + procIdx(1) + addr(4) + readLen(1)
+    case WARDEN_CHECK_MEM:     return 6;   // unk(1) + addr(4) + readLen(1)
+    case WARDEN_CHECK_MPQ:     return 1;   // stringIndex(1)
+    case WARDEN_CHECK_MODULE:  return 24;  // seed(4) + SHA1(20)
+    case WARDEN_CHECK_DRIVER:  return 25;  // seed(4) + SHA1(20) + stringIndex(1)
+    case WARDEN_CHECK_LUA:     return 1;   // stringIndex(1)
     default:                   return 0;   // unknown — can't skip
     }
 }

@@ -30,11 +30,14 @@ bool HasTypeIDs();
 // Is this byte a valid check type ID (from the current module)?
 bool IsValidType(uint8_t id);
 
-// Try to learn data sizes from a CHEAT_CHECKS_REQUEST packet via DFS.
-// data = full packet, checkStart/checkEnd = check section bounds, xorByte = XOR key.
-// Returns true if all sizes are now known.
-bool LearnSizesFromPacket(const uint8_t* data, size_t checkStart,
-                          size_t checkEnd, uint8_t xorByte);
+// Set the number of strings in the current packet (for string index validation).
+void SetStringCount(size_t count);
+
+// Deterministic size assignment: iterate through check section, assign sizes
+// to new type IDs using structural validation of data bytes.
+// Requires HasTypeIDs() to be true. Returns true if all checks parsed ok.
+bool AssignTypeSizes(const uint8_t* data, size_t checkStart,
+                     size_t checkEnd, uint8_t xorByte);
 
 // Get data size for a check type. Returns -1 if unknown.
 int GetDataSize(uint8_t id);

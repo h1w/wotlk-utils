@@ -30,34 +30,17 @@ constexpr size_t kBinaryMinUniqueTypes = 7;
 // Max region size to scan (64 MB — some Warden allocations are large)
 constexpr size_t kMaxRegionSize = 64 * 1024 * 1024;
 
-// Candidate data sizes for DFS solver (must match real Warden check sizes only)
-constexpr int kCandidateSizes[] = { 0, 1, 2, 25, 27 };
-constexpr size_t kNumCandidates = sizeof(kCandidateSizes) / sizeof(kCandidateSizes[0]);
-
-// Maximum unique type IDs to discover in blind mode (prevents combinatorial explosion)
-// Real Warden has 9 types; allow slight margin but not too much
-constexpr int kMaxUniqueTypes = 10;
-// Maximum types that can be assigned size 0 (TIMING).
-// Real Warden has exactly 1 TIMING type; limit to 2 to prevent
-// the DFS from using size-0 as universal filler for ambiguous parses.
-constexpr int kMaxZeroSizeTypes = 2;
-// Minimum check section size for blind DFS (reduces ambiguity)
-// With structural validation (MEM_CHECK address/readLen checks), even
-// shorter packets can be parsed unambiguously.
-constexpr size_t kMinBlindCheckLen = 50;
-
-// Maximum consecutive DFS failures before discarding scan-based type IDs
-// (detects false positives from memory scan hitting WoW.exe code)
-constexpr int kMaxConsecutiveDfsFailures = 3;
+// Known fixed data sizes for Warden check types (from AzerothCore source, verified by RE).
+// Ordered largest-first for structural validation (more constraints = fewer false matches).
+constexpr int kKnownSizes[] = { 31, 29, 25, 24, 6, 1, 0 };
+constexpr size_t kNumKnownSizes = sizeof(kKnownSizes) / sizeof(kKnownSizes[0]);
 
 // State
 bool g_hasTypeIDs = false;
 bool g_allSizesKnown = false;
-bool g_typeSizesValidated = false; // true after 2nd successful DFS confirms mapping
-bool g_typesFromScan = false; // true if types came from memory/binary scan (not DFS)
-int  g_consecutiveDfsFailures = 0;
 std::unordered_set<uint8_t> g_typeIDs;
 std::unordered_map<uint8_t, int> g_typeSizes; // type -> data size (-1 = unknown)
+size_t g_stringCount = 0; // number of strings in current packet (for index validation)
 
 // Cached module runtime address/size (set by FindModuleInMemory)
 uintptr_t g_moduleRuntimeBase = 0;
@@ -163,9 +146,6 @@ bool ScanBufferForDispatcher(const uint8_t* buf, size_t bufSize,
 
             g_hasTypeIDs = true;
             g_allSizesKnown = false;
-            g_typeSizesValidated = true;
-            g_typesFromScan = true;
-            g_consecutiveDfsFailures = 0;
 
             if (outOffset)
                 *outOffset = cmps[lo].pos;
@@ -263,9 +243,6 @@ bool ScanBufferForSubChain(const uint8_t* buf, size_t bufSize,
 
             g_hasTypeIDs = true;
             g_allSizesKnown = false;
-            g_typeSizesValidated = true;
-            g_typesFromScan = true;
-            g_consecutiveDfsFailures = 0;
 
             if (outOffset)
                 *outOffset = pairs[lo].pos;
@@ -643,29 +620,28 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
                                 queue.push_back({tgt, acc});
                             break; // fall-through is handler
                         } else if (IsGreaterFamily(jk)) {
+                            out.insert(imm);
                             size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                             if (tgt != kNoMatch)
                                 queue.push_back({tgt, 0});
-                            if (IsJeAt(data, dataSize, afterJcc)) {
-                                out.insert(imm);
+                            if (IsJeAt(data, dataSize, afterJcc))
                                 afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
-                            }
                             pos = afterJcc;
                             handled = true;
                         } else if (IsLessOrEq(jk)) {
+                            out.insert(imm);
                             size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                             if (tgt != kNoMatch)
                                 queue.push_back({tgt, 0});
                             pos = afterJcc;
                             handled = true;
                         } else if (IsStrictLess(jk)) {
+                            out.insert(imm);
                             size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                             if (tgt != kNoMatch)
                                 queue.push_back({tgt, 0});
-                            if (IsJeAt(data, dataSize, afterJcc)) {
-                                out.insert(imm);
+                            if (IsJeAt(data, dataSize, afterJcc))
                                 afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
-                            }
                             pos = afterJcc;
                             handled = true;
                         }
@@ -692,26 +668,25 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
                             queue.push_back({tgt, acc});
                         break;
                     } else if (IsGreaterFamily(jk)) {
+                        out.insert(imm);
                         size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                         if (tgt != kNoMatch) queue.push_back({tgt, 0});
-                        if (IsJeAt(data, dataSize, afterJcc)) {
-                            out.insert(imm);
+                        if (IsJeAt(data, dataSize, afterJcc))
                             afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
-                        }
                         pos = afterJcc;
                         handled = true;
                     } else if (IsLessOrEq(jk)) {
+                        out.insert(imm);
                         size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                         if (tgt != kNoMatch) queue.push_back({tgt, 0});
                         pos = afterJcc;
                         handled = true;
                     } else if (IsStrictLess(jk)) {
+                        out.insert(imm);
                         size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                         if (tgt != kNoMatch) queue.push_back({tgt, 0});
-                        if (IsJeAt(data, dataSize, afterJcc)) {
-                            out.insert(imm);
+                        if (IsJeAt(data, dataSize, afterJcc))
                             afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
-                        }
                         pos = afterJcc;
                         handled = true;
                     }
@@ -734,24 +709,23 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
                         if (tgt != kNoMatch) queue.push_back({tgt, acc});
                         break;
                     } else if (IsGreaterFamily(jk)) {
+                        out.insert(imm);
                         size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                         if (tgt != kNoMatch) queue.push_back({tgt, 0});
-                        if (IsJeAt(data, dataSize, afterJcc)) {
-                            out.insert(imm);
+                        if (IsJeAt(data, dataSize, afterJcc))
                             afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
-                        }
                         pos = afterJcc; handled = true;
                     } else if (IsLessOrEq(jk)) {
+                        out.insert(imm);
                         size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                         if (tgt != kNoMatch) queue.push_back({tgt, 0});
                         pos = afterJcc; handled = true;
                     } else if (IsStrictLess(jk)) {
+                        out.insert(imm);
                         size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                         if (tgt != kNoMatch) queue.push_back({tgt, 0});
-                        if (IsJeAt(data, dataSize, afterJcc)) {
-                            out.insert(imm);
+                        if (IsJeAt(data, dataSize, afterJcc))
                             afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
-                        }
                         pos = afterJcc; handled = true;
                     }
                 }
@@ -776,24 +750,23 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
                             if (tgt != kNoMatch) queue.push_back({tgt, acc});
                             break;
                         } else if (IsGreaterFamily(jk)) {
+                            out.insert(imm);
                             size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                             if (tgt != kNoMatch) queue.push_back({tgt, 0});
-                            if (IsJeAt(data, dataSize, afterJcc)) {
-                                out.insert(imm);
+                            if (IsJeAt(data, dataSize, afterJcc))
                                 afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
-                            }
                             pos = afterJcc; handled = true;
                         } else if (IsLessOrEq(jk)) {
+                            out.insert(imm);
                             size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                             if (tgt != kNoMatch) queue.push_back({tgt, 0});
                             pos = afterJcc; handled = true;
                         } else if (IsStrictLess(jk)) {
+                            out.insert(imm);
                             size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                             if (tgt != kNoMatch) queue.push_back({tgt, 0});
-                            if (IsJeAt(data, dataSize, afterJcc)) {
-                                out.insert(imm);
+                            if (IsJeAt(data, dataSize, afterJcc))
                                 afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
-                            }
                             pos = afterJcc; handled = true;
                         }
                     }
@@ -1075,10 +1048,10 @@ bool ExtractFromRemapCrossRef(const uint8_t* data, size_t dataSize,
                 groups[idx].push_back(static_cast<uint8_t>(i));
         }
 
-        // Collect singletons + pairs with shift applied
+        // Collect singletons + pairs + triplets with shift applied
         std::unordered_set<uint8_t> sp;
         for (const auto& entry : groups) {
-            if (entry.second.size() <= 2) {
+            if (entry.second.size() <= 3) {
                 for (uint8_t raw : entry.second)
                     sp.insert(static_cast<uint8_t>((raw + r.shift) & 0xFF));
             }
@@ -1088,7 +1061,7 @@ bool ExtractFromRemapCrossRef(const uint8_t* data, size_t dataSize,
         LOG(INFO) << "[WARDEN_SCAN]   Remap @ 0x" << std::hex << r.remapOff
                   << " (shift=0x" << static_cast<int>(r.shift)
                   << ", max=0x" << static_cast<int>(r.maxType) << "): "
-                  << std::dec << sp.size() << " singleton+pair candidates";
+                  << std::dec << sp.size() << " singleton/pair/triplet candidates";
     }
 
     if (spSets.size() < 2)
@@ -1110,6 +1083,31 @@ bool ExtractFromRemapCrossRef(const uint8_t* data, size_t dataSize,
         return true;
     }
     return false;
+}
+
+// Helper: pre-scan XOR-to-MOVZX window for register loads, then run chain walker.
+void PreScanAndExtractChainTypes(const uint8_t* data, size_t size,
+                                   size_t xorOff, size_t movzxOff, size_t afterMovzx,
+                                   std::unordered_set<uint8_t>& out)
+{
+    uint8_t preRegVals[8] = {};
+    bool preRegValid[8] = {};
+    for (size_t p = xorOff; p + 4 < movzxOff; ) {
+        uint8_t b = data[p];
+        if (b >= 0xB8 && b <= 0xBF && p + 4 < size) {
+            uint8_t reg = b - 0xB8;
+            uint32_t imm;
+            std::memcpy(&imm, data + p + 1, 4);
+            if (imm <= 0xFF) {
+                preRegVals[reg] = static_cast<uint8_t>(imm);
+                preRegValid[reg] = true;
+            }
+            p += 5; continue;
+        }
+        size_t len = X86InsnLen(data + p, movzxOff - p);
+        p += len ? len : 1;
+    }
+    ExtractDispatchChainTypes(data, size, afterMovzx, preRegVals, preRegValid, out);
 }
 
 // Main XOR-anchored scanner: find XOR sites, classify, extract types.
@@ -1142,8 +1140,11 @@ bool ScanForDispatchChainInBinary(const uint8_t* data, size_t size, size_t scanS
               << " XOR+MOVZX site(s) in module binary";
 
     // Step 2: Classify each site and extract types
-    std::unordered_set<uint8_t> bestTypes;
+    // Union all dispatch chain type sets (different chains may cover different types)
+    std::unordered_set<uint8_t> allChainTypes;
     size_t bestXorOff = 0;
+    size_t bestChainSize = 0;
+    int chainCount = 0;
     std::vector<RemapTableInfo> remapInfos;
 
     for (const auto& site : sites) {
@@ -1161,31 +1162,10 @@ bool ScanForDispatchChainInBinary(const uint8_t* data, size_t size, size_t scanS
             continue;
         }
 
-        // Pre-scan instructions from XOR to movzx for register values
-        // (catches patterns like: mov ecx, 0x8E; ...; movzx eax, al; cmp eax, ecx)
-        uint8_t preRegVals[8] = {};
-        bool preRegValid[8] = {};
-        for (size_t p = site.xorOff; p + 4 < site.movzxOff; ) {
-            uint8_t b = data[p];
-            // mov r32, imm32 (B8+r XX XX XX XX)
-            if (b >= 0xB8 && b <= 0xBF && p + 4 < size) {
-                uint8_t reg = b - 0xB8;
-                uint32_t imm;
-                std::memcpy(&imm, data + p + 1, 4);
-                if (imm <= 0xFF) {
-                    preRegVals[reg] = static_cast<uint8_t>(imm);
-                    preRegValid[reg] = true;
-                }
-                p += 5; continue;
-            }
-            size_t len = X86InsnLen(data + p, site.movzxOff - p);
-            p += len ? len : 1;
-        }
-
-        // Extract dispatch chain types with the proven walker
+        // Extract dispatch chain types (pre-scan + walker)
         std::unordered_set<uint8_t> types;
-        ExtractDispatchChainTypes(data, size, site.afterMovzx,
-                                   preRegVals, preRegValid, types);
+        PreScanAndExtractChainTypes(data, size, site.xorOff,
+                                     site.movzxOff, site.afterMovzx, types);
 
         if (!types.empty()) {
             std::vector<uint8_t> sorted(types.begin(), types.end());
@@ -1198,33 +1178,34 @@ bool ScanForDispatchChainInBinary(const uint8_t* data, size_t size, size_t scanS
                 oss << " 0x" << std::hex << std::setfill('0') << std::setw(2)
                     << static_cast<int>(id);
             LOG(INFO) << oss.str();
-        }
 
-        if (types.size() > bestTypes.size()) {
-            bestTypes = types;
-            bestXorOff = site.xorOff;
+            for (uint8_t t : types)
+                allChainTypes.insert(t);
+            chainCount++;
+            if (types.size() > bestChainSize) {
+                bestChainSize = types.size();
+                bestXorOff = site.xorOff;
+            }
         }
     }
 
-    // Step 3: If dispatch chain found, commit results
-    if (bestTypes.size() >= kMinChainTypes) {
-        g_typeIDs = bestTypes;
+    // Step 3: If dispatch chain(s) found, commit union of all types
+    if (allChainTypes.size() >= kMinChainTypes) {
+        g_typeIDs = allChainTypes;
         g_typeSizes.clear();
         for (uint8_t id : g_typeIDs)
             g_typeSizes[id] = -1;
         g_hasTypeIDs = true;
         g_allSizesKnown = false;
-        g_typeSizesValidated = true;
-        g_typesFromScan = true;
-        g_consecutiveDfsFailures = 0;
 
         std::vector<uint8_t> sorted(g_typeIDs.begin(), g_typeIDs.end());
         std::sort(sorted.begin(), sorted.end());
         std::ostringstream oss;
-        oss << "[WARDEN_SCAN] Dispatch chain found at XOR @ 0x"
+        oss << "[WARDEN_SCAN] Union of " << std::dec << chainCount
+            << " dispatch chain(s) (best XOR @ 0x"
             << std::hex << std::uppercase << std::setfill('0')
             << std::setw(4) << bestXorOff
-            << ", " << std::dec << sorted.size() << " check type IDs:";
+            << "): " << std::dec << sorted.size() << " check type IDs:";
         for (uint8_t id : sorted)
             oss << " 0x" << std::hex << std::setfill('0') << std::setw(2)
                 << static_cast<int>(id);
@@ -1244,9 +1225,6 @@ bool ScanForDispatchChainInBinary(const uint8_t* data, size_t size, size_t scanS
                 g_typeSizes[id] = -1;
             g_hasTypeIDs = true;
             g_allSizesKnown = false;
-            g_typeSizesValidated = true;
-            g_typesFromScan = true;
-            g_consecutiveDfsFailures = 0;
 
             std::vector<uint8_t> sorted(g_typeIDs.begin(), g_typeIDs.end());
             std::sort(sorted.begin(), sorted.end());
@@ -1261,9 +1239,48 @@ bool ScanForDispatchChainInBinary(const uint8_t* data, size_t size, size_t scanS
         }
     }
 
-    if (!bestTypes.empty())
-        LOG(INFO) << "[WARDEN_SCAN] Best dispatch chain had only "
-                  << bestTypes.size() << " types (need " << kMinChainTypes << ")";
+    // Step 5: Last resort — try chain extraction on remap-classified sites
+    // Some sites may be misclassified as remap when they're actually dispatch chains
+    if (allChainTypes.size() < kMinChainTypes && !remapInfos.empty()) {
+        LOG(INFO) << "[WARDEN_SCAN] Trying chain extraction on "
+                  << remapInfos.size() << " remap-classified site(s) as last resort...";
+
+        for (const auto& site : sites) {
+            std::unordered_set<uint8_t> types;
+            PreScanAndExtractChainTypes(data, size, site.xorOff,
+                                         site.movzxOff, site.afterMovzx, types);
+            for (uint8_t t : types)
+                allChainTypes.insert(t);
+        }
+
+        if (allChainTypes.size() >= kMinChainTypes) {
+            g_typeIDs = allChainTypes;
+            g_typeSizes.clear();
+            for (uint8_t id : g_typeIDs)
+                g_typeSizes[id] = -1;
+            g_hasTypeIDs = true;
+            g_allSizesKnown = false;
+
+            std::vector<uint8_t> sorted(g_typeIDs.begin(), g_typeIDs.end());
+            std::sort(sorted.begin(), sorted.end());
+            std::ostringstream oss;
+            oss << "[WARDEN_SCAN] Last-resort chain extraction: "
+                << std::dec << sorted.size() << " check type IDs:";
+            for (uint8_t id : sorted)
+                oss << " 0x" << std::hex << std::setfill('0') << std::setw(2)
+                    << static_cast<int>(id);
+            LOG(INFO) << oss.str();
+            return true;
+        }
+    }
+
+    if (!allChainTypes.empty())
+        LOG(INFO) << "[WARDEN_SCAN] Dispatch chain union had only "
+                  << allChainTypes.size() << " types (need " << kMinChainTypes << ")";
+    else
+        LOG(INFO) << "[WARDEN_SCAN] No dispatch chain types found in module binary";
+
+    // Even with 0 types, dynamic discovery (Fix 2) will handle types from packets
     return false;
 }
 
@@ -1316,81 +1333,125 @@ bool ScanRegionForDispatcher(uintptr_t baseAddr, size_t regionSize)
 }
 
 // ---------------------------------------------------------------------------
-// DFS solver: try to parse check section with candidate sizes.
-// Works in two modes:
-//   - Informed: g_hasTypeIDs is true, rejects decoded bytes not in g_typeIDs
-//   - Blind: g_hasTypeIDs is false, accepts any decoded byte as a potential
-//     type (limited to kMaxUniqueTypes to prevent combinatorial explosion)
+// Deterministic size assignment: structural validation for a single check.
+//
+// For a new (unknown-size) type at position pos, try each candidate size
+// in order [31, 29, 25, 24, 6, 1, 0] and validate structural properties
+// of the data bytes. Returns the matching size, or -1 if none fits.
+//
+// Data bytes are plaintext (not XOR'd) — only type bytes use xorByte.
 // ---------------------------------------------------------------------------
-bool DFS(const uint8_t* data, size_t pos, size_t end, uint8_t xorByte,
-         std::unordered_map<uint8_t, int>& sizeMap)
+bool IsValidAddress(uint32_t addr)
 {
-    if (pos == end)
-        return true;
-    if (pos > end)
-        return false;
+    // Lower bound 0x1000: some PAGE checks target low addresses (e.g., 0xA088, 0x74BC)
+    return addr >= 0x1000 && addr <= 0x7FFFFFFF;
+}
 
-    uint8_t decoded = data[pos] ^ xorByte;
+int TryAssignSize(const uint8_t* data, size_t pos, size_t checkEnd,
+                  size_t numStrings, uint8_t xorByte)
+{
+    int bestSize = -1;
+    int matchCount = 0;
 
-    // In informed mode, reject unknown type IDs
-    if (g_hasTypeIDs && g_typeSizesValidated && g_typeIDs.count(decoded) == 0)
-        return false;
-
-    pos++; // consume type byte
-
-    // If we already know this type's size, use it directly
-    auto it = sizeMap.find(decoded);
-    if (it != sizeMap.end() && it->second >= 0) {
-        size_t skip = static_cast<size_t>(it->second);
-        if (pos + skip > end)
-            return false;
-        return DFS(data, pos + skip, end, xorByte, sizeMap);
-    }
-
-    // Limit unique types to prevent combinatorial explosion
-    int uniqueCount = 0;
-    for (const auto& e : sizeMap)
-        if (e.second >= 0) uniqueCount++;
-    if (uniqueCount >= kMaxUniqueTypes)
-        return false;
-
-    // Try each candidate size with backtracking
-    for (size_t c = 0; c < kNumCandidates; ++c) {
-        int candidateSize = kCandidateSizes[c];
-        if (pos + candidateSize > end)
+    for (size_t c = 0; c < kNumKnownSizes; ++c) {
+        int candidateSize = kKnownSizes[c];
+        if (pos + candidateSize > checkEnd)
             continue;
 
-        // Limit size-0 types to prevent ambiguous parses where the DFS
-        // assigns many types as TIMING (size 0) to pad the parse
-        if (candidateSize == 0) {
-            int zeroCount = 0;
-            for (const auto& e : sizeMap)
-                if (e.second == 0) zeroCount++;
-            if (zeroCount >= kMaxZeroSizeTypes)
-                continue;
-        }
+        bool valid = false;
 
-        // Structural validation for MEM_CHECK (size 27):
-        // Data bytes are plaintext (not XORed). The layout is:
-        //   [4B address] [20B SHA1] [1B] [1B] [1B readLen]
-        // Reject if address is outside user-mode range or readLen is too large.
-        if (candidateSize == 27) {
+        switch (candidateSize) {
+        case 31: {
+            // PROC: seed(4)+SHA1(20)+modIdx(1)+procIdx(1)+addr(4)+readLen(1)
+            uint8_t modIdx  = data[pos + 24];
+            uint8_t procIdx = data[pos + 25];
             uint32_t addr;
-            memcpy(&addr, data + pos, 4);
-            uint8_t readLen = data[pos + 26];
-            if (addr < 0x10000 || addr > 0x7FFFFFFF)
-                continue;
-            if (readLen == 0 || readLen > 40)
-                continue;
+            std::memcpy(&addr, data + pos + 26, 4);
+            uint8_t readLen = data[pos + 30];
+            valid = (modIdx <= numStrings && procIdx <= numStrings &&
+                     IsValidAddress(addr) && readLen >= 1 && readLen <= 40);
+            break;
+        }
+        case 29: {
+            // PAGE: seed(4)+SHA1(20)+addr(4)+readLen(1)
+            uint32_t addr;
+            std::memcpy(&addr, data + pos + 24, 4);
+            uint8_t readLen = data[pos + 28];
+            valid = (IsValidAddress(addr) && readLen >= 1 && readLen <= 40);
+            break;
+        }
+        case 25: {
+            // DRIVER: seed(4)+SHA1(20)+stringIndex(1)
+            uint8_t strIdx = data[pos + 24];
+            valid = (strIdx <= numStrings);
+            break;
+        }
+        case 24: {
+            // MODULE: seed(4)+SHA1(20) — no trailing field to validate
+            // Look-ahead: next byte must be a known type or end-of-section
+            size_t nextPos = pos + 24;
+            if (nextPos == checkEnd) {
+                valid = true;
+            } else if (nextPos < checkEnd) {
+                uint8_t nextType = data[nextPos] ^ xorByte;
+                valid = g_typeIDs.count(nextType) > 0;
+            }
+            break;
+        }
+        case 6: {
+            // MEM: unk(1)+addr(4)+readLen(1)
+            // NOTE: unk byte is assumed 0x00 (observed in all captured packets).
+            // If unk != 0x00, this size won't match — safe false negative.
+            uint32_t addr;
+            std::memcpy(&addr, data + pos + 1, 4);
+            uint8_t readLen = data[pos + 5];
+            valid = (data[pos] == 0x00 && IsValidAddress(addr) &&
+                     readLen >= 1 && readLen <= 40);
+            break;
+        }
+        case 1: {
+            // MPQ/LUA: stringIndex(1)
+            uint8_t strIdx = data[pos];
+            valid = (strIdx <= numStrings);
+            break;
+        }
+        case 0: {
+            // TIMING: empty — look-ahead: next byte must be known type or end
+            if (pos == checkEnd) {
+                valid = true;
+            } else {
+                uint8_t nextType = data[pos] ^ xorByte;
+                valid = g_typeIDs.count(nextType) > 0;
+            }
+            break;
+        }
         }
 
-        sizeMap[decoded] = candidateSize;
-        if (DFS(data, pos + candidateSize, end, xorByte, sizeMap))
-            return true;
-        sizeMap[decoded] = -1; // backtrack
+        if (valid) {
+            bestSize = candidateSize;
+            matchCount++;
+            // First valid match wins (largest-first ordering provides best discrimination)
+            break;
+        }
     }
 
-    return false;
+    // If ambiguous (shouldn't happen with largest-first), use look-ahead as tiebreaker
+    if (matchCount > 1 && bestSize >= 0) {
+        for (size_t c = 0; c < kNumKnownSizes; ++c) {
+            int sz = kKnownSizes[c];
+            if (pos + sz > checkEnd) continue;
+            size_t nextPos = pos + sz;
+            if (nextPos == checkEnd)
+                return sz;
+            if (nextPos < checkEnd) {
+                uint8_t nextType = data[nextPos] ^ xorByte;
+                if (g_typeIDs.count(nextType) > 0)
+                    return sz;
+            }
+        }
+    }
+
+    return bestSize;
 }
 
 } // anonymous namespace
@@ -1403,9 +1464,7 @@ void Reset()
 {
     g_hasTypeIDs = false;
     g_allSizesKnown = false;
-    g_typeSizesValidated = false;
-    g_typesFromScan = false;
-    g_consecutiveDfsFailures = 0;
+    g_stringCount = 0;
     g_typeIDs.clear();
     g_typeSizes.clear();
     g_moduleRuntimeBase = 0;
@@ -1657,100 +1716,80 @@ bool IsValidType(uint8_t id)
     return g_typeIDs.count(id) > 0;
 }
 
-bool LearnSizesFromPacket(const uint8_t* data, size_t checkStart,
-                          size_t checkEnd, uint8_t xorByte)
+void SetStringCount(size_t count)
 {
-    if (g_allSizesKnown && g_typeSizesValidated)
+    g_stringCount = count;
+}
+
+bool AssignTypeSizes(const uint8_t* data, size_t checkStart,
+                     size_t checkEnd, uint8_t xorByte)
+{
+    if (g_allSizesKnown)
         return true;
 
     if (checkStart >= checkEnd)
-        return false;
+        return true; // empty check section is valid
 
-    size_t checkLen = checkEnd - checkStart;
-    bool blind = !g_hasTypeIDs;
+    if (!g_hasTypeIDs) {
+        // No static scanning found types — enable dynamic-only discovery mode
+        LOG(WARNING) << "[WARDEN_SCAN] No pre-populated type IDs — using dynamic discovery";
+        g_hasTypeIDs = true;
+        g_allSizesKnown = false;
+    }
 
-    // In blind mode, require sufficient data to reduce parse ambiguity
-    if (blind && checkLen < kMinBlindCheckLen)
-        return false;
+    bool newAssignments = false;
+    size_t pos = checkStart;
 
-    // Work on a copy so we don't corrupt state on DFS failure
-    std::unordered_map<uint8_t, int> workingMap = g_typeSizes;
+    while (pos < checkEnd) {
+        uint8_t realType = data[pos] ^ xorByte;
+        pos++; // consume type byte
 
-    if (!DFS(data, checkStart, checkEnd, xorByte, workingMap)) {
-        if (g_hasTypeIDs && !g_typeSizesValidated) {
-            // Tentative mapping failed — discard and retry blind
-            LOG(WARNING) << "[WARDEN_SCAN] Tentative mapping failed validation, resetting";
-            g_typeIDs.clear();
-            g_typeSizes.clear();
-            g_hasTypeIDs = false;
-            if (checkLen < kMinBlindCheckLen)
-                return false;
-            workingMap.clear();
-            if (!DFS(data, checkStart, checkEnd, xorByte, workingMap))
-                return false;
-            blind = true; // fall through to discovery logic
-        } else if (g_hasTypeIDs) {
-            g_consecutiveDfsFailures++;
-            if (g_typesFromScan && g_consecutiveDfsFailures >= kMaxConsecutiveDfsFailures) {
-                // Scan-based types are likely a false positive (e.g. from WoW.exe code)
-                LOG(WARNING) << "[WARDEN_SCAN] " << g_consecutiveDfsFailures
-                             << " consecutive DFS failures with scan-based types — "
-                             << "discarding as likely false positive";
-                g_typeIDs.clear();
-                g_typeSizes.clear();
-                g_hasTypeIDs = false;
-                g_allSizesKnown = false;
-                g_typeSizesValidated = false;
-                g_typesFromScan = false;
-                g_consecutiveDfsFailures = 0;
-                // Retry blind if packet is large enough
-                if (checkLen >= kMinBlindCheckLen) {
-                    workingMap.clear();
-                    if (!DFS(data, checkStart, checkEnd, xorByte, workingMap))
-                        return false;
-                    blind = true;
-                } else {
-                    return false;
-                }
-            } else {
-                LOG(WARNING) << "[WARDEN_SCAN] DFS solver failed to parse check section ("
-                             << std::dec << checkLen << " bytes, failure "
-                             << g_consecutiveDfsFailures << "/"
-                             << kMaxConsecutiveDfsFailures << ")";
-                return false;
-            }
-        } else {
+        // Dynamic type discovery: if type not in dispatch chain set, try to
+        // assign a size via structural validation and add it dynamically
+        bool dynamicDiscovery = !g_typeIDs.count(realType);
+
+        auto it = g_typeSizes.find(realType);
+        if (!dynamicDiscovery && it != g_typeSizes.end() && it->second >= 0) {
+            // Already assigned — skip data bytes
+            pos += static_cast<size_t>(it->second);
+            continue;
+        }
+
+        // New or dynamically discovered type — structural validation
+        int assignedSize = TryAssignSize(data, pos, checkEnd, g_stringCount, xorByte);
+        if (assignedSize < 0) {
+            LOG(WARNING) << "[WARDEN_SCAN] Failed to assign size for "
+                         << (dynamicDiscovery ? "DYNAMIC" : "known")
+                         << " type 0x" << std::hex << std::setfill('0') << std::setw(2)
+                         << (int)realType << " at offset " << std::dec << (pos - 1);
             return false;
         }
-    }
 
-    // DFS succeeded — reset failure counter and commit discovered types/sizes
-    g_consecutiveDfsFailures = 0;
-
-    // DFS succeeded — commit discovered types and sizes
-    bool newTypes = false;
-    for (const auto& entry : workingMap) {
-        if (entry.second < 0)
-            continue;
-        if (g_typeIDs.count(entry.first) == 0) {
-            g_typeIDs.insert(entry.first);
-            g_typeSizes[entry.first] = entry.second;
-            newTypes = true;
-        } else if (g_typeSizes[entry.first] < 0) {
-            g_typeSizes[entry.first] = entry.second;
-            newTypes = true;
+        if (dynamicDiscovery) {
+            g_typeIDs.insert(realType);
+            LOG(WARNING) << "[WARDEN_SCAN] Dynamically discovered type 0x"
+                         << std::hex << std::setfill('0') << std::setw(2)
+                         << (int)realType << " = " << std::dec << assignedSize
+                         << " bytes (not in dispatch chain set)";
         }
+
+        g_typeSizes[realType] = assignedSize;
+        newAssignments = true;
+        LOG(INFO) << "[WARDEN_SCAN] Assigned type 0x" << std::hex << std::setfill('0')
+                  << std::setw(2) << (int)realType << " = "
+                  << std::dec << assignedSize << " bytes ("
+                  << GetTypeName(realType) << ")";
+
+        pos += static_cast<size_t>(assignedSize);
     }
 
-    if (!g_hasTypeIDs && !g_typeIDs.empty()) {
-        g_hasTypeIDs = true;
-        // First successful DFS = tentative; mark validated on second success
-    } else if (g_hasTypeIDs && !g_typeSizesValidated) {
-        g_typeSizesValidated = true;
-        LOG(INFO) << "[WARDEN_SCAN] Type mapping validated by second packet";
+    if (pos != checkEnd) {
+        LOG(WARNING) << "[WARDEN_SCAN] Parse overshot check section end (pos="
+                     << pos << ", end=" << checkEnd << ")";
+        return false;
     }
 
-    if (newTypes) {
+    if (newAssignments) {
         std::vector<uint8_t> sorted(g_typeIDs.begin(), g_typeIDs.end());
         std::sort(sorted.begin(), sorted.end());
         std::ostringstream oss;
@@ -1774,7 +1813,7 @@ bool LearnSizesFromPacket(const uint8_t* data, size_t checkStart,
     if (g_allSizesKnown)
         LOG(INFO) << "[WARDEN_SCAN] All check type sizes are now known";
 
-    return g_allSizesKnown;
+    return true;
 }
 
 int GetDataSize(uint8_t id)
@@ -1795,10 +1834,12 @@ const char* GetTypeName(uint8_t id)
     int size = GetDataSize(id);
     switch (size) {
     case 0:  return "TIMING";
-    case 1:  return "MODULE/DRIVER";
-    case 2:  return "LUA";
-    case 25: return "PAGE/PROC/MPQ";
-    case 27: return "MEM_CHECK";
+    case 1:  return "MPQ/LUA";
+    case 6:  return "MEM_CHECK";
+    case 24: return "MODULE";
+    case 25: return "DRIVER";
+    case 29: return "PAGE";
+    case 31: return "PROC";
     default: return "UNKNOWN";
     }
 }

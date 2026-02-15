@@ -409,10 +409,13 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
             warden_scan::ScanAndExtractTypeIDs(); // fallback to memory scan
     }
 
-    // Always call LearnSizesFromPacket — the function handles early return
-    // internally when both allSizesKnown AND typeSizesValidated are true.
-    // We must not skip it before validation, or wrong tentative mappings persist.
-    warden_scan::LearnSizesFromPacket(data, checkStart, checkEnd, xorByte);
+    // Deterministic size assignment: tell the scanner how many strings
+    // we have, then assign sizes to any new type IDs in this packet.
+    warden_scan::SetStringCount(strings.size());
+    if (!warden_scan::AssignTypeSizes(data, checkStart, checkEnd, xorByte)) {
+        LOG(WARNING) << "[WARDEN]   AssignTypeSizes failed — structured parse "
+                     << "will stop at first unknown type";
+    }
 
     bool useDynamic = warden_scan::HasTypeIDs();
 
@@ -469,12 +472,12 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
             break;
         }
 
-        // Extract address based on data size
-        if (dataSize == 27) {
-            // MEM_CHECK: [4B addr] [20B SHA1] [1B] [1B] [1B len]
+        // Extract and log fields based on data size
+        if (dataSize == 6) {
+            // MEM_CHECK: unk(1)+addr(4)+readLen(1)
             uint32_t addr;
-            memcpy(&addr, data + pos, 4);
-            uint8_t readLen = data[pos + 26];
+            memcpy(&addr, data + pos + 1, 4);
+            uint8_t readLen = data[pos + 5];
             info << " addr=0x" << std::hex << std::setfill('0') << std::setw(8) << addr
                  << " len=" << std::dec << (int)readLen;
 
@@ -491,11 +494,42 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
                      << std::hex << kWardenHandler << " ***";
 
             memCheckCount++;
-        } else if (dataSize == 25) {
-            // PAGE/PROC/MPQ: [4B addr] [20B SHA1] [1B len]
+        } else if (dataSize == 31) {
+            // PROC: seed(4)+SHA1(20)+modIdx(1)+procIdx(1)+addr(4)+readLen(1)
+            uint8_t modIdx  = data[pos + 24];
+            uint8_t procIdx = data[pos + 25];
             uint32_t addr;
-            memcpy(&addr, data + pos, 4);
-            info << " addr=0x" << std::hex << std::setfill('0') << std::setw(8) << addr;
+            memcpy(&addr, data + pos + 26, 4);
+            uint8_t readLen = data[pos + 30];
+            info << " modIdx=" << (int)modIdx << " procIdx=" << (int)procIdx
+                 << " addr=0x" << std::hex << std::setfill('0') << std::setw(8) << addr
+                 << " len=" << std::dec << (int)readLen;
+            if (modIdx < strings.size())
+                info << " mod=\"" << strings[modIdx] << "\"";
+            if (procIdx < strings.size())
+                info << " proc=\"" << strings[procIdx] << "\"";
+        } else if (dataSize == 29) {
+            // PAGE: seed(4)+SHA1(20)+addr(4)+readLen(1)
+            uint32_t addr;
+            memcpy(&addr, data + pos + 24, 4);
+            uint8_t readLen = data[pos + 28];
+            info << " addr=0x" << std::hex << std::setfill('0') << std::setw(8) << addr
+                 << " len=" << std::dec << (int)readLen;
+        } else if (dataSize == 25) {
+            // DRIVER: seed(4)+SHA1(20)+stringIndex(1)
+            uint8_t strIdx = data[pos + 24];
+            info << " strIdx=" << (int)strIdx;
+            if (strIdx < strings.size())
+                info << " name=\"" << strings[strIdx] << "\"";
+        } else if (dataSize == 24) {
+            // MODULE: seed(4)+SHA1(20)
+            info << " seed+SHA1";
+        } else if (dataSize == 1) {
+            // MPQ/LUA: stringIndex(1)
+            uint8_t strIdx = data[pos];
+            info << " strIdx=" << (int)strIdx;
+            if (strIdx < strings.size())
+                info << " str=\"" << strings[strIdx] << "\"";
         }
 
         pos += static_cast<size_t>(dataSize);
