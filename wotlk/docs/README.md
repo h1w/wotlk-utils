@@ -32,10 +32,13 @@ wotlk-utils/
 │   │   └── arc4_process.cpp         # Хук RC4 шифрования заголовков
 │   │
 │   ├── warden/         # Анализ системы Warden
-│   │   ├── warden_scan.cpp          # Сканирование модулей в памяти
-│   │   ├── warden_rc4.cpp           # Поиск RC4 S-box и расшифровка
+│   │   ├── warden_scan.cpp          # Сканирование модулей (in-memory + RLE unpack + dispatch chain)
+│   │   ├── warden_rc4.cpp           # Поиск RC4 S-box и расшифровка (fallback)
+│   │   ├── warden_rc4_hook.cpp      # Хук RC4 PRGA внутри модуля (primary)
 │   │   ├── warden_module_dump.cpp   # Сохранение модулей на диск
-│   │   └── warden_shadow_copy.cpp   # Копирование данных из CDataStore
+│   │   ├── warden_shadow_copy.cpp   # Чтение оригинальных байт .text из PE на диске
+│   │   ├── warden_checksum.cpp      # Checksum algorithm (SHA1 XOR-fold)
+│   │   └── warden_checksum.h        # Заголовок для warden_checksum
 │   │
 │   ├── logging/        # Настройка логирования для DLL
 │   └── docs/           # Документация (ты здесь)
@@ -76,7 +79,12 @@ wotlk-utils/
 | Папка | Описание |
 |-------|----------|
 | **warden_dumps/** | Дампы модулей Warden (encrypted, decrypted, decompressed) |
-| **scripts/** | Python-скрипты для анализа модулей (используют capstone для дизассемблирования) |
+| **scripts/** | Python-скрипты для анализа модулей (по директориям, см. `scripts/README.md`) |
+| **scripts/dispatch/** | Извлечение type IDs из dispatch chains и remap tables |
+| **scripts/rc4/** | Анализ RC4 функций в модулях |
+| **scripts/analysis/** | Общий анализ модулей |
+| **scripts/verification/** | Тестирование и отладка |
+| **scripts/module_format/** | RLE-распаковщик и утилиты формата модулей |
 
 ---
 
@@ -178,10 +186,15 @@ injector.exe --eject
 
 - **НЕ PE-формат!** Это кастомный бинарник (40-байт header, RLE-packed sections, delta relocs)
 - Модули загружаются в VirtualAlloc (PAGE_EXECUTE_READWRITE, MEM_PRIVATE)
-- Чтобы найти типы проверок, ищем **dispatch chain** в коде модуля:
+- **Приоритеты сканирования** для извлечения типов:
+  1. **In-memory scan** — сканирование загруженного модуля (primary, самый надёжный)
+  2. **RLE-unpacked binary** — распаковка decompressed дампа, затем сканирование
+  3. **Raw packed binary** — legacy fallback
+  4. **Blind memory scan** — последний resort
+- Ищем **dispatch chain** в коде модуля:
   - XOR-anchored scan (паттерн `32 [40-7F] 04`)
-  - cmp-cluster fallback
-  - sub-chain fallback
+  - Remap table supplement (ExtractFromSingleRemap)
+  - cmp-cluster + sub-chain fallbacks
 - Типы проверок **module-specific** (не совпадают с TC enum)
 
 ### Логирование

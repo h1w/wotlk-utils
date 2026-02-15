@@ -46,6 +46,10 @@ size_t g_stringCount = 0; // number of strings in current packet (for index vali
 uintptr_t g_moduleRuntimeBase = 0;
 size_t    g_moduleRuntimeSize = 0;
 
+// Base address of the currently scanned buffer (for adjusting absolute displacements
+// in relocated in-memory modules). 0 = scanning packed binary (offsets are raw file offsets).
+uintptr_t g_scanBaseAddr = 0;
+
 // ---------------------------------------------------------------------------
 // SEH-safe memory copy (separate function — no C++ objects allowed with SEH)
 // ---------------------------------------------------------------------------
@@ -984,6 +988,9 @@ bool DetectRemapTableInfo(const uint8_t* data, size_t dataSize,
         if (m < 0x80 || m > 0xBF || (m & 7) == 4) continue; // need mod=10 (disp32), no SIB
         uint32_t disp;
         std::memcpy(&disp, data + j + 3, 4);
+        // Adjust absolute displacement for in-memory (relocated) modules
+        if (g_scanBaseAddr != 0 && disp >= g_scanBaseAddr)
+            disp -= static_cast<uint32_t>(g_scanBaseAddr);
         if (disp <= 0x100) continue;
         if (disp < dataSize && disp + 256 > dataSize) continue;
         // Look for jmp [reg*4 + disp] nearby
@@ -993,6 +1000,8 @@ bool DetectRemapTableInfo(const uint8_t* data, size_t dataSize,
                 if ((sib >> 6) == 2 && (sib & 7) == 5) { // scale=4, base=disp32
                     uint32_t jtDisp;
                     std::memcpy(&jtDisp, data + k + 3, 4);
+                    if (g_scanBaseAddr != 0 && jtDisp >= g_scanBaseAddr)
+                        jtDisp -= static_cast<uint32_t>(g_scanBaseAddr);
                     if (out) {
                         out->remapOff = disp;
                         out->jtableOff = jtDisp;
@@ -1080,6 +1089,59 @@ bool ExtractFromRemapCrossRef(const uint8_t* data, size_t dataSize,
 
     if (intersection.size() >= kMinChainTypes) {
         outTypes = intersection;
+        return true;
+    }
+    return false;
+}
+
+// Extract type IDs from a single remap table by finding all non-default entries.
+// The default handler index is the most common value in the table.
+bool ExtractFromSingleRemap(const uint8_t* data, size_t dataSize,
+                             const RemapTableInfo& r,
+                             std::unordered_set<uint8_t>& outTypes)
+{
+    size_t tableLen = static_cast<size_t>(r.maxType) + 1;
+    if (r.remapOff + tableLen > dataSize)
+        return false;
+
+    const uint8_t* table = data + r.remapOff;
+
+    // Find default handler index (most common value)
+    uint16_t indexCounts[256] = {};
+    for (size_t i = 0; i < tableLen; ++i)
+        indexCounts[table[i]]++;
+
+    uint8_t defaultIdx = 0;
+    uint16_t maxCount = 0;
+    for (int v = 0; v < 256; ++v) {
+        if (indexCounts[v] > maxCount) {
+            maxCount = indexCounts[v];
+            defaultIdx = static_cast<uint8_t>(v);
+        }
+    }
+
+    // All entries that differ from the default are real type IDs
+    std::unordered_set<uint8_t> types;
+    for (size_t i = 0; i < tableLen; ++i) {
+        if (table[i] != defaultIdx)
+            types.insert(static_cast<uint8_t>((i + r.shift) & 0xFF));
+    }
+
+    if (types.size() >= kMinChainTypes) {
+        outTypes = types;
+
+        std::vector<uint8_t> sorted(types.begin(), types.end());
+        std::sort(sorted.begin(), sorted.end());
+        std::ostringstream oss;
+        oss << "[WARDEN_SCAN] Single remap table @ 0x" << std::hex << r.remapOff
+            << " (shift=0x" << static_cast<int>(r.shift)
+            << ", max=0x" << static_cast<int>(r.maxType)
+            << ", default=0x" << static_cast<int>(defaultIdx)
+            << "): " << std::dec << types.size() << " types:";
+        for (uint8_t id : sorted)
+            oss << " 0x" << std::hex << std::setfill('0') << std::setw(2)
+                << static_cast<int>(id);
+        LOG(INFO) << oss.str();
         return true;
     }
     return false;
@@ -1189,16 +1251,10 @@ bool ScanForDispatchChainInBinary(const uint8_t* data, size_t size, size_t scanS
         }
     }
 
-    // Step 3: If dispatch chain(s) found, commit union of all types
+    // Step 3: If dispatch chain(s) found, start with chain types.
+    // Then supplement from remap table if available (chain may miss some BST branches).
     if (allChainTypes.size() >= kMinChainTypes) {
-        g_typeIDs = allChainTypes;
-        g_typeSizes.clear();
-        for (uint8_t id : g_typeIDs)
-            g_typeSizes[id] = -1;
-        g_hasTypeIDs = true;
-        g_allSizesKnown = false;
-
-        std::vector<uint8_t> sorted(g_typeIDs.begin(), g_typeIDs.end());
+        std::vector<uint8_t> sorted(allChainTypes.begin(), allChainTypes.end());
         std::sort(sorted.begin(), sorted.end());
         std::ostringstream oss;
         oss << "[WARDEN_SCAN] Union of " << std::dec << chainCount
@@ -1210,15 +1266,56 @@ bool ScanForDispatchChainInBinary(const uint8_t* data, size_t size, size_t scanS
             oss << " 0x" << std::hex << std::setfill('0') << std::setw(2)
                 << static_cast<int>(id);
         LOG(INFO) << oss.str();
+
+        // Try to supplement from remap table (authoritative — contains ALL types)
+        std::unordered_set<uint8_t> remapTypes;
+        bool remapOk = false;
+        if (remapInfos.size() >= 2)
+            remapOk = ExtractFromRemapCrossRef(data, size, remapInfos, remapTypes);
+        if (!remapOk) {
+            for (const auto& r : remapInfos) {
+                if (ExtractFromSingleRemap(data, size, r, remapTypes)) {
+                    remapOk = true;
+                    break;
+                }
+            }
+        }
+
+        if (remapOk && remapTypes.size() > allChainTypes.size()) {
+            // Remap table found more types — use it as the definitive set
+            g_typeIDs = remapTypes;
+            LOG(INFO) << "[WARDEN_SCAN] Remap table supplemented chain: "
+                      << allChainTypes.size() << " -> " << remapTypes.size() << " types";
+        } else {
+            g_typeIDs = allChainTypes;
+        }
+
+        g_typeSizes.clear();
+        for (uint8_t id : g_typeIDs)
+            g_typeSizes[id] = -1;
+        g_hasTypeIDs = true;
+        g_allSizesKnown = false;
         return true;
     }
 
-    // Step 4: No dispatch chain found — try remap table cross-reference
-    if (remapInfos.size() >= 2) {
-        LOG(INFO) << "[WARDEN_SCAN] No dispatch chain found, trying remap cross-reference ("
-                  << remapInfos.size() << " remap tables)...";
+    // Step 4: No dispatch chain found — try remap table extraction
+    {
         std::unordered_set<uint8_t> remapTypes;
-        if (ExtractFromRemapCrossRef(data, size, remapInfos, remapTypes)) {
+        bool remapOk = false;
+        if (remapInfos.size() >= 2) {
+            LOG(INFO) << "[WARDEN_SCAN] No dispatch chain found, trying remap cross-reference ("
+                      << remapInfos.size() << " remap tables)...";
+            remapOk = ExtractFromRemapCrossRef(data, size, remapInfos, remapTypes);
+        }
+        if (!remapOk) {
+            for (const auto& r : remapInfos) {
+                if (ExtractFromSingleRemap(data, size, r, remapTypes)) {
+                    remapOk = true;
+                    break;
+                }
+            }
+        }
+        if (remapOk) {
             g_typeIDs = remapTypes;
             g_typeSizes.clear();
             for (uint8_t id : g_typeIDs)
@@ -1229,7 +1326,7 @@ bool ScanForDispatchChainInBinary(const uint8_t* data, size_t size, size_t scanS
             std::vector<uint8_t> sorted(g_typeIDs.begin(), g_typeIDs.end());
             std::sort(sorted.begin(), sorted.end());
             std::ostringstream oss;
-            oss << "[WARDEN_SCAN] Remap cross-reference: " << std::dec << sorted.size()
+            oss << "[WARDEN_SCAN] Remap table extraction: " << std::dec << sorted.size()
                 << " check type IDs:";
             for (uint8_t id : sorted)
                 oss << " 0x" << std::hex << std::setfill('0') << std::setw(2)
@@ -1280,7 +1377,6 @@ bool ScanForDispatchChainInBinary(const uint8_t* data, size_t size, size_t scanS
     else
         LOG(INFO) << "[WARDEN_SCAN] No dispatch chain types found in module binary";
 
-    // Even with 0 types, dynamic discovery (Fix 2) will handle types from packets
     return false;
 }
 
@@ -1469,6 +1565,7 @@ void Reset()
     g_typeSizes.clear();
     g_moduleRuntimeBase = 0;
     g_moduleRuntimeSize = 0;
+    g_scanBaseAddr = 0;
     LOG(INFO) << "[WARDEN_SCAN] State reset for new module";
 }
 
@@ -1557,6 +1654,72 @@ void LogModuleHeader(const uint8_t* data, size_t size)
               << " packedDataAt=0x" << std::hex << packedDataOff;
 }
 
+// ---------------------------------------------------------------------------
+// Unpack RLE-compressed Warden module binary into a runtime memory image.
+// Format: alternating COPY/SKIP entries starting with COPY.
+//   COPY: uint16_t LE length + `length` literal bytes
+//   SKIP: uint16_t LE length (zero-filled gap)
+// Returns empty vector on failure.
+// ---------------------------------------------------------------------------
+std::vector<uint8_t> UnpackRLE(const uint8_t* data, size_t size)
+{
+    if (size < 0x28)
+        return {};
+
+    uint32_t moduleSize, sectionDescCount;
+    std::memcpy(&moduleSize, data + 0x00, 4);
+    std::memcpy(&sectionDescCount, data + 0x24, 4);
+
+    if (sectionDescCount == 0 || sectionDescCount >= 32 || moduleSize == 0 || moduleSize > 256 * 1024)
+        return {};
+
+    // First section's virtualAddr = destination start
+    uint32_t destStart;
+    std::memcpy(&destStart, data + 0x28, 4);
+    if (destStart >= moduleSize)
+        return {};
+
+    size_t srcPos = 0x28 + static_cast<size_t>(sectionDescCount) * 12;
+    if (srcPos >= size)
+        return {};
+
+    std::vector<uint8_t> image(moduleSize, 0);
+
+    // Copy 40-byte header verbatim
+    std::memcpy(image.data(), data, 0x28);
+
+    size_t destPos = destStart;
+    bool isSkip = false; // first entry is always COPY
+
+    while (destPos < moduleSize) {
+        if (srcPos + 2 > size)
+            return {}; // source exhausted prematurely
+
+        uint16_t length;
+        std::memcpy(&length, data + srcPos, 2);
+        srcPos += 2;
+
+        if (!isSkip) {
+            // COPY
+            if (srcPos + length > size || destPos + length > moduleSize)
+                return {};
+            std::memcpy(image.data() + destPos, data + srcPos, length);
+            srcPos += length;
+        } else {
+            // SKIP (image already zeroed)
+            if (destPos + length > moduleSize)
+                return {};
+        }
+
+        destPos += length;
+        isSkip = !isSkip;
+    }
+
+    LOG(INFO) << "[WARDEN_SCAN] RLE unpack: " << size << " -> " << moduleSize
+              << " bytes (consumed " << srcPos << "/" << size << ")";
+    return image;
+}
+
 bool ScanModuleBinary(const uint8_t* data, size_t size)
 {
     if (g_hasTypeIDs)
@@ -1567,76 +1730,145 @@ bool ScanModuleBinary(const uint8_t* data, size_t size)
         return false;
     }
 
-    // Parse header to find where packed section data starts
+    // Strategy 0 (primary): RLE unpack → scan actual x86 code
+    // The decompressed binary is still RLE-packed; scanning it raw produces
+    // false positive XOR+MOVZX matches from RLE control words.
+    std::vector<uint8_t> unpacked = UnpackRLE(data, size);
+    if (!unpacked.empty()) {
+        LOG(INFO) << "[WARDEN_SCAN] Scanning RLE-unpacked module ("
+                  << unpacked.size() << " bytes) for dispatcher...";
+        if (ScanForDispatchChainInBinary(unpacked.data(), unpacked.size(), 0))
+            return true;
+
+        // cmp-cluster and sub-chain on unpacked image
+        size_t offset = 0;
+        if (ScanBufferForDispatcher(unpacked.data(), unpacked.size(),
+                                    kBinaryDispatcherWindow, kBinaryMinUniqueTypes, &offset))
+            return true;
+        if (ScanBufferForSubChain(unpacked.data(), unpacked.size(),
+                                   kBinaryDispatcherWindow, kBinaryMinUniqueTypes, &offset))
+            return true;
+
+        LOG(INFO) << "[WARDEN_SCAN] No dispatcher in RLE-unpacked image, "
+                  << "falling back to raw packed scan...";
+    }
+
+    // Fallback: scan raw packed data (legacy path)
     size_t scanStart = 0;
     if (size >= 0x28) {
-        uint32_t sectionDescCount;
-        std::memcpy(&sectionDescCount, data + 0x24, 4);
-        // Sanity check — section count should be small
-        if (sectionDescCount < 32) {
-            scanStart = 0x28 + static_cast<size_t>(sectionDescCount) * 12;
+        uint32_t sdc;
+        std::memcpy(&sdc, data + 0x24, 4);
+        if (sdc < 32) {
+            scanStart = 0x28 + static_cast<size_t>(sdc) * 12;
             if (scanStart >= size)
-                scanStart = 0; // fallback to full scan
+                scanStart = 0;
         }
     }
 
     const uint8_t* scanBuf = data + scanStart;
     size_t scanSize = size - scanStart;
 
-    LOG(INFO) << "[WARDEN_SCAN] Scanning decompressed module binary ("
-              << size << " bytes, scanning from offset 0x"
+    LOG(INFO) << "[WARDEN_SCAN] Scanning raw packed binary ("
+              << size << " bytes, offset 0x"
               << std::hex << scanStart << ", " << std::dec << scanSize
               << " bytes) for dispatcher...";
 
-    // Strategy 1 (primary): XOR-anchored dispatch chain detection
-    // Proven across 10 Warden modules via Python/capstone analysis.
     if (ScanForDispatchChainInBinary(data, size, scanStart))
         return true;
 
-    // Strategy 2 (fallback): cmp-based dispatcher (cmp al/eax/r32, imm)
     size_t offset = 0;
     if (ScanBufferForDispatcher(scanBuf, scanSize,
+                                kBinaryDispatcherWindow, kBinaryMinUniqueTypes, &offset))
+        return true;
+
+    if (ScanBufferForSubChain(scanBuf, scanSize,
+                               kBinaryDispatcherWindow, kBinaryMinUniqueTypes, &offset))
+        return true;
+
+    LOG(INFO) << "[WARDEN_SCAN] No dispatcher found in module binary";
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Scan the in-memory (unpacked, relocated) Warden module for dispatcher.
+// Uses g_moduleRuntimeBase/Size set by FindModuleInMemory().
+// This is the PRIMARY scan strategy — the in-memory module has actual x86 code
+// without RLE packing artifacts that cause false positives in the packed binary.
+// ---------------------------------------------------------------------------
+bool ScanModuleInMemory()
+{
+    if (g_hasTypeIDs)
+        return true;
+
+    if (g_moduleRuntimeBase == 0 || g_moduleRuntimeSize == 0) {
+        LOG(INFO) << "[WARDEN_SCAN] No module runtime address — can't scan in-memory";
+        return false;
+    }
+
+    LOG(INFO) << "[WARDEN_SCAN] Scanning in-memory module at 0x"
+              << std::hex << std::uppercase << std::setfill('0')
+              << std::setw(8) << g_moduleRuntimeBase
+              << " (" << std::dec << g_moduleRuntimeSize << " bytes)...";
+
+    std::vector<uint8_t> buf(g_moduleRuntimeSize);
+    if (!SafeMemcpy(buf.data(), reinterpret_cast<const void*>(g_moduleRuntimeBase),
+                    g_moduleRuntimeSize)) {
+        LOG(WARNING) << "[WARDEN_SCAN] Failed to read in-memory module at 0x"
+                     << std::hex << g_moduleRuntimeBase;
+        return false;
+    }
+
+    // Set base address so displacement-based offsets (remap tables, jtables)
+    // are adjusted from absolute to buffer-relative
+    g_scanBaseAddr = g_moduleRuntimeBase;
+
+    // Strategy 1 (primary): XOR-anchored dispatch chain detection
+    if (ScanForDispatchChainInBinary(buf.data(), g_moduleRuntimeSize, 0)) {
+        g_scanBaseAddr = 0;
+        return true;
+    }
+
+    // Strategy 2 (fallback): cmp-based dispatcher
+    size_t offset = 0;
+    if (ScanBufferForDispatcher(buf.data(), g_moduleRuntimeSize,
                                 kBinaryDispatcherWindow, kBinaryMinUniqueTypes, &offset)) {
         std::vector<uint8_t> sorted(g_typeIDs.begin(), g_typeIDs.end());
         std::sort(sorted.begin(), sorted.end());
 
         std::ostringstream oss;
-        oss << "[WARDEN_SCAN] Found cmp-based dispatcher in module binary at offset 0x"
+        oss << "[WARDEN_SCAN] Found cmp-based dispatcher in in-memory module at offset 0x"
             << std::hex << std::uppercase << std::setfill('0')
-            << std::setw(4) << (scanStart + offset)
+            << std::setw(4) << offset
             << ", extracted " << std::dec << sorted.size() << " check type IDs:";
         for (uint8_t id : sorted)
             oss << " 0x" << std::hex << std::setfill('0') << std::setw(2)
                 << static_cast<int>(id);
         LOG(INFO) << oss.str();
-
         return true;
     }
 
-    // Strategy 3 (fallback): sub chain dispatcher (sub al/eax, delta; je/jne)
-    LOG(INFO) << "[WARDEN_SCAN] No cmp-based dispatcher found, trying sub chain detection...";
+    // Strategy 3 (fallback): sub chain dispatcher
     offset = 0;
-    if (ScanBufferForSubChain(scanBuf, scanSize,
+    if (ScanBufferForSubChain(buf.data(), g_moduleRuntimeSize,
                                kBinaryDispatcherWindow, kBinaryMinUniqueTypes, &offset)) {
         std::vector<uint8_t> sorted(g_typeIDs.begin(), g_typeIDs.end());
         std::sort(sorted.begin(), sorted.end());
 
         std::ostringstream oss;
-        oss << "[WARDEN_SCAN] Found sub-chain dispatcher in module binary at offset 0x"
+        oss << "[WARDEN_SCAN] Found sub-chain dispatcher in in-memory module at offset 0x"
             << std::hex << std::uppercase << std::setfill('0')
-            << std::setw(4) << (scanStart + offset)
+            << std::setw(4) << offset
             << ", extracted " << std::dec << sorted.size()
             << " check type IDs (cumulative reconstruction):";
         for (uint8_t id : sorted)
             oss << " 0x" << std::hex << std::setfill('0') << std::setw(2)
                 << static_cast<int>(id);
         LOG(INFO) << oss.str();
-
         return true;
     }
 
-    LOG(INFO) << "[WARDEN_SCAN] No dispatcher found in module binary"
-              << " (tried XOR-anchored chain, cmp patterns, and sub chains)";
+    g_scanBaseAddr = 0;
+    LOG(INFO) << "[WARDEN_SCAN] No dispatcher found in in-memory module";
     return false;
 }
 
@@ -1731,10 +1963,8 @@ bool AssignTypeSizes(const uint8_t* data, size_t checkStart,
         return true; // empty check section is valid
 
     if (!g_hasTypeIDs) {
-        // No static scanning found types — enable dynamic-only discovery mode
-        LOG(WARNING) << "[WARDEN_SCAN] No pre-populated type IDs — using dynamic discovery";
-        g_hasTypeIDs = true;
-        g_allSizesKnown = false;
+        LOG(WARNING) << "[WARDEN_SCAN] No type IDs from module scan — cannot assign sizes";
+        return false;
     }
 
     bool newAssignments = false;
@@ -1744,33 +1974,29 @@ bool AssignTypeSizes(const uint8_t* data, size_t checkStart,
         uint8_t realType = data[pos] ^ xorByte;
         pos++; // consume type byte
 
-        // Dynamic type discovery: if type not in dispatch chain set, try to
-        // assign a size via structural validation and add it dynamically
-        bool dynamicDiscovery = !g_typeIDs.count(realType);
+        if (!g_typeIDs.count(realType)) {
+            LOG(WARNING) << "[WARDEN_SCAN] Unknown type 0x" << std::hex << std::setfill('0')
+                         << std::setw(2) << (int)realType
+                         << " at offset " << std::dec << (pos - 1)
+                         << " — not in module type set";
+            return false;
+        }
 
         auto it = g_typeSizes.find(realType);
-        if (!dynamicDiscovery && it != g_typeSizes.end() && it->second >= 0) {
+        if (it != g_typeSizes.end() && it->second >= 0) {
             // Already assigned — skip data bytes
             pos += static_cast<size_t>(it->second);
             continue;
         }
 
-        // New or dynamically discovered type — structural validation
+        // Known type with unknown size — structural validation
         int assignedSize = TryAssignSize(data, pos, checkEnd, g_stringCount, xorByte);
+
         if (assignedSize < 0) {
-            LOG(WARNING) << "[WARDEN_SCAN] Failed to assign size for "
-                         << (dynamicDiscovery ? "DYNAMIC" : "known")
-                         << " type 0x" << std::hex << std::setfill('0') << std::setw(2)
+            LOG(WARNING) << "[WARDEN_SCAN] Failed to assign size for type 0x"
+                         << std::hex << std::setfill('0') << std::setw(2)
                          << (int)realType << " at offset " << std::dec << (pos - 1);
             return false;
-        }
-
-        if (dynamicDiscovery) {
-            g_typeIDs.insert(realType);
-            LOG(WARNING) << "[WARDEN_SCAN] Dynamically discovered type 0x"
-                         << std::hex << std::setfill('0') << std::setw(2)
-                         << (int)realType << " = " << std::dec << assignedSize
-                         << " bytes (not in dispatch chain set)";
         }
 
         g_typeSizes[realType] = assignedSize;

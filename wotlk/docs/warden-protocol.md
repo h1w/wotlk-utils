@@ -902,35 +902,39 @@ jmp [jump_table + eax*4]             ; Переход
 | DA3BF29E                 | ~14 KB        | ~29 KB               | ✅ Да          | TIMING=0x74, LUA=0x70    |
 | 9A95D199                 | ~15 KB        | 28876 байт           | ✅ Да          | TBD                      |
 | CB9E43D6                 | ~18 KB        | 31718 байт           | ✅ Да (remap)  | TIMING, MODULE/DRIVER, MEM_CHECK, PAGE/PROC/MPQ, LUA |
-| 473AAAA1                 | Неизвестно    | Неизвестно           | ❓ Не захвачен | TBD                      |
+| 0BE6B21C                 | ~16 KB        | 30132 байт           | ✅ Да (partial)| RC4 uses EAX register    |
+| 952860B1                 | ~14 KB        | 26065 байт           | ✅ Да          | TBD                      |
 
 **Частота встречаемости:**
 - `7C4ABC97`: ~80% серверов (самый распространённый)
 - `DA3BF29E`: ~15% серверов
 - `9A95D199`: ~4% серверов
-- `473AAAA1`: <1% (только кеш, нет MODULE_CACHE пакетов)
 
 ---
 
 ## 12. Полезные утилиты (Python)
 
-В директории `wotlk/docs/` есть Python-скрипты для анализа модулей:
+В директории `wotlk/docs/scripts/` есть Python-скрипты для анализа модулей (см. `scripts/README.md` для полного списка):
 
-**find_request_parsers.py:**
+**dispatch/find_request_parsers.py:**
 - Ищет dispatch chain (XOR-anchored scan)
 - Извлекает realType ID из sub/dec/cmp инструкций
-- **Прорыв:** позволил найти типы для 8/10 модулей
+- **Прорыв:** позволил найти типы для 11/15 модулей
 
-**extract_all_types.py:**
+**dispatch/extract_all_types.py:**
 - Запускает все методы (XOR, cmp-cluster, sub-chain)
 - Объединяет результаты
 - Выводит полную таблицу типов
 
-**group_sizes.py:**
+**dispatch/group_sizes.py:**
 - Группирует типы по размеру данных
-- Помогает найти известные типы (LUA size=1, MEM size=25, и т.д.)
+- Помогает найти известные типы (LUA size=1, MEM size=6, и т.д.)
 
-**investigate_missing.py:**
+**module_format/unpack_rle.py:**
+- RLE-распаковщик: преобразует `_decompressed.bin` в runtime-ready memory image
+- Поддерживает `--all` для batch-обработки, `--info` для информации о заголовке/секциях
+
+**verification/investigate_missing.py:**
 - Анализирует модули без dispatch chain
 - Пытается найти альтернативные паттерны
 

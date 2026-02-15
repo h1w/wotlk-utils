@@ -12,9 +12,14 @@ void Reset();
 bool ScanAndExtractTypeIDs();
 
 // Scan decompressed module binary for dispatcher pattern.
-// Primary method — more reliable than memory scan since it searches the exact module.
+// Fallback method — scans RLE-packed data which may contain false positives.
 // Returns true if dispatcher was found and IDs were extracted.
 bool ScanModuleBinary(const uint8_t* data, size_t size);
+
+// Scan the in-memory (unpacked, relocated) Warden module for dispatcher pattern.
+// Primary method — requires FindModuleInMemory() to have been called first.
+// Returns true if dispatcher was found and IDs were extracted.
+bool ScanModuleInMemory();
 
 // Try to find the Warden module's runtime base address in process memory.
 // Searches for a known stable signature in MEM_PRIVATE executable regions.

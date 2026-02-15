@@ -103,16 +103,15 @@
 - Relocation table: delta-encoded
 - In-memory: VirtualAlloc с PAGE_EXECUTE_READWRITE, MEM_PRIVATE
 
-**Известные модули** (16+ модулей захвачено и проанализировано):
+**Известные модули** (15+ модулей захвачено и проанализировано):
 - **7C4ABC97**: decompressed=29234 bytes
 - **DA3BF29E**: decompressed size varies
 - **9A95D199**: decompressed=28876 bytes
-- **473AAAA1**: только cached (не захвачен)
 - **CB9E43D692620E7B698C5CE085163E6E**: decompressed=31718 bytes, runtimeSize=49152
 - **0BE6B21C**: decompressed=30132 bytes, runtimeSize=45056 (RC4 uses EAX register)
 - **952860B1**: decompressed=26065 bytes, runtimeSize=40960
 - **32F1D632**: 10 types via union of 2 dispatch chains
-- **46DCC0B811CD2D7BB870A2F714CD2A61**: decompressed=33057 bytes, runtimeSize=49152 (remap-only, dynamic discovery)
+- **46DCC0B811CD2D7BB870A2F714CD2A61**: decompressed=33057 bytes, runtimeSize=49152 (remap-only)
 
 **Статус**: ПОЛНОСТЬЮ РАБОТАЕТ
 
@@ -124,9 +123,19 @@
 
 **Проблема**: каждый модуль использует свои ID для типов проверок (не совпадают с TC константами).
 
-**Решение**: XOR-anchored scan + BFS queue-based chain walker + dynamic discovery
+**Решение**: In-memory scan (primary) + RLE-unpacked binary scan (fallback) + XOR-anchored dispatch chain + remap table supplement
 
-**Алгоритм**:
+**Приоритеты сканирования**:
+1. **In-memory scan** (`ScanModuleInMemory`): сканирование загруженного модуля в памяти процесса
+   - Модуль уже распакован (RLE) и релоцирован — содержит реальный x86 код
+   - `g_scanBaseAddr` корректирует абсолютные адреса (remap tables) в buffer-relative offsets
+2. **RLE-unpacked binary scan** (`ScanModuleBinary` с `UnpackRLE`): распаковка decompressed дампа
+   - Парсит 40-byte header + section descriptors, выполняет RLE unpack
+   - Результат = runtime-ready image без RLE control word артефактов
+3. **Raw packed binary scan** (legacy fallback): сканирование packed binary напрямую
+4. **Blind memory scan** (`ScanAndExtractTypeIDs`): последний resort — все MEM_PRIVATE регионы
+
+**Алгоритм извлечения типов**:
 1. **Anchor search**: ищем паттерн `xor r8, [reg+4]` (опкод `32 [40-7F, rm≠4] 04`)
    - Это начало dispatcher'а (request parser)
    - XOR снимает xorByte, получаем реальный type ID
@@ -139,29 +148,27 @@
    - **CMP values always inserted**: для greater/less family jumps (BST pivots are real type IDs)
    - **sub/dec + je/jne**: `sub r8, imm8` + `jne target` → обрабатываем вычитание, следуем по jne
 4. **Register tracking**: если `cmp eax, ecx` → ищем назад `mov ecx, 0x8E` (пример)
-5. **Remap cross-reference**: если dispatch chain не найден — ищем remap table (200+ entries)
-   - Пересечение singletons + pairs + triplets (groups ≤3 entries)
+5. **Remap table supplement**: после dispatch chain дополняем типами из remap table
+   - `ExtractFromSingleRemap`: для одиночных таблиц — default handler = самое частое значение, остальные = type IDs
+   - Remap cross-reference: пересечение singletons + pairs + triplets для множественных таблиц
    - Last-resort: chain extraction retried on remap-classified XOR sites
-6. **Dynamic type discovery**: если тип появляется в пакете, но не найден статически
-   - `TryAssignSize` определяет размер через структурную валидацию
-   - Добавляет тип в g_typeIDs on-the-fly
-   - Работает даже для remap-only модулей
 
-**Результаты**: Протестировано 15+ модулей
+**Результаты**: Протестировано 15 модулей
 - **11/15 FULL**: 9+ типов из dispatch chains (7C4ABC97, DA3BF29E, 9A95D199, 952860B1, 32F1D632, и др.)
-- **1/15 PARTIAL**: 5 типов из цепочки
-- **3/15 REMAP ONLY**: 0 типов из цепочки, все типы найдены динамически (46DCC0B8 — 7/7 динамически)
-- **100% парсинг пакетов** во всех живых тестах благодаря динамической типизации
+- **1/15 PARTIAL**: 5 типов из dispatch chain + дополнение из remap
+- **3/15 REMAP ONLY**: все типы из remap tables (ExtractFromSingleRemap)
+- **In-memory scan**: 10/10 типов с первого раза, 0 unknown types в живых тестах
 
-**Python скрипты** (в `wotlk/docs/`):
-- `comprehensive_analysis_v2.py`: улучшенный анализ (MOVZX window 18 bytes, BFS walker)
-- `remap_crossref_test.py`: тестирование remap cross-reference
-- `find_request_parsers.py`: находит dispatcher'ы через XOR-anchor (прорыв!)
-- `extract_all_types.py`: извлекает типы из всех модулей
-- `group_sizes.py`: группирует модули по размерам
-- `investigate_missing.py`: анализирует модули без dispatch chain
+**Python скрипты** (в `wotlk/docs/scripts/`):
+- `dispatch/comprehensive_analysis_v2.py`: улучшенный анализ (MOVZX window 18 bytes, BFS walker)
+- `dispatch/remap_crossref_test.py`: тестирование remap cross-reference
+- `dispatch/find_request_parsers.py`: находит dispatcher'ы через XOR-anchor (прорыв!)
+- `dispatch/extract_all_types.py`: извлекает типы из всех модулей
+- `dispatch/group_sizes.py`: группирует модули по размерам
+- `verification/investigate_missing.py`: анализирует модули без dispatch chain
+- `module_format/unpack_rle.py`: RLE-распаковщик модулей (Python, проверен на 10/10 дампах)
 
-**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (15+ модулей, 100% парсинг пакетов)
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (15 модулей, 0 unknown types в живых тестах)
 
 ---
 
@@ -235,8 +242,9 @@
    - **SHA1 seed heuristic**: для MODULE/DRIVER/PAGE/PROC
    - **Look-ahead**: проверка, что остаток байт достаточен
    - Размер присваивается **на первом же успехе**, без backtracking
-4. **Dynamic discovery**: если тип не был в dispatch chain set → добавляется в g_typeIDs
-   - Критично для remap-only модулей (модуль 46DCC0B8: все 7 типов найдены динамически)
+4. **Strict mode**: типы ДОЛЖНЫ быть извлечены из модуля до парсинга пакета
+   - Если тип не в `g_typeIDs` → парсинг завершается с ошибкой
+   - Никакого динамического обнаружения типов из пакетов — все типы из module scanning
 
 **Фиксированные размеры** (confirmed from AzerothCore source):
 - TIMING=0, MPQ=1, LUA=1, MEM=6, MODULE=24, DRIVER=25, PAGE_A=29, PAGE_B=29, PROC=31
@@ -254,7 +262,7 @@ Check section: [0x8E] [unk][addr:4][len:1] [0x1F] [0x91] [strIdx]
 
 При первой встрече типа: TryAssignSize(0x8E) → пробует 31,29,25,24,6 → валидация успешна на 6 → запомнили.
 
-**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (100% парсинг пакетов, 0 ошибок во всех живых тестах)
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (0 ошибок парсинга при корректном извлечении типов из модуля)
 
 ---
 
@@ -349,36 +357,19 @@ Check section: [0x8E] [unk][addr:4][len:1] [0x1F] [0x91] [strIdx]
 
 **Текущий прогресс**:
 - RC4 decryption: РАБОТАЕТ (через warden_rc4_hook)
-- Парсинг CMSG: ЧАСТИЧНО (видим opcode и размеры, нужен structured parser)
-- Checksum algorithm: НЕ ПОНЯТ (4-byte checksum в CMSG, алгоритм неизвестен)
+- Парсинг CMSG: РАБОТАЕТ (request-response correlation через FIFO queue)
+- Checksum algorithm: РЕШЁН (SHA1 → 5 × uint32_t LE → XOR-fold → uint32_t)
+- Request-response correlation: РАБОТАЕТ (FIFO queue `std::deque<vector<PendingCheck>>`)
 
-**Следующий шаг**: reverse-engineer checksum algorithm для генерации валидных spoofed responses
+**Следующий шаг**: реализовать подмену данных в CMSG (пока только наблюдаем)
 
 **Приоритет**: ВЫСОКИЙ (важно для полного bypass)
 
-**Статус**: В РАЗРАБОТКЕ (RC4 решён, осталось понять checksum)
+**Статус**: В РАЗРАБОТКЕ (наблюдение работает полностью, подмена не начата)
 
 ---
 
-### 2. Модуль 473AAAA1 не захвачен
-
-**Описание**: один из известных Warden модулей не сохранён на диск.
-
-**Проблема**: мы видели этот модуль только как cached (сервер отправил MODULE_USE, но не MODULE_CACHE).
-
-**Почему важно**: для полного анализа нужны все модули (извлечение типов проверок, сигнатур, dispatcher'ов).
-
-**Решение**:
-- Дождаться момента, когда сервер отправит MODULE_CACHE для этого модуля (при первом подключении аккаунта)
-- Или получить кеш от другого пользователя
-
-**Приоритет**: НИЗКИЙ (4 других модуля уже захвачены и проанализированы)
-
-**Статус**: В ОЖИДАНИИ (ждём новый download)
-
----
-
-### 3. Remap cross-reference noise для некоторых модулей
+### 2. Remap cross-reference noise для некоторых модулей
 
 **Описание**: remap cross-reference может производить 30+ noise типов для remap-only модулей.
 
@@ -386,130 +377,92 @@ Check section: [0x8E] [unk][addr:4][len:1] [0x1F] [0x91] [strIdx]
 
 **Причина**: remap table содержит много служебных записей, не все записи — реальные type IDs.
 
-**Решение**: динамическая типизация компенсирует
-- Детерминированный парсер игнорирует noise типы (структурная валидация fails)
-- Только реальные типы (с корректными данными) добавляются в g_typeIDs
-- Живой тест модуля 46DCC0B8: 13 пакетов, 0 ошибок, все 7 типов найдены динамически
+**Решение**: `ExtractFromSingleRemap` + in-memory scan
+- In-memory scan (primary) + dispatch chain дополнение из remap table
+- `ExtractFromSingleRemap`: для одиночных remap tables — default handler (самый частый) отсеивается, остальные = type IDs
+- Детерминированный парсер использует только типы, извлечённые из модуля
+- Живой тест: 10/10 типов, 0 unknown types, все checksums VALID
 
-**Митигация**: noise типы тратят немного памяти, но не влияют на парсинг
+**Митигация**: noise типы отсеиваются, парсинг строго по типам из модуля
 
-**Приоритет**: НИЗКИЙ (динамическая типизация обрабатывает все наблюдаемые случаи)
+**Приоритет**: НИЗКИЙ (in-memory scan решает проблему)
 
 **Статус**: RESOLVED (не блокирует функциональность)
 
 ---
 
-### 4. Парсинг CHEAT_CHECKS_RESULT
+### 3. Парсинг CHEAT_CHECKS_RESULT
 
 **Описание**: structured parsing per-check results в CMSG ответах.
-
-**Проблема**: мы видим plaintext CMSG (через rc4_hook), но не парсим внутреннюю структуру результатов.
 
 **Формат CHEAT_CHECKS_RESULT** (confirmed):
 ```
 [02] [resultLen:2 bytes LE] [checksum:4 bytes] [results:N bytes]
 ```
 
-**Типы результатов**:
-- **TIMING**: timestamp (4 bytes?)
-- **MEM_CHECK**: SHA1 hash (20 bytes)
-- **LUA_EVAL**: string result (variable length)
-- **PAGE_CHECK**: hash + metadata
-- **MPQ_CHECK**: hash
-- **DRIVER_CHECK**: status byte
-- **MODULE_CHECK**: list of loaded modules
-- **PROC_CHECK**: process list
+**Checksum algorithm**: SHA1(results) → 5 × uint32_t LE → XOR-fold → uint32_t
+- Реализовано в `warden_checksum.cpp` через WinCrypt CALG_SHA1
+- Все наблюдаемые checksums валидируются корректно
 
-**Текущий статус**: видим raw bytes, но не понимаем границы между результатами разных проверок
+**Request-response correlation**: FIFO queue (`std::deque<vector<PendingCheck>>`)
+- Warden отправляет несколько SMSG request'ов до получения CMSG response'ов
+- Каждый request пушится в очередь (даже empty/truncated — для синхронизации)
+- При получении CMSG — pop из очереди для корреляции
+- Queue очищается на MODULE_USE
 
-**Приоритет**: СРЕДНИЙ (нужно для spoofing, но не блокирует другие задачи)
+**Типы результатов** (confirmed по категориям):
+- **TIMING**: 5 bytes always (flag:1 + ticks:4)
+- **MEM_CHECK**: 1 byte if fail / 1+readLen bytes if OK
+- **LUA_EVAL**: 1 byte if fail / 1+1+strlen bytes if OK
+- **PAGE/PROC/MODULE/DRIVER**: 1 byte (0xE9=pass)
+- **MPQ_CHECK**: 1 byte if fail / 1+20 bytes if OK
 
-**Статус**: НЕ НАЧАТО
+**Текущий статус**: корреляция и checksum validation РАБОТАЮТ, per-check result parsing — РАБОТАЕТ
+
+**Приоритет**: СРЕДНИЙ (наблюдение готово, нужно перейти к spoofing)
+
+**Статус**: РАБОТАЕТ (correlation + checksum + per-check parsing)
 
 ---
 
 ## К чему стремимся (ROADMAP)
 
+### Выполнено (DONE ✓)
+
+#### ~~1. Разбор формата CHEAT_CHECKS_RESULT~~
+**Реализовано**: request-response correlation через FIFO queue, per-check result parsing по категориям, checksum validation.
+
+#### ~~2. Алгоритм checksum~~
+**Реализовано**: SHA1(results) → 5 × uint32_t LE → XOR-fold → uint32_t. Реализовано в `warden_checksum.cpp` через WinCrypt CALG_SHA1.
+
+#### ~~3. Парсинг CMSG ответов~~
+**Реализовано**: structured parsing с correlation. Результаты коррелируются с SMSG request'ами, delta и checksum проверяются.
+
+---
+
 ### Ближайшее (1-2 недели)
 
-#### 1. Разбор формата CHEAT_CHECKS_RESULT
-**Цель**: понимать структуру ответов клиента на каждый тип проверки
-
-**План**:
-1. Коррелировать SMSG CHEAT_CHECKS_REQUEST с CMSG CHEAT_CHECKS_RESULT
-2. Для каждого типа проверки (TIMING, MEM, LUA, etc.) определить формат результата
-3. Написать structured parser для results section
-4. Валидировать парсинг на реальных пакетах (10+ сессий)
-
-**Критерий успеха**: можем разобрать CMSG результаты построково в логе (как сейчас делаем с SMSG)
-
----
-
-#### 2. Алгоритм checksum
-**Цель**: понять 4-byte checksum в CMSG для генерации spoofed responses
-
-**План**:
-1. Собрать 50+ пар (plaintext CMSG, checksum)
-2. Проверить известные алгоритмы: CRC32, Adler32, simple XOR
-3. Reverse-engineer через статический анализ Warden модуля (найти функцию генерации checksum)
-4. Реализовать калькулятор checksum в C++
-
-**Критерий успеса**: можем генерировать валидный checksum для произвольного CMSG payload
-
----
-
-#### 3. Парсинг CMSG ответов в логе
-**Цель**: структурированный вывод decrypted CMSG в консоль (как сейчас SMSG)
-
-**План**:
-1. Использовать результаты #1 (parser CHEAT_CHECKS_RESULT)
-2. Добавить цветной вывод: зелёный для HASH_RESULT/MODULE_OK, жёлтый для CHEAT_CHECKS_RESULT
-3. Показывать per-check results построково
-
-**Пример вывода**:
-```
-[CMSG] CHEAT_CHECKS_RESULT (checksum: 0xABCDEF12):
-  MEM_CHECK @ 0x00819210: SHA1 = [20 bytes]
-  TIMING: tick = 12345678
-  LUA_EVAL: result = "nil"
-```
-
-**Критерий успеха**: readable CMSG logs в консоли
-
----
-
-#### 4. Собрать модуль 473AAAA1
-**Цель**: иметь полный набор модулей для анализа
-
-**План**: подключиться с другого аккаунта (который ещё не кешировал этот модуль) и поймать MODULE_CACHE пакеты.
-
-**Критерий успеха**: файлы 473AAAA1_*.bin в warden_cache/
-
----
-
-### Среднесрочное (1-2 месяца)
-
-#### 5. Подмена MEM_CHECK через Shadow Copy
+#### 1. Подмена MEM_CHECK через Shadow Copy
 **Цель**: Warden не видит наши хуки в .text секции
 
 **Механизм**:
-1. Перехватываем CHEAT_CHECKS_REQUEST
-2. Парсим MEM_CHECK (адрес + длина)
-3. Проверяем: адрес в нашем hook list?
+1. Перехватываем CHEAT_CHECKS_REQUEST (уже работает)
+2. Парсим MEM_CHECK: адрес + длина (уже работает)
+3. Проверяем: адрес в нашем hook list? (ScanForHookAddresses уже работает)
 4. Если да:
-   - Читаем оригинальные байты из Shadow Copy
+   - Читаем оригинальные байты из Shadow Copy (уже работает)
    - Вычисляем SHA1 от оригинальных байт
-   - Подменяем CMSG: вместо хеша с хуком отправляем оригинальный хеш
-   - Генерируем валидный checksum (через #2)
-   - Шифруем RC4 (используем клонированный S-box)
-
-**Блокер**: нужен checksum algorithm (#2)
+   - Подменяем результат в CMSG: оригинальный хеш вместо хеша с хуком
+   - Генерируем валидный checksum (алгоритм уже известен)
+   - Шифруем RC4 (ключ из RC4 hook уже доступен)
 
 **Критерий успеха**: Warden не банит, хотя у нас стоят хуки на проверяемых адресах
 
 ---
 
-#### 6. Подмена LUA_EVAL результатов
+### Среднесрочное (1-2 месяца)
+
+#### 2. Подмена LUA_EVAL результатов
 **Цель**: скрыть запрещённые аддоны / модификации UI
 
 **Пример LUA_EVAL**:
@@ -526,13 +479,11 @@ return GetAddOnInfo("SomeCheat")
 4. Генерируем валидный checksum
 5. Шифруем и отправляем spoofed CMSG
 
-**Блокер**: нужен checksum algorithm (#2)
-
 **Критерий успеха**: можем использовать запрещённые аддоны, Warden не видит
 
 ---
 
-#### 7. Автоматическое определение опасности
+#### 3. Автоматическое определение опасности
 **Цель**: знать заранее, какие адреса Warden проверяет → наши хуки в опасности?
 
 **Механизм**:
@@ -554,7 +505,7 @@ return GetAddOnInfo("SomeCheat")
 
 ### Дальнее (3+ месяца)
 
-#### 8. Полный Warden bypass
+#### 4. Полный Warden bypass
 **Цель**: сервер думает, что у нас чистый клиент (нет хуков, читов, модификаций)
 
 **Компоненты**:
@@ -571,7 +522,7 @@ return GetAddOnInfo("SomeCheat")
 
 ---
 
-#### 9. PAGE_CHECK Evasion
+#### 5. PAGE_CHECK Evasion
 **Цель**: обойти проверку защиты памяти (PAGE_EXECUTE_READ → PAGE_EXECUTE_READWRITE)
 
 **Проблема**: если мы меняем protection на executable странице → Warden видит через VirtualQuery.
@@ -585,7 +536,7 @@ return GetAddOnInfo("SomeCheat")
 
 ---
 
-#### 10. Антиопределение DLL
+#### 6. Антиопределение DLL
 **Цель**: скрыть нашу DLL от Warden MODULE_CHECK
 
 **Проблема**: Warden может вызывать NtQueryVirtualMemory → видит все загруженные модули.
@@ -602,42 +553,48 @@ return GetAddOnInfo("SomeCheat")
 ## Метрики успеха
 
 ### Текущий прогресс
-- **Функциональность**: 11/17 компонентов работают (65%)
-- **Критические блокеры**: 0 (RC4 CMSG decryption решён!)
-- **Полнота анализа**: 15+ модулей проанализировано (11/15 FULL dispatch chains, 3/15 remap-only)
-- **Захват модулей**: 16+/17 модулей (новые: 0BE6B21C, 952860B1, 32F1D632, 46DCC0B8)
-- **Динамическая типизация**: 100% парсинг пакетов во всех живых тестах (0 ошибок)
+- **Функциональность**: 13/14 наблюдательных компонентов работают (93%)
+- **Критические блокеры**: 0
+- **Полнота анализа**: 15 модулей проанализировано (11/15 FULL dispatch chains, 1/15 partial, 3/15 remap-only)
+- **Захват модулей**: 15+ модулей (0BE6B21C, 952860B1, 32F1D632, 46DCC0B8, CB9E43D6 и др.)
+- **Извлечение типов**: in-memory scan как primary → 0 unknown types в живых тестах
+- **RC4 CMSG**: расшифровка через internal hook — 100% success rate
+- **Checksum**: SHA1 XOR-fold — РЕШЁН, все наблюдаемые checksums VALID
+- **Request-response correlation**: FIFO queue — РАБОТАЕТ
 
 ### Следующий milestone
-- CHEAT_CHECKS_RESULT parser: **РЕАЛИЗОВАН**
-- Checksum algorithm: **ПОНЯТ**
-- MEM_CHECK spoofing: **ПРОТОТИП**
+- MEM_CHECK spoofing: **ПРОТОТИП** (все компоненты ready: Shadow Copy, checksum, RC4 hook)
 
-После этого: переход к полному bypass (компоненты #8-10).
+После этого: переход к полному bypass (LUA_EVAL spoofing, PAGE_CHECK evasion, DLL hiding).
 
 ---
 
 ## Заключение
 
-Проект находится на стадии **перехода к активной фазе**. Мы научились:
-- Перехватывать и парсить все типы Warden пакетов
-- Извлекать бинарные модули и их внутреннюю структуру (16+ модулей)
-- Автоматически определять типы проверок (BFS chain walker + union of dispatch chains)
-- **Динамически обнаруживать новые типы** при парсинге пакетов (100% success rate)
-- Находить адреса наших хуков в запросах Warden
-- **Видеть ОБЕ стороны диалога Warden** (SMSG requests и CMSG responses)
+Проект находится на стадии **готовности к активному spoofing**. Наблюдательная фаза практически завершена:
+
+**Что мы умеем**:
+- Перехватывать и парсить все типы Warden пакетов (SMSG и CMSG)
+- Извлекать бинарные модули и их внутреннюю структуру (15+ модулей)
+- Автоматически определять типы проверок из модуля (in-memory scan + dispatch chain + remap table)
+- Расшифровывать CMSG ответы через internal RC4 hook (multi-hook, до 4 функций)
+- Коррелировать SMSG requests с CMSG responses (FIFO queue)
+- Валидировать checksums (SHA1 XOR-fold)
+- Находить адреса наших хуков в запросах Warden (ScanForHookAddresses)
+- Читать оригинальные байты .text секции (Shadow Copy)
 
 **Критические прорывы**:
+- **In-memory module scanning**: сканирование загруженного (распакованного, релоцированного) модуля — 0 unknown types
+- **RLE unpacking**: для fallback-сканирования packed бинарников — убраны артефакты RLE control words
 - **RC4 CMSG расшифровка** через multi-hook внутреннего PRGA (до 4 RC4 функций одновременно)
-- **Детерминированный парсер** вместо DFS: размеры типов определяются структурной валидацией при первой встрече
-- **Динамическая типизация**: модуль 46DCC0B8 (remap-only) — все 7 типов найдены on-the-fly, 13 пакетов парсятся без ошибок
+- **Checksum algorithm решён**: SHA1(results) → XOR-fold → uint32_t — все наблюдаемые checksums VALID
+- **g_scanBaseAddr**: корректировка абсолютных адресов в in-memory модулях для remap table access
 
-**Живые тесты** (модуль 46DCC0B8, 2026-02-15):
-- 13 CHEAT_CHECKS_REQUEST пакетов: 0 ошибок парсинга
-- Динамически найдены: 0x15=TIMING, 0x71=LUA, 0xC3=DRIVER, 0xCD=PAGE, 0xF6=PAGE
-- PAGE checks с низкими адресами (0x60EC, 0xC6, 0x32B9): корректно обработаны
-- String index validation relaxed (strIdx ≤ numStrings): успешно
+**Живые тесты** (2026-02-15):
+- In-memory scan: 10/10 типов, 0 unknown, все checksums VALID
+- Dispatch chain union + remap supplement: полное покрытие типов
+- Request-response correlation: delta=0, все результаты разобраны по категориям
 
-Следующая фаза: **активный spoofing**. Понять checksum algorithm → подменять MEM_CHECK/LUA_EVAL результаты → полная невидимость для Warden.
+Следующая фаза: **активный spoofing**. Все компоненты для MEM_CHECK spoofing готовы (Shadow Copy, checksum, RC4 hook). Осталось реализовать подмену данных в CMSG.
 
 Конечная цель: полная невидимость для Warden (чистый клиент с точки зрения сервера, но с произвольными модификациями на стороне клиента).

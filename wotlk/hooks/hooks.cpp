@@ -10,12 +10,14 @@
 #include "../warden/warden_scan.h"
 #include "../warden/warden_rc4.h"
 #include "../warden/warden_rc4_hook.h"
+#include "../warden/warden_checksum.h"
 
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
+#include <deque>
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
@@ -152,6 +154,43 @@ static int  g_wardenArc4CallNum   = 0;
 // Timestamp when g_insideWardenHandler was set (for stale-flag detection)
 static DWORD g_wardenHandlerStartTick = 0;
 
+// ===========================================================================
+// Request-Response correlation: save parsed check info from SMSG request
+// for structured parsing of CMSG result
+// ===========================================================================
+
+enum class CheckCategory : uint8_t {
+    TIMING, MEM, PAGE, PROC, MODULE, DRIVER, MPQ, LUA
+};
+
+static const char* CheckCategoryToString(CheckCategory cat)
+{
+    switch (cat) {
+    case CheckCategory::TIMING: return "TIMING";
+    case CheckCategory::MEM:    return "MEM";
+    case CheckCategory::PAGE:   return "PAGE";
+    case CheckCategory::PROC:   return "PROC";
+    case CheckCategory::MODULE: return "MODULE";
+    case CheckCategory::DRIVER: return "DRIVER";
+    case CheckCategory::MPQ:    return "MPQ";
+    case CheckCategory::LUA:    return "LUA";
+    default:                    return "UNKNOWN";
+    }
+}
+
+struct PendingCheck {
+    uint8_t       realType;  // module-specific type ID
+    CheckCategory category;  // for result format selection
+    uint8_t       readLen;   // MEM_CHECK: memory read length
+    std::string   context;   // human-readable context (address, string, etc.)
+};
+
+// FIFO queue: each SMSG request pushes one entry, each CMSG response pops front.
+// Warden can send multiple requests before waiting for responses.
+static std::deque<std::vector<PendingCheck>> g_pendingChecksQueue;
+static CRITICAL_SECTION g_checksLock;
+static bool g_checksLockInit = false;
+
 // Форматирование байтов в hex-строку
 static std::string BytesToHex(const uint8_t* data, size_t len)
 {
@@ -232,12 +271,11 @@ static void __cdecl WardenPreHandler(uintptr_t savedEsp)
     g_wardenArc4CallNum = 0;
     g_wardenHandlerStartTick = GetTickCount();
 
-    // Clone all RC4 S-box candidates BEFORE the handler runs (fallback only)
-    // Skip if internal RC4 hook is active (primary method doesn't need cloning)
-    if (!warden_rc4_hook::IsActive()) {
-        if (warden_rc4::HasEncryptState() || warden_rc4::HasCandidates())
-            warden_rc4::CloneAllStates();
-    }
+    // Clone all RC4 S-box candidates BEFORE the handler runs.
+    // Always clone even if internal RC4 hook is active — the hook may fail
+    // for some modules (e.g., hooked function is KSA not PRGA, or called with len=0).
+    if (warden_rc4::HasEncryptState() || warden_rc4::HasCandidates())
+        warden_rc4::CloneAllStates();
 
     // Restore original bytes at all hook targets so Warden sees clean memory
     if (!g_hooksDisabled) {
@@ -384,7 +422,16 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
     size_t checkStart = pos;
     size_t checkEnd   = len - 1; // exclude terminal xorByte
 
-    if (checkStart >= checkEnd) return;
+    if (checkStart >= checkEnd) {
+        // Empty request — push empty vector to keep queue in sync
+        if (g_checksLockInit) {
+            EnterCriticalSection(&g_checksLock);
+            g_pendingChecksQueue.push_back({});
+            LeaveCriticalSection(&g_checksLock);
+        }
+        LOG(INFO) << "[WARDEN]   empty request, queued empty pending checks";
+        return;
+    }
 
     // Raw check section dump (only type bytes are XOR'd with xorByte, data is plaintext)
     {
@@ -419,12 +466,14 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
 
     bool useDynamic = warden_scan::HasTypeIDs();
 
-    // --- Structured parse ---
+    // --- Structured parse + collect PendingCheck entries ---
     static constexpr size_t kHookPatchSize = 8;
     int checkNum = 0;
     int memCheckCount = 0;
     bool truncated = false;
     pos = checkStart;
+
+    std::vector<PendingCheck> tempChecks;
 
     while (pos < checkEnd && !truncated) {
         uint8_t realType = data[pos] ^ xorByte;
@@ -472,8 +521,17 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
             break;
         }
 
+        // Build PendingCheck for response correlation
+        PendingCheck pending;
+        pending.realType = realType;
+        pending.readLen  = 0;
+
         // Extract and log fields based on data size
-        if (dataSize == 6) {
+        if (dataSize == 0) {
+            // TIMING
+            pending.category = CheckCategory::TIMING;
+            pending.context  = "timing";
+        } else if (dataSize == 6) {
             // MEM_CHECK: unk(1)+addr(4)+readLen(1)
             uint32_t addr;
             memcpy(&addr, data + pos + 1, 4);
@@ -494,6 +552,15 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
                      << std::hex << kWardenHandler << " ***";
 
             memCheckCount++;
+
+            pending.category = CheckCategory::MEM;
+            pending.readLen  = readLen;
+            {
+                std::ostringstream ctx;
+                ctx << "0x" << std::hex << std::setfill('0') << std::setw(8) << addr
+                    << " len=" << std::dec << (int)readLen;
+                pending.context = ctx.str();
+            }
         } else if (dataSize == 31) {
             // PROC: seed(4)+SHA1(20)+modIdx(1)+procIdx(1)+addr(4)+readLen(1)
             uint8_t modIdx  = data[pos + 24];
@@ -508,6 +575,17 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
                 info << " mod=\"" << strings[modIdx] << "\"";
             if (procIdx < strings.size())
                 info << " proc=\"" << strings[procIdx] << "\"";
+
+            pending.category = CheckCategory::PROC;
+            {
+                std::ostringstream ctx;
+                ctx << "0x" << std::hex << std::setfill('0') << std::setw(8) << addr;
+                if (modIdx < strings.size())
+                    ctx << " " << strings[modIdx];
+                if (procIdx < strings.size())
+                    ctx << "!" << strings[procIdx];
+                pending.context = ctx.str();
+            }
         } else if (dataSize == 29) {
             // PAGE: seed(4)+SHA1(20)+addr(4)+readLen(1)
             uint32_t addr;
@@ -515,23 +593,51 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
             uint8_t readLen = data[pos + 28];
             info << " addr=0x" << std::hex << std::setfill('0') << std::setw(8) << addr
                  << " len=" << std::dec << (int)readLen;
+
+            pending.category = CheckCategory::PAGE;
+            {
+                std::ostringstream ctx;
+                ctx << "0x" << std::hex << std::setfill('0') << std::setw(8) << addr;
+                pending.context = ctx.str();
+            }
         } else if (dataSize == 25) {
             // DRIVER: seed(4)+SHA1(20)+stringIndex(1)
             uint8_t strIdx = data[pos + 24];
             info << " strIdx=" << (int)strIdx;
             if (strIdx < strings.size())
                 info << " name=\"" << strings[strIdx] << "\"";
+
+            pending.category = CheckCategory::DRIVER;
+            if (strIdx < strings.size())
+                pending.context = strings[strIdx];
         } else if (dataSize == 24) {
             // MODULE: seed(4)+SHA1(20)
             info << " seed+SHA1";
+
+            pending.category = CheckCategory::MODULE;
         } else if (dataSize == 1) {
             // MPQ/LUA: stringIndex(1)
             uint8_t strIdx = data[pos];
             info << " strIdx=" << (int)strIdx;
-            if (strIdx < strings.size())
+            if (strIdx < strings.size()) {
                 info << " str=\"" << strings[strIdx] << "\"";
+                pending.context = strings[strIdx];
+
+                const char* cls = ClassifyWardenString(strings[strIdx]);
+                if (strcmp(cls, "MPQ") == 0)
+                    pending.category = CheckCategory::MPQ;
+                else
+                    pending.category = CheckCategory::LUA;
+            } else {
+                // Unknown string index — default to LUA (more conservative parsing)
+                pending.category = CheckCategory::LUA;
+            }
+        } else {
+            // Unexpected size — default to MODULE-like (1-byte result)
+            pending.category = CheckCategory::MODULE;
         }
 
+        tempChecks.push_back(std::move(pending));
         pos += static_cast<size_t>(dataSize);
         LOG(INFO) << info.str();
     }
@@ -542,6 +648,19 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
     if (truncated && pos < checkEnd) {
         LOG(WARNING) << "[WARDEN]   structured parse stopped at offset " << std::dec << pos
                      << " (" << (checkEnd - pos) << " bytes remaining)";
+    }
+
+    // Always push to queue (even if truncated) to keep SMSG→CMSG correlation in sync.
+    // Warden sends multiple requests before waiting for responses.
+    if (g_checksLockInit) {
+        EnterCriticalSection(&g_checksLock);
+        g_pendingChecksQueue.push_back(std::move(tempChecks));
+        size_t queuedCount = g_pendingChecksQueue.back().size();
+        size_t queueDepth  = g_pendingChecksQueue.size();
+        LeaveCriticalSection(&g_checksLock);
+        LOG(INFO) << "[WARDEN]   queued " << std::dec << queuedCount
+                  << " pending checks" << (truncated ? " (PARTIAL)" : "")
+                  << " queue depth=" << queueDepth;
     }
 
     // Module-agnostic fallback: scan raw check data for our hook addresses.
@@ -608,6 +727,12 @@ static void __cdecl WardenPostHandlerImpl()
             warden_scan::Reset();
             warden_rc4::Reset();
             module_dump::Reset();
+            // Clear pending checks queue (new module = new session)
+            if (g_checksLockInit) {
+                EnterCriticalSection(&g_checksLock);
+                g_pendingChecksQueue.clear();
+                LeaveCriticalSection(&g_checksLock);
+            }
             module_dump::OnModuleUse(localBuf, copyLen);
             // Proactively try to load from disk cache
             if (copyLen >= 17)
@@ -618,14 +743,20 @@ static void __cdecl WardenPostHandlerImpl()
         if (firstByte == WARDEN_SMSG_MODULE_INITIALIZE) {
             module_dump::OnModuleInitialize(localBuf, copyLen);
 
-            // Binary scan first (primary), memory scan as fallback
             size_t moduleLen = 0;
             const uint8_t* moduleData = module_dump::GetDecompressedModule(moduleLen);
             if (moduleData && moduleLen > 0) {
                 warden_scan::LogModuleHeader(moduleData, moduleLen);
-                if (!warden_scan::ScanModuleBinary(moduleData, moduleLen))
-                    warden_scan::ScanAndExtractTypeIDs();
+
+                // Step 1: Find the module in process memory (needed for in-memory scan + RC4 hook)
                 warden_scan::FindModuleInMemory(moduleData, moduleLen);
+
+                // Step 2: In-memory scan (primary) — actual x86 code, no RLE packing artifacts
+                // Step 3: Packed binary scan (fallback) — may have false positives from RLE data
+                // Step 4: Blind memory scan (last resort) — scans all MEM_PRIVATE regions
+                if (!warden_scan::ScanModuleInMemory())
+                    if (!warden_scan::ScanModuleBinary(moduleData, moduleLen))
+                        warden_scan::ScanAndExtractTypeIDs();
 
                 // Try to install internal RC4 hook (primary CMSG decryption)
                 uintptr_t moduleAddr = warden_scan::GetModuleRuntimeAddress();
@@ -636,9 +767,11 @@ static void __cdecl WardenPostHandlerImpl()
                 warden_scan::ScanAndExtractTypeIDs();
             }
 
-            // S-box cloning as fallback (only if internal RC4 hook failed)
-            if (!warden_rc4_hook::IsActive())
-                warden_rc4::ScanForRC4States();
+            // S-box scanning — always run as fallback even if RC4 hook is active.
+            // Some modules have RC4 functions that the hook scanner finds but that
+            // aren't the actual CMSG encryption PRGA (KSA, mid-function code, or
+            // PRGA called with len=0 only).
+            warden_rc4::ScanForRC4States();
         }
     } else {
         LOG(WARNING) << "[WARDEN] pkt#" << std::dec << pktNum
@@ -790,6 +923,225 @@ __declspec(naked) static void HookedARC4ProcessNaked()
 }
 
 // ---------------------------------------------------------------------------
+// CHEAT_CHECKS_RESULT (0x02) parser
+//
+// CMSG format: [0x02][resultLen:2 LE][checksum:4][results:N]
+// Results are in the same order as the checks in the preceding request.
+// ---------------------------------------------------------------------------
+
+static void ParseCheatChecksResult(const uint8_t* plaintext, size_t len)
+{
+    // Minimum: [op:1][resultLen:2][checksum:4] = 7 bytes
+    if (len < 7)
+        return;
+
+    uint16_t resultLen;
+    memcpy(&resultLen, plaintext + 1, 2);
+
+    uint32_t checksum;
+    memcpy(&checksum, plaintext + 3, 4);
+
+    const uint8_t* results = plaintext + 7;
+    size_t resultsAvail = len - 7;
+
+    // Validate resultLen against available data
+    if (resultLen > resultsAvail) {
+        LOG(WARNING) << "[CMSG] CHEAT_CHECKS_RESULT resultLen=" << std::dec << resultLen
+                     << " but only " << resultsAvail << " bytes available — truncated";
+        resultLen = static_cast<uint16_t>(resultsAvail);
+    }
+
+    // Validate checksum
+    uint32_t computed = warden_checksum::BuildChecksum(results, resultLen);
+    bool checksumOK = (computed == checksum);
+
+    {
+        std::ostringstream cksumLog;
+        cksumLog << "[CMSG] CHEAT_CHECKS_RESULT resultLen=" << std::dec << resultLen
+                 << " checksum=0x" << std::hex << std::setfill('0') << std::setw(8) << checksum;
+        if (checksumOK) {
+            cksumLog << " (VALID)";
+        } else {
+            cksumLog << " (INVALID, computed=0x" << std::hex << std::setfill('0')
+                     << std::setw(8) << computed << ")";
+        }
+        LOG(INFO) << cksumLog.str();
+    }
+
+    // Pop oldest pending checks from FIFO queue
+    std::vector<PendingCheck> checks;
+    bool hadEntry = false;
+    if (g_checksLockInit) {
+        EnterCriticalSection(&g_checksLock);
+        if (!g_pendingChecksQueue.empty()) {
+            checks = std::move(g_pendingChecksQueue.front());
+            g_pendingChecksQueue.pop_front();
+            hadEntry = true;
+        }
+        LeaveCriticalSection(&g_checksLock);
+    }
+
+    if (!hadEntry) {
+        LOG(INFO) << "[CMSG]   no pending checks in queue (request not parsed?)";
+        if (resultLen > 0) {
+            size_t dumpLen = (resultLen < kMaxDecryptedDump) ? resultLen : kMaxDecryptedDump;
+            LOG(INFO) << "[CMSG]   raw results: " << BytesToHex(results, dumpLen);
+        }
+        return;
+    }
+
+    if (checks.empty()) {
+        // Empty request → empty response (resultLen should be 0)
+        if (resultLen > 0) {
+            LOG(WARNING) << "[CMSG]   empty request but resultLen=" << std::dec << resultLen;
+            size_t dumpLen = (resultLen < kMaxDecryptedDump) ? resultLen : kMaxDecryptedDump;
+            LOG(INFO) << "[CMSG]   raw results: " << BytesToHex(results, dumpLen);
+        }
+        return;
+    }
+
+    // Parse per-check results in request order
+    size_t pos = 0;
+    for (size_t i = 0; i < checks.size(); ++i) {
+        const auto& chk = checks[i];
+
+        if (pos >= resultLen) {
+            LOG(WARNING) << "[CMSG]   #" << std::dec << (i + 1)
+                         << " " << CheckCategoryToString(chk.category)
+                         << ": no data (ran out of result bytes at pos=" << pos << ")";
+            break;
+        }
+
+        std::ostringstream info;
+        info << "[CMSG]   #" << std::dec << (i + 1)
+             << " " << CheckCategoryToString(chk.category);
+
+        if (!chk.context.empty())
+            info << " " << chk.context;
+
+        uint8_t resultByte = results[pos];
+
+        switch (chk.category) {
+        case CheckCategory::TIMING: {
+            // 5 bytes: [result:1][ticks:4]
+            if (pos + 5 > resultLen) {
+                info << ": truncated (need 5, have " << (resultLen - pos) << ")";
+                LOG(WARNING) << info.str();
+                pos = resultLen;
+                continue; // skip LOG(INFO) below, guard at loop top stops next iteration
+            }
+            uint32_t ticks;
+            memcpy(&ticks, results + pos + 1, 4);
+            float hours = ticks / 3600000.0f;
+            info << ": result=0x" << std::hex << std::setfill('0') << std::setw(2)
+                 << (int)resultByte
+                 << (resultByte == 0x01 ? " (pass)" : " (fail)")
+                 << " ticks=" << std::dec << ticks
+                 << " (" << std::fixed << std::setprecision(1) << hours << "h)";
+            pos += 5;
+            break;
+        }
+        case CheckCategory::MEM: {
+            // result != 0x00 → fail (1 byte)
+            // result == 0x00 → OK: [0x00][memory:readLen]
+            if (resultByte != 0x00) {
+                info << ": result=0x" << std::hex << std::setfill('0') << std::setw(2)
+                     << (int)resultByte << " (fail)";
+                pos += 1;
+            } else {
+                size_t totalSize = 1 + chk.readLen;
+                if (pos + totalSize > resultLen) {
+                    info << ": result=0x00 (OK) but data truncated (need "
+                         << std::dec << totalSize << ", have " << (resultLen - pos) << ")";
+                    LOG(WARNING) << info.str();
+                    pos = resultLen;
+                    continue;
+                }
+                size_t dumpLen = (chk.readLen < 64) ? chk.readLen : 64;
+                info << ": result=0x00 (OK) data=["
+                     << BytesToHex(results + pos + 1, dumpLen);
+                if (chk.readLen > dumpLen)
+                    info << " ...";
+                info << "]";
+                pos += totalSize;
+            }
+            break;
+        }
+        case CheckCategory::PAGE:
+        case CheckCategory::PROC:
+        case CheckCategory::MODULE:
+        case CheckCategory::DRIVER: {
+            // Fixed 1-byte result (0xE9 = pass for legitimate module checks)
+            info << ": result=0x" << std::hex << std::setfill('0') << std::setw(2)
+                 << (int)resultByte
+                 << (resultByte == 0xE9 ? " (pass)" : "");
+            pos += 1;
+            break;
+        }
+        case CheckCategory::MPQ: {
+            // result != 0x00 → fail (1 byte)
+            // result == 0x00 → OK: [0x00][SHA1:20]
+            if (resultByte != 0x00) {
+                info << ": result=0x" << std::hex << std::setfill('0') << std::setw(2)
+                     << (int)resultByte << " (fail)";
+                pos += 1;
+            } else {
+                if (pos + 21 > resultLen) {
+                    info << ": result=0x00 (OK) but SHA1 truncated";
+                    LOG(WARNING) << info.str();
+                    pos = resultLen;
+                    continue;
+                }
+                info << ": result=0x00 (OK) SHA1=["
+                     << BytesToHex(results + pos + 1, 20) << "]";
+                pos += 21;
+            }
+            break;
+        }
+        case CheckCategory::LUA: {
+            // result != 0x00 → fail (1 byte)
+            // result == 0x00 → OK: [0x00][strlen:1][string:N]
+            if (resultByte != 0x00) {
+                info << ": result=0x" << std::hex << std::setfill('0') << std::setw(2)
+                     << (int)resultByte << " (fail)";
+                pos += 1;
+            } else {
+                if (pos + 2 > resultLen) {
+                    info << ": result=0x00 (OK) but strlen truncated";
+                    LOG(WARNING) << info.str();
+                    pos = resultLen;
+                    continue;
+                }
+                uint8_t strLen = results[pos + 1];
+                if (pos + 2 + strLen > resultLen) {
+                    info << ": result=0x00 strlen=" << (int)strLen << " but string truncated";
+                    LOG(WARNING) << info.str();
+                    pos = resultLen;
+                    continue;
+                }
+                std::string luaResult(
+                    reinterpret_cast<const char*>(results + pos + 2), strLen);
+                info << ": result=0x00 str=\"" << luaResult << "\"";
+                pos += 2 + strLen;
+            }
+            break;
+        }
+        }
+
+        LOG(INFO) << info.str();
+    }
+
+    // Verify total consumed matches resultLen
+    if (pos != resultLen) {
+        LOG(WARNING) << "[CMSG]   result parse consumed " << std::dec << pos
+                     << " bytes but resultLen=" << resultLen
+                     << " (delta=" << (pos > resultLen ? "-" : "+")
+                     << (pos > resultLen ? (pos - resultLen) : (resultLen - pos))
+                     << ")";
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SendPacket handler: logs outgoing CMSG_WARDEN_DATA packets
 //
 // Stack after pushad+pushfd (same layout as WardenPreHandler):
@@ -883,11 +1235,31 @@ static void __cdecl SendPacketHandler(uintptr_t savedEsp)
             << (int)clientOp << " (" << WardenClientOpcodeToString(clientOp) << ")";
         if (warden_rc4_hook::IsActive())
             oss << " [rc4_hook]";
+
+        // Log first, then parse result
+        LOG(INFO) << oss.str();
+
+        if (clientOp == WARDEN_CMSG_CHEAT_CHECKS_RESULT && plainLen >= 7)
+            ParseCheatChecksResult(plaintext, plainLen);
+
+        return; // skip final LOG below (already logged)
     } else {
         oss << " data=[" << hex;
         if (payloadSize > dumpLen)
             oss << " ...";
         oss << "] (encrypted)";
+
+        // Pop pending checks queue to keep in sync even when we can't decrypt.
+        // After CHEAT_CHECKS_REQUEST starts, all CMSGs are CHEAT_CHECKS_RESULT.
+        // Encrypted CMSGs still consume the queue entry they correspond to.
+        if (g_checksLockInit) {
+            EnterCriticalSection(&g_checksLock);
+            if (!g_pendingChecksQueue.empty()) {
+                g_pendingChecksQueue.pop_front();
+                oss << " (popped queue, depth=" << g_pendingChecksQueue.size() << ")";
+            }
+            LeaveCriticalSection(&g_checksLock);
+        }
     }
 
     LOG(INFO) << oss.str();
@@ -919,6 +1291,12 @@ namespace hooks {
 
 bool Initialize()
 {
+    // Initialize critical section for request-response correlation
+    if (!g_checksLockInit) {
+        InitializeCriticalSection(&g_checksLock);
+        g_checksLockInit = true;
+    }
+
     MH_STATUS status = MH_Initialize();
     if (status != MH_OK) {
         LOG(ERROR) << "MH_Initialize failed: " << MH_StatusToString(status);
@@ -1037,6 +1415,11 @@ void Shutdown()
         LOG(INFO) << "All hooks removed (SMSG warden packets: "
                   << std::dec << g_wardenPacketCount
                   << ", CMSG warden packets: " << g_cmsgWardenCount << ")";
+    }
+
+    if (g_checksLockInit) {
+        DeleteCriticalSection(&g_checksLock);
+        g_checksLockInit = false;
     }
 }
 
