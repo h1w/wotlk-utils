@@ -56,6 +56,27 @@ static std::string BytesToHex(const uint8_t* data, size_t len)
     return oss.str();
 }
 
+// Addon-detection API patterns (case-sensitive substring match in eval code)
+static const char* kAddonPatterns[] = {
+    "GetAddOnInfo",
+    "IsAddOnLoaded",
+    "GetAddOnMetadata",
+    "GetAddOnEnableState",
+    "GetAddOnDependencies",
+    "GetAddOnOptionalDependencies",
+};
+
+static bool ShouldSpoofLuaResult(const std::string& evalCode)
+{
+    if (evalCode.empty())
+        return false;
+    for (const auto& pattern : kAddonPatterns) {
+        if (evalCode.find(pattern) != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
 // Check if [addr, addr+len) overlaps with any hook target.
 // Returns index into kHookTargets or -1.
 static int FindOverlappingHook(uint32_t addr, uint8_t len)
@@ -154,7 +175,7 @@ size_t GetQueueDepth()
 // Copies each result from old buffer to new buffer, modifying as needed:
 //   - MEM_CHECK targeting hook address: replace data with shadow_copy originals
 //   - PAGE_CHECK targeting hook address: force 0xE9 (pass)
-//   - LUA_EVAL with non-empty string result: replace with empty string
+//   - LUA_EVAL with addon-detection eval code + non-empty result: replace with empty string
 // Copy-based approach handles variable-length LUA results correctly
 // (in-place would break offsets when result shrinks).
 // If modified: update resultLen, copy back, zero trailing, recompute checksum.
@@ -293,8 +314,8 @@ bool SpoofCmsgIfNeeded(uint8_t* data, size_t len)
                 uint8_t strLen = oldResults[oldPos + 1];
                 if (oldPos + 2 + strLen > resultLen) goto done;
 
-                if (strLen > 0) {
-                    // Spoof: replace non-empty string with empty
+                if (strLen > 0 && ShouldSpoofLuaResult(chk.context)) {
+                    // Addon-detection: replace non-empty string with empty
                     std::string origStr(
                         reinterpret_cast<const char*>(oldResults + oldPos + 2), strLen);
                     newResults[newPos++] = 0x00;  // result = success
@@ -306,9 +327,9 @@ bool SpoofCmsgIfNeeded(uint8_t* data, size_t len)
                               << " eval=\"" << chk.context << "\""
                               << " result=\"" << origStr << "\" -> empty";
                 } else {
-                    // Already empty string — copy as-is
-                    std::memcpy(newResults + newPos, oldResults + oldPos, 2);
-                    newPos += 2;
+                    // Not addon-related OR already empty — copy as-is
+                    std::memcpy(newResults + newPos, oldResults + oldPos, 2 + strLen);
+                    newPos += 2 + strLen;
                 }
                 oldPos += 2 + strLen;
             }

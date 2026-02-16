@@ -336,31 +336,30 @@
 
 ---
 
-## Что НЕ работает (TODO)
+### 13. LUA_EVAL Spoofing (селективный)
 
-### 1. Подмена LUA_EVAL результатов
+**Описание**: подмена LUA_EVAL результатов в CMSG для сокрытия запрещённых аддонов.
 
-**Описание**: модификация LUA_EVAL ответов в CMSG для сокрытия запрещённых аддонов.
+**Проблема**: Warden отправляет LUA_EVAL проверки вида `return GetAddOnInfo("CheatAddon")`. Если аддон установлен — клиент возвращает его имя → бан.
 
-**Пример LUA_EVAL**:
-```lua
-return GetAddOnInfo("SomeCheat")
-```
+**Подход**: **Селективный** — спуфим только результаты LUA_EVAL, чей eval code содержит addon-detection API:
+- `GetAddOnInfo`, `IsAddOnLoaded`, `GetAddOnMetadata`
+- `GetAddOnEnableState`, `GetAddOnDependencies`, `GetAddOnOptionalDependencies`
 
-Если аддон установлен — клиент вернёт его имя — возможен бан.
+Все остальные LUA результаты (realm info, CVars, etc.) проходят без изменений.
 
-**Механизм**:
-1. Перехватываем LUA_EVAL в CHEAT_CHECKS_REQUEST (уже есть hook на FrameScript_Execute)
-2. В SpoofCmsgIfNeeded: находим LUA result в CMSG, подменяем на безопасный результат
-3. Пересчитываем checksum и resultLen
+**Реализация** (файл: `warden_spoof.cpp`):
+1. `ShouldSpoofLuaResult(evalCode)` — substring match по addon-detection паттернам
+2. В LUA case `SpoofCmsgIfNeeded`: если eval code match + результат непустой → заменяем на empty string
+3. Если eval code не match или результат уже пустой → copy as-is
 
-**Приоритет**: СРЕДНИЙ
-
-**Статус**: НЕ НАЧАТО
+**Статус**: РЕАЛИЗОВАНО, ожидает боевого теста
 
 ---
 
-### 2. Антиопределение DLL (MODULE_CHECK evasion)
+## Что НЕ работает (TODO)
+
+### 1. Антиопределение DLL (MODULE_CHECK evasion)
 
 **Описание**: скрыть нашу DLL от Warden MODULE_CHECK.
 
@@ -376,7 +375,7 @@ return GetAddOnInfo("SomeCheat")
 
 ---
 
-### 3. HASH_REQUEST spoofing
+### 2. HASH_REQUEST spoofing
 
 **Описание**: подмена ответа на HASH_REQUEST (opcode 0x05).
 
@@ -397,18 +396,14 @@ return GetAddOnInfo("SomeCheat")
 - ~~Парсинг CMSG ответов~~ — structured parsing с correlation
 - ~~MEM_CHECK spoofing через Shadow Copy~~ — **Variant A** реализован (`warden_spoof.cpp`)
 - ~~PAGE_CHECK spoofing~~ — покрыт Variant A (force 0xE9 pass)
+- ~~LUA_EVAL spoofing~~ — селективный подход (addon-detection patterns)
 
 ### Ближайшее
 
-#### 1. Боевой тест MEM_CHECK spoofing
-**Цель**: дождаться MEM_CHECK на один из наших 4 hook-адресов и убедиться, что спуфер сработает корректно.
+#### 1. Боевой тест MEM_CHECK / LUA_EVAL spoofing
+**Цель**: дождаться MEM_CHECK на один из наших 4 hook-адресов и LUA_EVAL с addon-detection запросом, убедиться что спуфер сработает корректно.
 
-**Критерий успеха**: в логе появится `[SPOOF] MEM_CHECK ... replaced with clean bytes`, checksum VALID, нет дисконнекта.
-
-#### 2. Подмена LUA_EVAL результатов
-**Цель**: скрыть запрещённые аддоны / модификации UI.
-
-**Механизм**: расширить SpoofCmsgIfNeeded для обработки LUA category.
+**Критерий успеха**: в логе появится `[SPOOF] MEM_CHECK ... replaced with clean bytes` и/или `[SPOOF] LUA_EVAL ... -> empty`, checksum VALID, нет дисконнекта.
 
 ### Среднесрочное (1-2 месяца)
 
@@ -431,7 +426,7 @@ return GetAddOnInfo("SomeCheat")
 |-----------|--------|
 | MEM_CHECK spoofing | РЕАЛИЗОВАНО (Variant A) |
 | PAGE_CHECK spoofing | РЕАЛИЗОВАНО (Variant A) |
-| LUA_EVAL spoofing | НЕ НАЧАТО |
+| LUA_EVAL spoofing | РЕАЛИЗОВАНО (селективный, addon-detection) |
 | HASH_REQUEST spoofing | НЕ НАЧАТО |
 | MODULE_CHECK evasion | НЕ НАЧАТО |
 | DRIVER_CHECK spoofing | НЕ НАЧАТО |
@@ -444,7 +439,7 @@ return GetAddOnInfo("SomeCheat")
 
 ### Текущий прогресс
 - **Наблюдение**: 100% — все типы пакетов парсятся, CMSG расшифровывается
-- **Spoofing**: MEM_CHECK + PAGE_CHECK реализован (Variant A), ожидает боевого теста
+- **Spoofing**: MEM_CHECK + PAGE_CHECK + LUA_EVAL реализован (Variant A), ожидает боевого теста
 - **Критические блокеры**: 0
 - **Полнота анализа**: 24 модуля захвачено (21 decompressed), 21/21 = 100% через Python, 0 unknown types в живых C++ тестах
 - **Извлечение типов**: dispatch chain (14 модулей) + remap-only (6 модулей) + partial+supplement (1 модуль) = 21/21
@@ -454,7 +449,7 @@ return GetAddOnInfo("SomeCheat")
 
 ### Следующий milestone
 - Боевой тест MEM_CHECK spoofing (дождаться MEM_CHECK на hook-адрес)
-- После: LUA_EVAL spoofing
+- Боевой тест LUA_EVAL spoofing (дождаться addon-detection LUA_EVAL)
 
 ---
 
@@ -470,6 +465,7 @@ return GetAddOnInfo("SomeCheat")
 - Коррелировать SMSG requests с CMSG responses (FIFO queue)
 - Валидировать и пересчитывать checksums (SHA1 XOR-fold)
 - **Подменять MEM_CHECK / PAGE_CHECK результаты** на оригинальные байты из shadow copy
+- **Подменять LUA_EVAL результаты** addon-detection запросов (селективный spoof)
 - Находить адреса наших хуков в запросах Warden (ScanForHookAddresses)
 - Читать оригинальные байты .text секции (Shadow Copy)
 - Обрабатывать новые (uncached) модули через blind memory scan с корректным `g_scanBaseAddr`
@@ -488,4 +484,4 @@ return GetAddOnInfo("SomeCheat")
 - Queue correlation: delta=0, все результаты разобраны по категориям
 - Python validation: 21/21 модулей = 100% (9-10 типов каждый)
 
-Следующая фаза: **боевой тест spoofing** + расширение на LUA_EVAL.
+Следующая фаза: **боевой тест spoofing** (MEM_CHECK + PAGE_CHECK + LUA_EVAL).
