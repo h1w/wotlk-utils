@@ -47,4 +47,16 @@ size_t GetQueueDepth();
 // Returns true if buffer was modified.
 bool SpoofCmsgIfNeeded(uint8_t* data, size_t len);
 
+// Store the 16-byte seed from HASH_REQUEST (SMSG opcode 0x05)
+void StoreHashSeed(const uint8_t* seed, size_t len);
+
+// Get stored hash seed (returns nullptr if not stored)
+const uint8_t* GetStoredHashSeed();
+
+// Spoof HASH_RESULT (CMSG opcode 0x04) if needed.
+// Called from RC4 hook handler BEFORE encryption.
+// Currently a no-op stub — infrastructure for future use.
+// Returns true if buffer was modified.
+bool SpoofHashResultIfNeeded(uint8_t* data, size_t len);
+
 } // namespace warden_spoof

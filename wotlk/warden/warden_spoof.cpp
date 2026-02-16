@@ -167,6 +167,40 @@ size_t GetQueueDepth()
 }
 
 // ===========================================================================
+// HASH_REQUEST seed storage
+// ===========================================================================
+
+static uint8_t g_hashSeed[16] = {};
+static bool    g_hashSeedValid = false;
+
+void StoreHashSeed(const uint8_t* seed, size_t len)
+{
+    if (!seed || len < 16)
+        return;
+    std::memcpy(g_hashSeed, seed, 16);
+    g_hashSeedValid = true;
+    LOG(INFO) << "[SPOOF] Stored HASH_REQUEST seed: " << BytesToHex(g_hashSeed, 16);
+}
+
+const uint8_t* GetStoredHashSeed()
+{
+    return g_hashSeedValid ? g_hashSeed : nullptr;
+}
+
+bool SpoofHashResultIfNeeded(uint8_t* data, size_t len)
+{
+    // Currently a no-op stub.
+    // The module computes the correct hash because our hooks don't modify
+    // its code before HASH_RESULT is sent. Infrastructure for future use.
+    if (!data || len != 21 || data[0] != WARDEN_CMSG_HASH_RESULT)
+        return false;
+
+    LOG(INFO) << "[SPOOF] HASH_RESULT seen (21 bytes), SHA1=["
+              << BytesToHex(data + 1, 20) << "] — not modified (stub)";
+    return false;
+}
+
+// ===========================================================================
 // Core: spoof CMSG CHEAT_CHECKS_RESULT (copy-based rebuild)
 //
 // CMSG format: [0x02][resultLen:2 LE][checksum:4][results:N]
@@ -353,6 +387,17 @@ bool SpoofCmsgIfNeeded(uint8_t* data, size_t len)
     }
 
 done:
+    // Copy any remaining result bytes we didn't parse (partial pending checks
+    // list means we only know about the first N checks, but the client produced
+    // results for ALL checks — pass the rest through unchanged).
+    if (oldPos < resultLen) {
+        size_t remaining = resultLen - oldPos;
+        if (newPos + remaining <= sizeof(newResults)) {
+            std::memcpy(newResults + newPos, oldResults + oldPos, remaining);
+            newPos += remaining;
+        }
+    }
+
     if (!modified)
         return false;
 

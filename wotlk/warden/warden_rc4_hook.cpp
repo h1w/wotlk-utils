@@ -160,11 +160,14 @@ static bool ValidateDecryptedCmsg(const uint8_t* plaintext, size_t len)
             return len == static_cast<size_t>(7) + resultLen;
         }
 
-    case WARDEN_CMSG_MEM_CHECKS_RESULT:   // 0x04
+    case WARDEN_CMSG_MEM_CHECKS_RESULT:   // 0x03
         return len >= 1;
 
-    case WARDEN_CMSG_HASH_RESULT:         // 0x05
+    case WARDEN_CMSG_HASH_RESULT:         // 0x04
         return len == 21;
+
+    case WARDEN_CMSG_MODULE_FAILED:       // 0x05
+        return len == 1;
 
     default:
         return false;
@@ -568,6 +571,12 @@ static void __cdecl RC4DetourHandler(uintptr_t savedEsp)
     // Validate as CMSG — only encrypt calls produce valid CMSG structure
     if (!ValidateDecryptedCmsg(localBuf, dataLen))
         return;
+
+    // Spoof HASH_RESULT if needed (before encryption)
+    if (localBuf[0] == WARDEN_CMSG_HASH_RESULT && dataLen == 21) {
+        if (warden_spoof::SpoofHashResultIfNeeded(localBuf, dataLen))
+            SafeReadBytes(localBuf, reinterpret_cast<void*>(dataPtr), dataLen);
+    }
 
     // Spoof MEM_CHECK/PAGE_CHECK results BEFORE encryption.
     // Modify localBuf in-place, then write back to original buffer.

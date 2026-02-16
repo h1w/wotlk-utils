@@ -21,8 +21,9 @@ enum WardenClientOpcode : uint8_t {
     WARDEN_CMSG_MODULE_MISSING      = 0x00,
     WARDEN_CMSG_MODULE_OK           = 0x01,
     WARDEN_CMSG_CHEAT_CHECKS_RESULT = 0x02,
-    WARDEN_CMSG_MEM_CHECKS_RESULT   = 0x04,
-    WARDEN_CMSG_HASH_RESULT         = 0x05,
+    WARDEN_CMSG_MEM_CHECKS_RESULT   = 0x03,
+    WARDEN_CMSG_HASH_RESULT         = 0x04,
+    WARDEN_CMSG_MODULE_FAILED       = 0x05,
 };
 
 // ---------------------------------------------------------------------------
@@ -112,6 +113,7 @@ inline const char* WardenClientOpcodeToString(uint8_t op)
     case WARDEN_CMSG_CHEAT_CHECKS_RESULT: return "CHEAT_CHECKS_RESULT";
     case WARDEN_CMSG_MEM_CHECKS_RESULT:   return "MEM_CHECKS_RESULT";
     case WARDEN_CMSG_HASH_RESULT:         return "HASH_RESULT";
+    case WARDEN_CMSG_MODULE_FAILED:       return "MODULE_FAILED";
     default:                              return "UNKNOWN";
     }
 }

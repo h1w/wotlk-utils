@@ -35,11 +35,12 @@ wotlk-utils/
 │   │   ├── warden_scan.cpp          # Сканирование модулей (in-memory + RLE unpack + dispatch chain)
 │   │   ├── warden_rc4.cpp           # Поиск RC4 S-box и расшифровка (fallback)
 │   │   ├── warden_rc4_hook.cpp      # Хук RC4 PRGA внутри модуля (primary) + вызов spoofing
-│   │   ├── warden_spoof.cpp         # MEM_CHECK / PAGE_CHECK spoofing (Variant A)
+│   │   ├── warden_spoof.cpp         # MEM/PAGE/MODULE/LUA/HASH spoofing (Variant A)
 │   │   ├── module_dump.cpp          # Сохранение модулей на диск
 │   │   ├── shadow_copy.cpp          # Чтение оригинальных байт .text из PE на диске
 │   │   ├── warden_checksum.cpp      # Checksum algorithm (SHA1 XOR-fold)
-│   │   └── warden_types.h           # Константы Warden opcodes
+│   │   ├── peb_unlink.cpp           # PEB.Ldr unlinking (MODULE_CHECK evasion)
+│   │   └── warden_types.h           # Константы Warden opcodes (CMSG/SMSG)
 │   │
 │   ├── logging/        # Настройка логирования для DLL
 │   └── docs/           # Документация (ты здесь)

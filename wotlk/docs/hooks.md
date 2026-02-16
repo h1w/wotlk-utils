@@ -199,8 +199,9 @@ Payload в `CMSG_WARDEN_DATA` **зашифрован RC4** Warden модуля. 
 - `MODULE_MISSING` (0x00) — 1 байт
 - `MODULE_OK` (0x01) — 1 байт
 - `CHEAT_CHECKS_RESULT` (0x02) — 7+ байт (заголовок + результаты проверок)
-- `HASH_RESULT` (0x03) — 21 байт (1 байт тип + 20 байт SHA1 хеш)
-- `MEM_CHECKS_RESULT` (0x04) — переменная длина
+- `MEM_CHECKS_RESULT` (0x03) — переменная длина
+- `HASH_RESULT` (0x04) — 21 байт (1 байт тип + 20 байт SHA1 хеш)
+- `MODULE_FAILED` (0x05) — 1 байт
 
 **ВАЖНО:**
 Warden модуль обрабатывает проверки **асинхронно** — на отдельном потоке, через 17-28 секунд после получения SMSG. Отключение хуков во время SMSG handler'а (Variant D) бесполезно. Вместо этого используется **Variant A** — подмена результатов в plaintext CMSG через RC4 hook (`warden_spoof::SpoofCmsgIfNeeded`).
@@ -515,5 +516,9 @@ __except(EXCEPTION_EXECUTE_HANDLER) {
 - **Naked functions** — для нестандартных calling conventions
 
 Дополнительно, **warden_rc4_hook.cpp** устанавливает до 4 хуков на RC4 PRGA функции **внутри** Warden модуля (не WoW.exe). Эти хуки захватывают CMSG plaintext ДО шифрования и являются основным методом расшифровки CMSG. Кроме того, именно в этой точке вызывается **warden_spoof::SpoofCmsgIfNeeded** — подмена MEM_CHECK / PAGE_CHECK результатов на оригинальные байты из shadow copy перед RC4 шифрованием (Variant A spoofing).
+
+**Early RC4 hook install**: RC4 хуки теперь устанавливаются в `WardenPreHandler` **ДО** обработки SMSG пакета (а не только в MODULE_INITIALIZE). Это позволяет перехватить HASH_RESULT, который отправляется синхронно во время handler'а. `FindModuleInMemory(nullptr, 0)` ищет модуль по 26-byte сигнатуре без необходимости в decompressed binary.
+
+**HASH_REQUEST/RESULT**: `WardenPostHandlerImpl` парсит HASH_REQUEST seed (16 байт), `RC4DetourHandler` + `SendPacketHandler` перехватывают и логируют HASH_RESULT (21 байт: [0x04][SHA1:20]).
 
 Все хуки работают вместе для полного анализа и обхода Warden системы античита.

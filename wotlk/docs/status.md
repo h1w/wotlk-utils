@@ -248,7 +248,10 @@
 - ConsumePlaintext: one-shot retrieval (thread-safe через CRITICAL_SECTION)
 
 **Lifecycle**:
-- Installed: после MODULE_INITIALIZE (FindModuleInMemory) — до 4 хуков одновременно
+- **Early install**: в `WardenPreHandler`, ДО обработки handler'а — для перехвата HASH_RESULT (отправляется синхронно во время SMSG handler'а)
+  - `FindModuleInMemory(nullptr, 0)` ищет модуль по стабильной 26-byte сигнатуре (не требует decompressed binary)
+  - Устанавливается однократно (guard `!IsActive()`)
+- **Late install**: в MODULE_INITIALIZE (guard: `!IsActive()`) — если early install не сработал
 - Removed: на MODULE_USE и при Shutdown — все хуки снимаются
 - Fallback: если ни одна RC4 функция не найдена — используем S-box cloning (warden_rc4.cpp)
 
@@ -298,10 +301,12 @@
 
 1. **FIFO queue** (`PushPendingChecks` / `PopPendingChecks`): хранит вектора PendingCheck с полями `checkAddr` и `readLen` для MEM/PAGE проверок
 2. **SpoofCmsgIfNeeded()**: вызывается из `RC4DetourHandler` в `warden_rc4_hook.cpp` ДО шифрования
+   - Copy-based rebuild: читает старые результаты, пишет новые, модифицируя при необходимости
    - Для MEM_CHECK: читает оригинальные байты из **shadow_copy** (`shadow::GetCleanBytes`), заменяет в CMSG
    - Для PAGE_CHECK: форсирует result byte = 0xE9 (pass)
    - Для MODULE_CHECK: форсирует result byte = 0xE9 (backup к PEB unlinking)
    - Для LUA_EVAL: селективная подмена addon-detection результатов
+   - **Partial checks**: если pending checks список неполный (parser не распознал все типы), оставшиеся байты результатов копируются as-is — предотвращает truncation
    - Пересчитывает checksum (`warden_checksum::BuildChecksum`)
 
 **Защищённые адреса** (kHookTargets):
@@ -369,21 +374,40 @@ MinHook = статическая линковка (нет DLL). miniz = комп
 
 ---
 
-## Что НЕ работает (TODO)
+### 15. HASH_REQUEST / HASH_RESULT перехват
 
-### 1. HASH_REQUEST spoofing
+**Описание**: полный перехват цикла HASH_REQUEST (SMSG opcode 0x05) → HASH_RESULT (CMSG opcode 0x04).
 
-**Описание**: подмена ответа на HASH_REQUEST (opcode 0x05).
+**Проблема**: HASH_RESULT отправляется клиентом **синхронно** во время SMSG handler'а (ДО MODULE_INITIALIZE). Ранее RC4 хуки ставились только в MODULE_INITIALIZE — HASH_RESULT не перехватывался.
 
-**Текущее состояние**: HASH_REQUEST получается и логируется, HASH_RESULT (21 bytes) отправляется клиентом. Алгоритм вычисления хеша — внутри модуля, пока не реверсирован.
+**Решение**: **Early RC4 hook install** в `WardenPreHandler`:
+1. Перед вызовом оригинального handler'а проверяем: `!warden_rc4_hook::IsActive()`
+2. Если модуль ещё не найден: `FindModuleInMemory(nullptr, 0)` — использует стабильную 26-byte сигнатуру, НЕ требует decompressed binary
+3. Если модуль найден: устанавливаем RC4 хуки → перехватываем HASH_RESULT при шифровании
 
-**Приоритет**: НИЗКИЙ (HASH_REQUEST не связан с detection наших хуков напрямую)
+**Парсинг HASH_REQUEST** (в `WardenPostHandlerImpl`):
+- Извлекаем 16-byte seed (bytes 1..16)
+- Сохраняем через `warden_spoof::StoreHashSeed()` для сопоставления с HASH_RESULT
 
-**Статус**: НЕ НАЧАТО
+**Парсинг HASH_RESULT** (в `SendPacketHandler` + `RC4DetourHandler`):
+- RC4 hook захватывает CMSG plaintext (21 байт: [0x04][SHA1:20])
+- `SpoofHashResultIfNeeded()` — инфраструктура для будущей подмены (текущая реализация: no-op stub, логирует SHA1)
+- SendPacket логирует HASH_RESULT + сопоставляет с сохранённым seed
+
+**Исправленные опкоды CMSG** (warden_types.h):
+| Опкод | Значение | Было |
+|-------|----------|------|
+| MEM_CHECKS_RESULT | 0x03 | 0x04 (неверно) |
+| HASH_RESULT | 0x04 | 0x05 (неверно) |
+| MODULE_FAILED | 0x05 | отсутствовал |
+
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (HASH_RESULT перехватывается, RC4 хуки ставятся ДО handler'а)
 
 ---
 
-### 2. DRIVER_CHECK / MPQ_CHECK / PROC_CHECK spoofing
+## Что НЕ работает (TODO)
+
+### 1. DRIVER_CHECK / MPQ_CHECK / PROC_CHECK spoofing
 
 **Описание**: подмена результатов этих проверок.
 
@@ -404,11 +428,12 @@ wotlk/
     hooks.h                            — API: Initialize() / Shutdown()
     hooks.cpp                          — MinHook + FrameScript/Warden/SendPacket/ARC4 detours
                                          + CHEAT_CHECKS_REQUEST parser + CMSG parser
+                                         + early RC4 install + HASH_REQUEST/RESULT parsing
   warden/
-    warden_types.h                     — CheckCategory enum, PendingCheck struct
+    warden_types.h                     — CheckCategory enum, PendingCheck struct, CMSG/SMSG opcodes
     warden_scan.h / .cpp               — type extraction (dispatch chain, remap, dynamic discovery)
-    warden_spoof.h / .cpp              — CMSG spoofing (MEM/PAGE/MODULE/LUA), FIFO queue
-    warden_rc4_hook.h / .cpp           — RC4 PRGA hook inside module (multi-hook, up to 4)
+    warden_spoof.h / .cpp              — CMSG spoofing (MEM/PAGE/MODULE/LUA/HASH), FIFO queue, hash seed storage
+    warden_rc4_hook.h / .cpp           — RC4 PRGA hook inside module (multi-hook, up to 4) + early install
     warden_rc4.h / .cpp                — RC4 S-box cloning fallback
     warden_checksum.h / .cpp           — SHA1 XOR-fold checksum
     shadow_copy.h / .cpp               — PE mapping Wow.exe для чистых байт
@@ -441,6 +466,7 @@ wotlk/
 - ~~PAGE_CHECK spoofing~~ — Variant A (force 0xE9 pass)
 - ~~LUA_EVAL spoofing~~ — селективный (addon-detection patterns)
 - ~~MODULE_CHECK evasion~~ — PEB unlinking + response spoofing backup
+- ~~HASH_REQUEST/RESULT перехват~~ — early RC4 install + seed/hash parsing + spoof infrastructure
 
 ### Ближайшее
 
@@ -462,7 +488,7 @@ wotlk/
 | PAGE_CHECK spoofing | РАБОТАЕТ (Variant A) |
 | LUA_EVAL spoofing | РАБОТАЕТ (селективный) |
 | MODULE_CHECK evasion | РАБОТАЕТ (PEB unlink + response spoof) |
-| HASH_REQUEST spoofing | НЕ НАЧАТО |
+| HASH_REQUEST/RESULT перехват | РАБОТАЕТ (early RC4 install + spoof stub) |
 | DRIVER_CHECK spoofing | НЕ НАЧАТО (pass-through) |
 | MPQ_CHECK spoofing | НЕ НАЧАТО (pass-through) |
 | PROC_CHECK spoofing | НЕ НАЧАТО (pass-through) |
@@ -499,6 +525,7 @@ wotlk/
 - **Подменять MODULE_CHECK результаты** → forced pass (backup к PEB unlinking)
 - **Подменять LUA_EVAL результаты** addon-detection запросов (селективный spoof)
 - **Скрывать DLL из PEB.Ldr** — MODULE_CHECK не видит wotlk.dll / glog.dll / gflags*.dll
+- **Перехватывать HASH_REQUEST/RESULT** — early RC4 install + seed storage + spoof infrastructure
 - Находить адреса наших хуков в запросах Warden (ScanForHookAddresses)
 - Читать оригинальные байты .text секции (Shadow Copy)
 - Обрабатывать новые (uncached) модули через blind memory scan + dynamic type discovery
@@ -513,8 +540,13 @@ wotlk/
 
 **Живые тесты** (2026-02-16):
 - In-memory scan: 9-10 типов, 0 unknown, 0 PARTIAL, все checksums VALID
-- RC4 hook: 100% CMSG captured [rc4_hook]
+- RC4 hook: 100% CMSG captured [rc4_hook], early install перехватывает HASH_RESULT
 - Spoofing: MEM/PAGE/MODULE/LUA работает, нет дисконнектов
+- HASH_REQUEST/RESULT: seed сохраняется, SHA1 логируется, SpoofHashResultIfNeeded stub работает
 - Queue correlation: delta=0, все результаты разобраны по категориям
 - PEB Unlinking: DLL не видна в module enumeration
 - Dynamic discovery: новые remap-only модули обрабатываются корректно (398550DE, 90278079 и др.)
+
+**Исправленные баги** (2026-02-16):
+- **resultLen truncation**: при частичном pending checks (parser не распознал все типы) SpoofCmsgIfNeeded обрезала результаты — вызывало дисконнект. Исправлено: оставшиеся байты копируются as-is.
+- **CMSG opcodes**: HASH_RESULT=0x04 (было 0x05), MEM_CHECKS_RESULT=0x03 (было 0x04), добавлен MODULE_FAILED=0x05.
