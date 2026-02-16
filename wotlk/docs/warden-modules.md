@@ -132,7 +132,7 @@ JE  handler_0x69    ; если тип = 0x69, это PROC проверка
 
 ## 5. Алгоритм извлечения типов
 
-### Стратегия 1: Dispatch Chain (работает для 11 из 15 модулей + 1 partial)
+### Стратегия 1: Dispatch Chain (работает для 14 из 21 модулей + 1 partial)
 
 #### Шаг 1: Поиск XOR-anchored паттерна
 Сканируем бинарь модуля на последовательность байт:
@@ -185,7 +185,7 @@ je    handler_PROC     ; Если равно, это PROC (0x69) ✓
 ; Тип 0x69 найден!
 ```
 
-### Стратегия 2: Remap Cross-Reference (для 3 из 15 модулей)
+### Стратегия 2: Remap Cross-Reference (для 6 из 21 модулей)
 
 Для модулей, где **все** XOR-сайты являются Remap Tables (нет Dispatch Chain):
 
@@ -210,6 +210,25 @@ je    handler_PROC     ; Если равно, это PROC (0x69) ✓
 - Извлекаем все non-default записи как кандидаты в type IDs
 - Не требует пересечения с другими таблицами
 
+#### Шаг 5a: Handler Filtering (оптимизация 2026-02-16)
+Фильтрация записей remap таблицы по размеру jump table:
+- `maxHandler = (remapOff - jtableOff) / 4 - 1`
+- Записи с handler index > maxHandler отбрасываются как мусор
+- Применяется и в `ExtractFromRemapCrossRef`, и в `ExtractFromSingleRemap`
+
+#### Шаг 5b: FixMaxType backward scan (оптимизация 2026-02-16)
+Для таблиц с `maxType=0xFF` (CMP < 0x80 не найден стандартным сканером):
+- Находим ссылку на remap таблицу в коде: `movzx byte [reg + remapOff]`
+- Backward scan 60 байт назад от этой ссылки
+- Трекаем последнюю пару CMP + JA/JAE → извлекаем реальный upper bound
+- Корректируем `maxType`, что ограничивает длину сканируемой таблицы
+
+#### Шаг 5c: Best single remap selection (оптимизация 2026-02-16)
+Вместо выбора первой успешной remap таблицы:
+- Перебираем ВСЕ таблицы с FixMaxType
+- Выбираем ту, которая даёт 9 entries (perfect match) или ближе всего к 9
+- Upper-bound: принимаем результат только при <= 12 entries (защита от мусора)
+
 #### Шаг 6: Последняя попытка (last-resort)
 Если основная стратегия не дала результата:
 - Повторяем chain extraction на remap-классифицированных XOR-сайтах
@@ -231,34 +250,40 @@ realType = (rawOffset + shift) & 0xFF
 
 ## 6. Результаты по модулям
 
-Всего протестировано 15+ различных Warden модулей с сервера WotLK 3.3.5a:
+Всего захвачено 24 модуля, 21 с decompressed бинарниками. Python скрипт `validate_all_modules.py` достигает 100% (21/21).
 
-| Module Hash | Size | Типов | Метод |
+| Module Hash (short) | Size | Типов | Метод |
 |---|---|---|---|
-| 03730574 | 28868 | 9 | dispatch chain |
-| 037305742612D62CA9E17D634487EA42 | 28868 | 9 | dispatch chain |
+| 026D6F30 | — | 9-10 | dispatch chain / remap |
+| **03730574** | **28868** | **9** | **dispatch chain** |
 | 0AC0C559 | 29010 | 9 | remap cross-ref |
-| 0BE6B21C | 30132 | 5 | dispatch chain (partial) |
+| 0BE6B21C | 30132 | 9 | dispatch chain (partial) + remap supplement |
 | 1A615549 | 29342 | 10 | dispatch chain |
+| 232577E7 | — | 9-10 | dispatch chain / remap |
 | 2A3CAB97 | 28850 | 10 | dispatch chain |
+| 2A7BD368 | — | 9-10 | dispatch chain / remap |
 | 32F1D632 | ~29KB | 10 | dispatch chain union |
-| 46DCC0B8 | 33057 | 7 | remap-only |
+| 3E02C87E | — | 9-10 | dispatch chain / remap |
+| 3FEB1D16 | — | 9-10 | dispatch chain / remap |
+| 46DCC0B8 | 33057 | 9 | remap-only (handler filtering + FixMaxType) |
+| 6FAE26D6 | — | 9-10 | dispatch chain / remap |
 | 7281AE6C | 28934 | 9 | dispatch chain |
 | **7C4ABC97** | **29234** | **9** | **REFERENCE** |
 | 85F90209 | 29178 | 9 | dispatch chain |
 | 952860B1 | 26065 | 9-10 | dispatch chain union |
 | 9A95D199 | 28876 | 9 | dispatch chain |
 | BD38DD63 | 28866 | 9 | dispatch chain |
-| CB9E43D6 | 31718 | 10 | remap cross-ref |
-| DA3BF29E | ~29KB | 9+ | dispatch chain |
+| CB9E43D6 | 31718 | 10 | remap cross-ref (FixMaxType) |
 | E348326F | 29258 | 10 | remap cross-ref |
 
-**Итого**: 15 модулей протестировано. 11/15 FULL dispatch chain, 1/15 PARTIAL, 3/15 remap-only.
+**Только encrypted/decrypted** (без decompressed): 2C045995, 4109957D, CDD39A8A
+
+**Итого**: 21 модуль протестировано с decompressed. 14/21 FULL dispatch chain, 1/21 PARTIAL + supplement, 6/21 remap-only.
 
 ### Типичное распределение:
-- **11 модулей**: полное извлечение через Dispatch Chain
-- **1 модуль**: частичное извлечение (5 типов)
-- **3 модуля**: только Remap Tables
+- **14 модулей**: полное извлечение через Dispatch Chain (9-10 типов)
+- **1 модуль**: частичное извлечение из dispatch chain + дополнение из remap → 9 типов
+- **6 модулей**: только Remap Tables (handler filtering + best single remap + FixMaxType → 9-10 типов)
 
 ---
 
@@ -357,6 +382,9 @@ rep  movsd                ; F3 A5 (fast copy)
   - Объединение результатов всех dispatch chains
   - Поддержка TEST+JMP инструкций
 
+### Валидация (100% покрытие):
+- **`scripts/validate_all_modules.py`** — финальный скрипт валидации: 21/21 модулей, 9-10 типов каждый. Включает все оптимизации (handler filtering, FixMaxType, best remap). Алгоритм C++ портирован отсюда.
+
 ### Диагностические скрипты:
 - **`group_sizes.py`** — анализ размеров данных типов
 - **`investigate_missing.py`** — поиск пропущенных типов (отладка)
@@ -429,8 +457,10 @@ wotlk/docs/
 
 ### Ключевые достижения:
 - Найдены универсальные паттерны (XOR-anchored), работающие на всех модулях
-- Разработаны две стратегии с покрытием 15/15 модулей
+- Разработаны две стратегии с покрытием 21/21 модулей (100%)
 - Полностью автоматизированный процесс в DLL с приоритетным in-memory сканированием
+- Handler filtering + FixMaxType + best remap selection обеспечивают 100% на remap-only модулях
+- Blind memory scan корректно обрабатывает uncached модули с абсолютными displacement'ами
 
 ### Для разработчиков:
 Если вы хотите понять, как работает Warden:

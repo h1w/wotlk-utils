@@ -103,15 +103,16 @@
 - Relocation table: delta-encoded
 - In-memory: VirtualAlloc с PAGE_EXECUTE_READWRITE, MEM_PRIVATE
 
-**Известные модули** (15+ модулей захвачено и проанализировано):
-- **7C4ABC97**: decompressed=29234 bytes
-- **DA3BF29E**: decompressed size varies
+**Известные модули** (24 модуля захвачено, 21 с decompressed бинарниками):
+- **7C4ABC97**: decompressed=29234 bytes (REFERENCE module)
 - **9A95D199**: decompressed=28876 bytes
-- **CB9E43D692620E7B698C5CE085163E6E**: decompressed=31718 bytes, runtimeSize=49152
+- **CB9E43D6**: decompressed=31718 bytes, runtimeSize=49152
 - **0BE6B21C**: decompressed=30132 bytes, runtimeSize=45056 (RC4 uses EAX register)
 - **952860B1**: decompressed=26065 bytes, runtimeSize=40960
 - **32F1D632**: 10 types via union of 2 dispatch chains
-- **46DCC0B811CD2D7BB870A2F714CD2A61**: decompressed=33057 bytes, runtimeSize=49152 (remap-only)
+- **46DCC0B8**: decompressed=33057 bytes, runtimeSize=49152 (remap-only)
+- **026D6F30**, **03730574**, **0AC0C559**, **1A615549**, **232577E7**, **2A3CAB97**, **2A7BD368**, **3E02C87E**, **3FEB1D16**, **6FAE26D6**, **7281AE6C**, **85F90209**, **BD38DD63**, **E348326F**: dispatch chain / remap
+- **2C045995**, **4109957D**, **CDD39A8A**: только encrypted/decrypted (без decompressed)
 
 **Статус**: ПОЛНОСТЬЮ РАБОТАЕТ
 
@@ -133,7 +134,8 @@
    - Парсит 40-byte header + section descriptors, выполняет RLE unpack
    - Результат = runtime-ready image без RLE control word артефактов
 3. **Raw packed binary scan** (legacy fallback): сканирование packed binary напрямую
-4. **Blind memory scan** (`ScanAndExtractTypeIDs`): последний resort — все MEM_PRIVATE регионы
+4. **Blind memory scan** (`ScanRegionForDispatcher` → `ScanAndExtractTypeIDs`): последний resort — все MEM_PRIVATE регионы
+   - `g_scanBaseAddr` устанавливается перед сканированием для корректировки абсолютных displacement'ов в релоцированном коде
 
 **Алгоритм извлечения типов**:
 1. **Anchor search**: ищем паттерн `xor r8, [reg+4]` (опкод `32 [40-7F, rm!=4] 04`)
@@ -145,13 +147,26 @@
 4. **Register tracking**: если `cmp eax, ecx` — ищем назад `mov ecx, 0x8E`
 5. **Remap table supplement**: после dispatch chain дополняем типами из remap table
 
-**Результаты**: Протестировано 15 модулей
-- **11/15 FULL**: 9+ типов из dispatch chains
-- **1/15 PARTIAL**: 5 типов из dispatch chain + дополнение из remap
-- **3/15 REMAP ONLY**: все типы из remap tables (ExtractFromSingleRemap)
-- **In-memory scan**: 10/10 типов с первого раза, 0 unknown types в живых тестах
+**Оптимизации remap-извлечения** (портированы из Python `validate_all_modules.py`, 2026-02-16):
+1. **Handler filtering**: вычисляем `maxHandler = (remapOff - jtableOff) / 4 - 1` из размера jump table, фильтруем записи с невалидным handler index в `ExtractFromRemapCrossRef` и `ExtractFromSingleRemap`
+2. **Best single remap**: перебираем ВСЕ remap таблицы, выбираем ту, которая даёт результат ближе всего к 9 entries (вместо break на первой успешной)
+3. **FixMaxType backward scan**: для таблиц с `maxType=0xFF` (CMP < 0x80 не найден стандартным сканером) — backward scan от `movzx byte [reg+remapOff]` до последней пары CMP+JA/JAE, извлекаем реальный upper bound
+4. **Upper-bound validation**: принимаем remap supplement только при `remapTypes.size() <= 12` (защита от мусора в Step 3)
 
-**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (15 модулей, 0 unknown types в живых тестах)
+**Исправления** (2026-02-16):
+- **readLen cap**: увеличен с 40 до 64 в `TryAssignSize` — некоторые PAGE_CHECK имеют readLen=48
+- **g_scanBaseAddr в blind scan**: устанавливается `= baseAddr` перед `ScanForDispatchChainInBinary` в `ScanRegionForDispatcher`, сбрасывается в 0 при неудаче — фикс абсолютных displacement'ов remap таблиц в in-memory модулях
+
+**Результаты**:
+- **Python** (`validate_all_modules.py`): 21/21 модулей — 100% (9-10 типов каждый)
+- **C++ (offline, RLE-unpacked binary)**: протестировано 21 модуль
+  - **14/21 FULL**: 9+ типов из dispatch chains
+  - **1/21 PARTIAL**: dispatch chain + remap supplement → 9 типов
+  - **6/21 REMAP ONLY**: handler filtering + best single remap + FixMaxType → 9-10 типов
+- **C++ (live, in-memory scan)**: 0 unknown types в живых тестах
+- **C++ (live, blind scan)**: корректно обрабатывает новые (uncached) модули с абсолютными displacement'ами
+
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (21+ модуль, 0 unknown types в живых тестах)
 
 ---
 
@@ -212,6 +227,8 @@
 - DRIVER: seed(4)+SHA1(20)+strIdx(1)
 - PAGE: seed(4)+SHA1(20)+addr(4)+readLen(1)
 - PROC: seed(4)+SHA1(20)+modIdx(1)+procIdx(1)+addr(4)+readLen(1)
+
+**Валидация readLen**: `readLen <= 64` (было 40 — некоторые PAGE_CHECK используют readLen=48)
 
 **Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (0 ошибок парсинга при корректном извлечении типов из модуля)
 
@@ -429,8 +446,8 @@ return GetAddOnInfo("SomeCheat")
 - **Наблюдение**: 100% — все типы пакетов парсятся, CMSG расшифровывается
 - **Spoofing**: MEM_CHECK + PAGE_CHECK реализован (Variant A), ожидает боевого теста
 - **Критические блокеры**: 0
-- **Полнота анализа**: 15 модулей проанализировано (11/15 FULL dispatch chains, 1/15 partial, 3/15 remap-only)
-- **Извлечение типов**: in-memory scan — 0 unknown types в живых тестах
+- **Полнота анализа**: 24 модуля захвачено (21 decompressed), 21/21 = 100% через Python, 0 unknown types в живых C++ тестах
+- **Извлечение типов**: dispatch chain (14 модулей) + remap-only (6 модулей) + partial+supplement (1 модуль) = 21/21
 - **RC4 CMSG**: расшифровка через internal hook — 100% success rate
 - **Checksum**: SHA1 XOR-fold — все наблюдаемые checksums VALID
 - **Request-response correlation**: FIFO queue — РАБОТАЕТ
@@ -447,14 +464,15 @@ return GetAddOnInfo("SomeCheat")
 
 **Что мы умеем**:
 - Перехватывать и парсить все типы Warden пакетов (SMSG и CMSG)
-- Извлекать бинарные модули и их внутреннюю структуру (15+ модулей)
-- Автоматически определять типы проверок из модуля (in-memory scan + dispatch chain + remap table)
+- Извлекать бинарные модули и их внутреннюю структуру (24 модуля захвачено)
+- Автоматически определять типы проверок из модуля (in-memory scan + dispatch chain + remap table + handler filtering + FixMaxType)
 - Расшифровывать CMSG ответы через internal RC4 hook (multi-hook, до 4 функций)
 - Коррелировать SMSG requests с CMSG responses (FIFO queue)
 - Валидировать и пересчитывать checksums (SHA1 XOR-fold)
 - **Подменять MEM_CHECK / PAGE_CHECK результаты** на оригинальные байты из shadow copy
 - Находить адреса наших хуков в запросах Warden (ScanForHookAddresses)
 - Читать оригинальные байты .text секции (Shadow Copy)
+- Обрабатывать новые (uncached) модули через blind memory scan с корректным `g_scanBaseAddr`
 
 **Ключевые компоненты Variant A spoofing**:
 - `warden_spoof.cpp` — core spoofing logic + FIFO queue
@@ -462,10 +480,12 @@ return GetAddOnInfo("SomeCheat")
 - `shadow_copy.cpp` — предоставляет оригинальные байты из Wow.exe на диске
 - `warden_checksum.cpp` — пересчёт checksum после модификации
 
-**Живые тесты** (2026-02-15):
-- In-memory scan: 10/10 типов, 0 unknown, все checksums VALID
+**Живые тесты** (2026-02-16):
+- In-memory scan: 9-10 типов, 0 unknown, все checksums VALID
+- Blind memory scan: корректно обрабатывает uncached модули (g_scanBaseAddr fix)
 - RC4 hook: 100% CMSG captured [rc4_hook]
 - Spoofing: код готов, result walker идентичен доказанному ParseCheatChecksResult
 - Queue correlation: delta=0, все результаты разобраны по категориям
+- Python validation: 21/21 модулей = 100% (9-10 типов каждый)
 
 Следующая фаза: **боевой тест spoofing** + расширение на LUA_EVAL.
