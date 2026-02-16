@@ -286,8 +286,23 @@ bool SpoofCmsgIfNeeded(uint8_t* data, size_t len)
             oldPos += 1; newPos += 1;
             break;
 
-        case CheckCategory::PROC:
         case CheckCategory::MODULE:
+            // 1-byte result: 0xE9 = not found (pass). Force pass as backup to PEB unlinking.
+            if (oldResults[oldPos] != 0xE9) {
+                LOG(INFO) << "[SPOOF] MODULE_CHECK #" << std::dec << (i + 1)
+                          << " result=0x" << std::hex << std::setfill('0')
+                          << std::setw(2) << (int)oldResults[oldPos]
+                          << " -> 0xE9 (forced pass)";
+                newResults[newPos++] = 0xE9;
+                modified = true;
+                spoofCount++;
+            } else {
+                newResults[newPos++] = oldResults[oldPos];
+            }
+            oldPos++;
+            break;
+
+        case CheckCategory::PROC:
         case CheckCategory::DRIVER:
             // Fixed 1-byte result
             newResults[newPos++] = oldResults[oldPos++];

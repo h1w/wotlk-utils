@@ -109,12 +109,34 @@ typedef int (__cdecl* lua_CFunction)(uintptr_t lua_State);
 
 6. Безопасность и обход механизмов обнаружения (Warden)
 
-Warden сканирует процесс на предмет известных сигнатур и модификаций кода. Работа в «Internal» режиме требует соблюдения жесткой дисциплины.
+Warden — динамически загружаемый античит-модуль. Сервер отправляет зашифрованный (RC4) бинарный модуль через SMSG_WARDEN_DATA (opcode 0x2E6), клиент загружает его через VirtualAlloc (НЕ PE-формат) и выполняет проверки.
 
-Три критических правила безопасности:
+Архитектура Warden:
 
-1. Main Thread Hygiene: Никогда не вызывайте функции движка (особенно те, что отправляют пакеты, как CastSpell) из созданных вами потоков. Это мгновенно детектируется через проверку EIP/Return Address.
-2. VMT Hooking vs. Patching: Избегайте модификации .text секции (инлайновые патчи, JMP-хуки). Отдавайте предпочтение подмене указателей в таблицах виртуальных функций (VMT). Это выглядит значительно естественнее для защитных механизмов.
-3. Sanitization: Перед разыменованием любого указателя из Object Manager проверяйте его на NULL и соответствие границам памяти. Частые исключения Access Violation в процессе игры логируются клиентом и могут быть переданы на сервер как признак работы нестабильного внешнего кода.
+* Модуль: custom binary format (40-byte header, RLE-packed sections, delta-encoded relocs). Загружается в MEM_PRIVATE + PAGE_EXECUTE_READWRITE. Каждый модуль использует **собственные** type IDs для проверок (не совпадают с TC константами).
+* Шифрование: payload RC4 шифруется ВНУТРИ модуля (не session cipher ARC4 @ 0x00774EA0). Модуль содержит 1-4 RC4 PRGA функции (main thread + module thread).
+* Проверки: CHEAT_CHECKS_REQUEST содержит массив проверок (типы: TIMING, MEM, PAGE, PROC, MODULE, DRIVER, MPQ, LUA). Последний байт пакета — xorByte для деобфускации type bytes.
+* Ответы: CMSG_WARDEN_DATA (opcode 0x2E7) = [02][resultLen:2 LE][checksum:4][results:N]. Checksum = SHA1(results) → 5 x uint32_t LE → XOR-fold.
 
-Соблюдение этих принципов превращает вашу DLL из простого "чита" в профессиональное расширение игрового движка.
+Типы проверок и наши контрмеры:
+
+1. MEM_CHECK (data: unk+addr+readLen=6 bytes): читает N байт по адресу. Обнаруживает inline hooks (JMP-патчи). Контрмера: Shadow Copy — подменяем данные CMSG чистыми байтами из PE mapping Wow.exe с диска.
+2. PAGE_CHECK (data: seed+SHA1+addr+readLen=29 bytes): проверяет VirtualQuery атрибуты страницы. Контрмера: force result 0xE9 (pass) для адресов наших хуков.
+3. MODULE_CHECK (data: seed+SHA1=24 bytes): перечисляет загруженные модули через PEB.Ldr lists, вычисляет HMAC_SHA1(seed, moduleName). Контрмера: PEB unlinking (Layer 1) + force 0xE9 (Layer 2).
+4. LUA_EVAL (data: 1 byte): выполняет Lua-код (строка из string section). Ищет запрещённые аддоны. Контрмера: селективный spoof addon-detection API (GetAddOnInfo, IsAddOnLoaded, etc.) → empty string.
+5. DRIVER_CHECK, MPQ_CHECK, PROC_CHECK: pass-through (не нацелены на нашу DLL).
+
+Ключевые адреса (build 12340):
+
+* FrameScript_Execute:       0x00819210 (__cdecl)
+* SMSG_WARDEN_DATA handler:  0x007DA850 (нестандартная, naked detour)
+* SendPacket:                0x00632B50 (нестандартная, naked detour)
+* ARC4::Process:             0x00774EA0 (__thiscall, session cipher)
+
+Правила безопасности:
+
+1. Main Thread: функции движка (CastSpell, etc.) вызывать ТОЛЬКО из main thread. Warden может проверить call stack.
+2. Inline hooks: неизбежно модифицируют .text секцию — Shadow Copy скрывает изменения от MEM_CHECK.
+3. PEB Unlinking: скрываем DLL из PEB.Ldr ПОСЛЕ всей инициализации, восстанавливаем ПЕРЕД eject.
+4. Sanitization: проверяем указатели из Object Manager на NULL и alignment (младший бит = флаг).
+5. SEH: `__try/__except` нельзя использовать в функциях с C++ объектами (std::string и пр.) — выносить в отдельные helper-функции.

@@ -5,6 +5,7 @@
 #include "logging/logger_setup.hpp"
 #include "hooks/hooks.h"
 #include "warden/shadow_copy.h"
+#include "warden/peb_unlink.h"
 #include <glog/logging.h>
 
 #include <cstdio>
@@ -50,6 +51,10 @@ DWORD WINAPI MainThread(LPVOID lpParam)
         LOG(ERROR) << "Failed to initialize hooks";
     }
 
+    // Hide our DLL + dependencies from PEB.Ldr (prevents Warden MODULE_CHECK detection).
+    // Must be AFTER all init that uses GetModuleHandle/GetModuleFileName.
+    peb_unlink::UnlinkAll(hModule);
+
     // Ожидание сигнала выгрузки
     HANDLE hEvent = CreateEventA(nullptr, TRUE, FALSE, kUnloadEventName);
     if (hEvent)
@@ -60,6 +65,9 @@ DWORD WINAPI MainThread(LPVOID lpParam)
 
     // Cleanup — безопасно, т.к. мы НЕ в DllMain
     LOG(INFO) << "Unloading wotlk DLL...";
+
+    // Restore PEB entries before unload — LdrUnloadDll needs them to find the module.
+    peb_unlink::RelinkAll();
 
     // Даём время завершиться вызовам хуков, которые могут быть in-flight
     // в основном потоке игры (FrameScript_Execute вызывается из main thread)

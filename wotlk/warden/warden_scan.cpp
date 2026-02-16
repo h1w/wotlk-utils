@@ -36,6 +36,13 @@ constexpr size_t kMaxRegionSize = 64 * 1024 * 1024;
 constexpr int kKnownSizes[] = { 31, 29, 25, 24, 6, 1, 0 };
 constexpr size_t kNumKnownSizes = sizeof(kKnownSizes) / sizeof(kKnownSizes[0]);
 
+// Maximum number of types that can share the same size.
+// Standard Warden: PROC(31)x1, PAGE(29)x2, DRIVER(25)x1, MODULE(24)x1, MEM(6)x1, MPQ+LUA(1)x2, TIMING(0)x1
+// Some modules have 10 types (one extra PAGE), so PAGE quota is 3.
+constexpr int kSizeMaxCount[] = { 1, 3, 1, 1, 1, 2, 1 };
+static_assert(sizeof(kSizeMaxCount) / sizeof(kSizeMaxCount[0]) == kNumKnownSizes,
+              "kSizeMaxCount must match kKnownSizes");
+
 // State
 bool g_hasTypeIDs = false;
 bool g_allSizesKnown = false;
@@ -604,47 +611,50 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
             }
 
             // === CMP r32, imm8 (83 F8-FF XX) ===
+            // CMP is non-destructive — eax = type - acc at this point.
+            // Real type = imm + acc (CMP matches when type - acc == imm).
             if (b0 == 0x83 && pos + 2 < scanEnd &&
                 data[pos + 1] >= 0xF8 && data[pos + 1] <= 0xFF) {
                 // Check if this is actually a cmp (not sub: E8-EF)
                 uint8_t modrm = data[pos + 1];
                 if ((modrm & 0x38) == 0x38) { // /7 = cmp
                     uint8_t imm = data[pos + 2];
+                    uint8_t realType = static_cast<uint8_t>(imm + acc);
                     CondJumpKind jk;
                     size_t joff = FindCondJump(data, dataSize, pos + 3, kMaxJumpDist, &jk);
                     if (joff != kNoMatch) {
                         size_t afterJcc = joff + CondJumpLen(data, joff);
                         if (jk == CJ_EQUAL) {
-                            out.insert(imm);
+                            out.insert(realType);
                             pos = afterJcc;
                             handled = true;
                         } else if (jk == CJ_NOT_EQUAL) {
-                            out.insert(imm);
+                            out.insert(realType);
                             size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                             if (tgt != kNoMatch)
                                 queue.push_back({tgt, acc});
                             break; // fall-through is handler
                         } else if (IsGreaterFamily(jk)) {
-                            out.insert(imm);
+                            out.insert(realType);
                             size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                             if (tgt != kNoMatch)
-                                queue.push_back({tgt, 0});
+                                queue.push_back({tgt, acc});
                             if (IsJeAt(data, dataSize, afterJcc))
                                 afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
                             pos = afterJcc;
                             handled = true;
                         } else if (IsLessOrEq(jk)) {
-                            out.insert(imm);
+                            out.insert(realType);
                             size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                             if (tgt != kNoMatch)
-                                queue.push_back({tgt, 0});
+                                queue.push_back({tgt, acc});
                             pos = afterJcc;
                             handled = true;
                         } else if (IsStrictLess(jk)) {
-                            out.insert(imm);
+                            out.insert(realType);
                             size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                             if (tgt != kNoMatch)
-                                queue.push_back({tgt, 0});
+                                queue.push_back({tgt, acc});
                             if (IsJeAt(data, dataSize, afterJcc))
                                 afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
                             pos = afterJcc;
@@ -658,38 +668,39 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
             if (!handled && b0 == 0x3D && pos + 4 < scanEnd &&
                 data[pos + 2] == 0 && data[pos + 3] == 0 && data[pos + 4] == 0) {
                 uint8_t imm = data[pos + 1];
+                uint8_t realType = static_cast<uint8_t>(imm + acc);
                 CondJumpKind jk;
                 size_t joff = FindCondJump(data, dataSize, pos + 5, kMaxJumpDist, &jk);
                 if (joff != kNoMatch) {
                     size_t afterJcc = joff + CondJumpLen(data, joff);
                     if (jk == CJ_EQUAL) {
-                        out.insert(imm);
+                        out.insert(realType);
                         pos = afterJcc;
                         handled = true;
                     } else if (jk == CJ_NOT_EQUAL) {
-                        out.insert(imm);
+                        out.insert(realType);
                         size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                         if (tgt != kNoMatch)
                             queue.push_back({tgt, acc});
                         break;
                     } else if (IsGreaterFamily(jk)) {
-                        out.insert(imm);
+                        out.insert(realType);
                         size_t tgt = ComputeJumpTarget(data, dataSize, joff);
-                        if (tgt != kNoMatch) queue.push_back({tgt, 0});
+                        if (tgt != kNoMatch) queue.push_back({tgt, acc});
                         if (IsJeAt(data, dataSize, afterJcc))
                             afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
                         pos = afterJcc;
                         handled = true;
                     } else if (IsLessOrEq(jk)) {
-                        out.insert(imm);
+                        out.insert(realType);
                         size_t tgt = ComputeJumpTarget(data, dataSize, joff);
-                        if (tgt != kNoMatch) queue.push_back({tgt, 0});
+                        if (tgt != kNoMatch) queue.push_back({tgt, acc});
                         pos = afterJcc;
                         handled = true;
                     } else if (IsStrictLess(jk)) {
-                        out.insert(imm);
+                        out.insert(realType);
                         size_t tgt = ComputeJumpTarget(data, dataSize, joff);
-                        if (tgt != kNoMatch) queue.push_back({tgt, 0});
+                        if (tgt != kNoMatch) queue.push_back({tgt, acc});
                         if (IsJeAt(data, dataSize, afterJcc))
                             afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
                         pos = afterJcc;
@@ -701,34 +712,35 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
             // === CMP al, imm8 (3C XX) ===
             if (!handled && b0 == 0x3C && pos + 1 < scanEnd) {
                 uint8_t imm = data[pos + 1];
+                uint8_t realType = static_cast<uint8_t>(imm + acc);
                 CondJumpKind jk;
                 size_t joff = FindCondJump(data, dataSize, pos + 2, kMaxJumpDist, &jk);
                 if (joff != kNoMatch) {
                     size_t afterJcc = joff + CondJumpLen(data, joff);
                     if (jk == CJ_EQUAL) {
-                        out.insert(imm);
+                        out.insert(realType);
                         pos = afterJcc; handled = true;
                     } else if (jk == CJ_NOT_EQUAL) {
-                        out.insert(imm);
+                        out.insert(realType);
                         size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                         if (tgt != kNoMatch) queue.push_back({tgt, acc});
                         break;
                     } else if (IsGreaterFamily(jk)) {
-                        out.insert(imm);
+                        out.insert(realType);
                         size_t tgt = ComputeJumpTarget(data, dataSize, joff);
-                        if (tgt != kNoMatch) queue.push_back({tgt, 0});
+                        if (tgt != kNoMatch) queue.push_back({tgt, acc});
                         if (IsJeAt(data, dataSize, afterJcc))
                             afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
                         pos = afterJcc; handled = true;
                     } else if (IsLessOrEq(jk)) {
-                        out.insert(imm);
+                        out.insert(realType);
                         size_t tgt = ComputeJumpTarget(data, dataSize, joff);
-                        if (tgt != kNoMatch) queue.push_back({tgt, 0});
+                        if (tgt != kNoMatch) queue.push_back({tgt, acc});
                         pos = afterJcc; handled = true;
                     } else if (IsStrictLess(jk)) {
-                        out.insert(imm);
+                        out.insert(realType);
                         size_t tgt = ComputeJumpTarget(data, dataSize, joff);
-                        if (tgt != kNoMatch) queue.push_back({tgt, 0});
+                        if (tgt != kNoMatch) queue.push_back({tgt, acc});
                         if (IsJeAt(data, dataSize, afterJcc))
                             afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
                         pos = afterJcc; handled = true;
@@ -743,33 +755,34 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
                 uint8_t reg2 = modrm & 7;
                 if (regValid[reg2] && regVals[reg2] <= 0xFF) {
                     uint8_t imm = regVals[reg2];
+                    uint8_t realType = static_cast<uint8_t>(imm + acc);
                     CondJumpKind jk;
                     size_t joff = FindCondJump(data, dataSize, pos + 2, kMaxJumpDist, &jk);
                     if (joff != kNoMatch) {
                         size_t afterJcc = joff + CondJumpLen(data, joff);
                         if (jk == CJ_EQUAL) {
-                            out.insert(imm); pos = afterJcc; handled = true;
+                            out.insert(realType); pos = afterJcc; handled = true;
                         } else if (jk == CJ_NOT_EQUAL) {
-                            out.insert(imm);
+                            out.insert(realType);
                             size_t tgt = ComputeJumpTarget(data, dataSize, joff);
                             if (tgt != kNoMatch) queue.push_back({tgt, acc});
                             break;
                         } else if (IsGreaterFamily(jk)) {
-                            out.insert(imm);
+                            out.insert(realType);
                             size_t tgt = ComputeJumpTarget(data, dataSize, joff);
-                            if (tgt != kNoMatch) queue.push_back({tgt, 0});
+                            if (tgt != kNoMatch) queue.push_back({tgt, acc});
                             if (IsJeAt(data, dataSize, afterJcc))
                                 afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
                             pos = afterJcc; handled = true;
                         } else if (IsLessOrEq(jk)) {
-                            out.insert(imm);
+                            out.insert(realType);
                             size_t tgt = ComputeJumpTarget(data, dataSize, joff);
-                            if (tgt != kNoMatch) queue.push_back({tgt, 0});
+                            if (tgt != kNoMatch) queue.push_back({tgt, acc});
                             pos = afterJcc; handled = true;
                         } else if (IsStrictLess(jk)) {
-                            out.insert(imm);
+                            out.insert(realType);
                             size_t tgt = ComputeJumpTarget(data, dataSize, joff);
-                            if (tgt != kNoMatch) queue.push_back({tgt, 0});
+                            if (tgt != kNoMatch) queue.push_back({tgt, acc});
                             if (IsJeAt(data, dataSize, afterJcc))
                                 afterJcc += (data[afterJcc] == 0x0F) ? 6 : 2;
                             pos = afterJcc; handled = true;
@@ -796,11 +809,12 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
             }
 
             // === SUB r32, imm8 (83 E8-EF XX) ===
+            // Tight jcc search (dist=2): prevents stealing a subsequent CMP's jcc.
             if (!handled && b0 == 0x83 && pos + 2 < scanEnd &&
                 data[pos + 1] >= 0xE8 && data[pos + 1] <= 0xEF) {
                 uint8_t delta = data[pos + 2];
                 CondJumpKind jk;
-                size_t joff = FindCondJump(data, dataSize, pos + 3, kMaxJumpDist, &jk);
+                size_t joff = FindCondJump(data, dataSize, pos + 3, 2, &jk);
                 if (joff != kNoMatch && (jk == CJ_EQUAL || jk == CJ_NOT_EQUAL)) {
                     acc += delta;
                     out.insert(static_cast<uint8_t>(acc));
@@ -812,13 +826,18 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
                     }
                     pos = joff + CondJumpLen(data, joff);
                     handled = true;
+                } else {
+                    // SUB without immediate jcc — pure accumulation step
+                    acc += delta;
+                    pos += 3;
+                    handled = true;
                 }
             }
 
             // === SUB al, imm8 (2C XX) ===
             if (!handled && b0 == 0x2C && pos + 1 < scanEnd) {
                 CondJumpKind jk;
-                size_t joff = FindCondJump(data, dataSize, pos + 2, kMaxJumpDist, &jk);
+                size_t joff = FindCondJump(data, dataSize, pos + 2, 2, &jk);
                 if (joff != kNoMatch && (jk == CJ_EQUAL || jk == CJ_NOT_EQUAL)) {
                     acc += data[pos + 1];
                     out.insert(static_cast<uint8_t>(acc));
@@ -829,6 +848,10 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
                         break;
                     }
                     pos = joff + CondJumpLen(data, joff);
+                    handled = true;
+                } else {
+                    acc += data[pos + 1];
+                    pos += 2;
                     handled = true;
                 }
             }
@@ -837,7 +860,7 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
             if (!handled && b0 == 0x2D && pos + 4 < scanEnd &&
                 data[pos + 2] == 0 && data[pos + 3] == 0 && data[pos + 4] == 0) {
                 CondJumpKind jk;
-                size_t joff = FindCondJump(data, dataSize, pos + 5, kMaxJumpDist, &jk);
+                size_t joff = FindCondJump(data, dataSize, pos + 5, 2, &jk);
                 if (joff != kNoMatch && (jk == CJ_EQUAL || jk == CJ_NOT_EQUAL)) {
                     acc += data[pos + 1];
                     out.insert(static_cast<uint8_t>(acc));
@@ -849,13 +872,19 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
                     }
                     pos = joff + CondJumpLen(data, joff);
                     handled = true;
+                } else {
+                    acc += data[pos + 1];
+                    pos += 5;
+                    handled = true;
                 }
             }
 
             // === DEC r32 (48-4F) ===
+            // Tight jcc search (dist=2): only match jcc immediately after DEC.
+            // Prevents stealing a subsequent CMP's jcc (e.g. dec;dec;je pattern).
             if (!handled && b0 >= 0x48 && b0 <= 0x4F) {
                 CondJumpKind jk;
-                size_t joff = FindCondJump(data, dataSize, pos + 1, kMaxJumpDist, &jk);
+                size_t joff = FindCondJump(data, dataSize, pos + 1, 2, &jk);
                 if (joff != kNoMatch && (jk == CJ_EQUAL || jk == CJ_NOT_EQUAL)) {
                     acc += 1;
                     out.insert(static_cast<uint8_t>(acc));
@@ -866,6 +895,11 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
                         break;
                     }
                     pos = joff + CondJumpLen(data, joff);
+                    handled = true;
+                } else {
+                    // DEC without immediate jcc — pure accumulation step
+                    acc += 1;
+                    pos += 1;
                     handled = true;
                 }
             }
@@ -1070,10 +1104,12 @@ bool ExtractFromRemapCrossRef(const uint8_t* data, size_t dataSize,
             groups[idx].push_back(static_cast<uint8_t>(i));
         }
 
-        // Collect singletons + pairs + triplets with shift applied
+        // Collect small groups (singletons through quintuplets) with shift applied.
+        // Threshold raised from 3 to 5: some modules have handler indices shared
+        // by up to 5 remap entries for real check types.
         std::unordered_set<uint8_t> sp;
         for (const auto& entry : groups) {
-            if (entry.second.size() <= 3) {
+            if (entry.second.size() <= 5) {
                 for (uint8_t raw : entry.second)
                     sp.insert(static_cast<uint8_t>((raw + r.shift) & 0xFF));
             }
@@ -1611,6 +1647,13 @@ int TryAssignSize(const uint8_t* data, size_t pos, size_t checkEnd,
         if (pos + candidateSize > checkEnd)
             continue;
 
+        // Quota check: skip if max types already assigned to this size
+        int assignedCount = 0;
+        for (const auto& entry : g_typeSizes)
+            if (entry.second == candidateSize) assignedCount++;
+        if (assignedCount >= kSizeMaxCount[c])
+            continue;
+
         bool valid = false;
 
         switch (candidateSize) {
@@ -1700,6 +1743,56 @@ int TryAssignSize(const uint8_t* data, size_t pos, size_t checkEnd,
                 uint8_t nextType = data[nextPos] ^ xorByte;
                 if (g_typeIDs.count(nextType) > 0)
                     return sz;
+            }
+        }
+    }
+
+    // Fallback: if primary structural validation failed for all sizes, try a
+    // 2-step next-byte lookahead.  For each candidate size S, check if the byte
+    // at pos+S XORs to a known type AND after consuming that type's known data
+    // size, the following byte also XORs to a known type (or reaches end).
+    // This catches types like PROC whose field-level validation fails due to
+    // unusual string counts or address values.
+    if (bestSize < 0) {
+        for (size_t c = 0; c < kNumKnownSizes; ++c) {
+            int sz = kKnownSizes[c];
+            if (pos + sz > checkEnd) continue;
+
+            // Quota check (same as primary pass)
+            int assignedCount = 0;
+            for (const auto& entry : g_typeSizes)
+                if (entry.second == sz) assignedCount++;
+            if (assignedCount >= kSizeMaxCount[c])
+                continue;
+
+            size_t nextPos = pos + sz;
+            if (nextPos == checkEnd) {
+                bestSize = sz;
+                break;
+            }
+            if (nextPos >= checkEnd) continue;
+
+            uint8_t nextType = data[nextPos] ^ xorByte;
+            if (!g_typeIDs.count(nextType)) continue;
+
+            int nextSize = -1;
+            auto it = g_typeSizes.find(nextType);
+            if (it != g_typeSizes.end() && it->second >= 0)
+                nextSize = it->second;
+            else
+                continue; // next type's size unknown — can't validate step 2
+
+            size_t step2Pos = nextPos + 1 + static_cast<size_t>(nextSize);
+            if (step2Pos == checkEnd) {
+                bestSize = sz;
+                break;
+            }
+            if (step2Pos < checkEnd) {
+                uint8_t step2Type = data[step2Pos] ^ xorByte;
+                if (g_typeIDs.count(step2Type) > 0) {
+                    bestSize = sz;
+                    break;
+                }
             }
         }
     }
@@ -2132,11 +2225,27 @@ bool AssignTypeSizes(const uint8_t* data, size_t checkStart,
         pos++; // consume type byte
 
         if (!g_typeIDs.count(realType)) {
-            LOG(WARNING) << "[WARDEN_SCAN] Unknown type 0x" << std::hex << std::setfill('0')
-                         << std::setw(2) << (int)realType
-                         << " at offset " << std::dec << (pos - 1)
-                         << " — not in module type set";
-            return false;
+            // Dynamic type discovery: try to assign a size for this unknown type.
+            // The quota system in TryAssignSize prevents over-assignment.
+            int discoveredSize = TryAssignSize(data, pos, checkEnd, g_stringCount, xorByte);
+            if (discoveredSize < 0) {
+                LOG(WARNING) << "[WARDEN_SCAN] Unknown type 0x" << std::hex << std::setfill('0')
+                             << std::setw(2) << (int)realType
+                             << " at offset " << std::dec << (pos - 1)
+                             << " — discovery failed (no valid size)";
+                return false;
+            }
+
+            g_typeIDs.insert(realType);
+            g_typeSizes[realType] = discoveredSize;
+            newAssignments = true;
+            LOG(INFO) << "[WARDEN_SCAN] Discovered type 0x" << std::hex << std::setfill('0')
+                      << std::setw(2) << (int)realType << " = "
+                      << std::dec << discoveredSize << " bytes ("
+                      << GetTypeName(realType) << ") [dynamic]";
+
+            pos += static_cast<size_t>(discoveredSize);
+            continue;
         }
 
         auto it = g_typeSizes.find(realType);

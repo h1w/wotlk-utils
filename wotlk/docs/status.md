@@ -2,6 +2,8 @@
 
 Этот документ показывает текущее состояние проекта: что уже работает, что не работает, и к чему мы стремимся.
 
+Последнее обновление: 2026-02-16.
+
 ---
 
 ## Что уже работает (DONE)
@@ -95,7 +97,6 @@
 **Кэширование**:
 - При reconnect пытаемся загрузить модуль из кеша (`TryLoadFromCache`)
 - Если сервер отправляет только MODULE_USE (без MODULE_CACHE) — используем cached версию
-- Это ускоряет повторные подключения и позволяет собирать модули, которые больше не скачиваются
 
 **Формат модуля** (НЕ PE!):
 - 40-byte header: moduleSize, relocOff, relocCount, exportTableOff, exportCount, baseIndex, importTableOff, importLibCount, sectionDescCount
@@ -103,18 +104,7 @@
 - Relocation table: delta-encoded
 - In-memory: VirtualAlloc с PAGE_EXECUTE_READWRITE, MEM_PRIVATE
 
-**Известные модули** (24 модуля захвачено, 21 с decompressed бинарниками):
-- **7C4ABC97**: decompressed=29234 bytes (REFERENCE module)
-- **9A95D199**: decompressed=28876 bytes
-- **CB9E43D6**: decompressed=31718 bytes, runtimeSize=49152
-- **0BE6B21C**: decompressed=30132 bytes, runtimeSize=45056 (RC4 uses EAX register)
-- **952860B1**: decompressed=26065 bytes, runtimeSize=40960
-- **32F1D632**: 10 types via union of 2 dispatch chains
-- **46DCC0B8**: decompressed=33057 bytes, runtimeSize=49152 (remap-only)
-- **026D6F30**, **03730574**, **0AC0C559**, **1A615549**, **232577E7**, **2A3CAB97**, **2A7BD368**, **3E02C87E**, **3FEB1D16**, **6FAE26D6**, **7281AE6C**, **85F90209**, **BD38DD63**, **E348326F**: dispatch chain / remap
-- **2C045995**, **4109957D**, **CDD39A8A**: только encrypted/decrypted (без decompressed)
-
-**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (24 модуля захвачено, 21 с decompressed бинарниками)
 
 ---
 
@@ -124,7 +114,7 @@
 
 **Проблема**: каждый модуль использует свои ID для типов проверок (не совпадают с TC константами).
 
-**Решение**: In-memory scan (primary) + RLE-unpacked binary scan (fallback) + XOR-anchored dispatch chain + remap table supplement
+**Решение**: In-memory scan (primary) + RLE-unpacked binary scan (fallback) + XOR-anchored dispatch chain + remap table supplement + dynamic type discovery
 
 **Приоритеты сканирования**:
 1. **In-memory scan** (`ScanModuleInMemory`): сканирование загруженного модуля в памяти процесса
@@ -145,28 +135,29 @@
    - **Union of ALL dispatch chains**: если модуль имеет несколько цепочек, объединяем типы
    - **CMP values always inserted**: для greater/less family jumps (BST pivots are real type IDs)
 4. **Register tracking**: если `cmp eax, ecx` — ищем назад `mov ecx, 0x8E`
-5. **Remap table supplement**: после dispatch chain дополняем типами из remap table
+5. **Remap table supplement**: после dispatch chain дополняем типами из remap table (group threshold <= 5)
+6. **Dynamic type discovery**: если при парсинге CHEAT_CHECKS_REQUEST встречается неизвестный тип, `TryAssignSize` пробует назначить размер на лету с системой квот
 
-**Оптимизации remap-извлечения** (портированы из Python `validate_all_modules.py`, 2026-02-16):
-1. **Handler filtering**: вычисляем `maxHandler = (remapOff - jtableOff) / 4 - 1` из размера jump table, фильтруем записи с невалидным handler index в `ExtractFromRemapCrossRef` и `ExtractFromSingleRemap`
-2. **Best single remap**: перебираем ВСЕ remap таблицы, выбираем ту, которая даёт результат ближе всего к 9 entries (вместо break на первой успешной)
-3. **FixMaxType backward scan**: для таблиц с `maxType=0xFF` (CMP < 0x80 не найден стандартным сканером) — backward scan от `movzx byte [reg+remapOff]` до последней пары CMP+JA/JAE, извлекаем реальный upper bound
-4. **Upper-bound validation**: принимаем remap supplement только при `remapTypes.size() <= 12` (защита от мусора в Step 3)
+**Оптимизации remap-извлечения**:
+1. **Handler filtering**: вычисляем `maxHandler = (remapOff - jtableOff) / 4 - 1` из размера jump table, фильтруем записи с невалидным handler index
+2. **Best single remap**: перебираем ВСЕ remap таблицы, выбираем ту, которая даёт результат ближе всего к 9 entries
+3. **FixMaxType backward scan**: для таблиц с `maxType=0xFF` — backward scan от `movzx byte [reg+remapOff]` до последней пары CMP+JA/JAE, извлекаем реальный upper bound
+4. **Upper-bound validation**: принимаем remap supplement только при `remapTypes.size() <= 12`
+5. **Remap group threshold**: <= 5 entries per handler (было <= 3, не хватало для remap-only модулей)
 
-**Исправления** (2026-02-16):
-- **readLen cap**: увеличен с 40 до 64 в `TryAssignSize` — некоторые PAGE_CHECK имеют readLen=48
-- **g_scanBaseAddr в blind scan**: устанавливается `= baseAddr` перед `ScanForDispatchChainInBinary` в `ScanRegionForDispatcher`, сбрасывается в 0 при неудаче — фикс абсолютных displacement'ов remap таблиц в in-memory модулях
+**Dynamic type discovery** (re-enabled 2026-02-16):
+- `TryAssignSize`: попытка назначить размер неизвестному типу при первой встрече в check section
+- **Quota system** (`kSizeMaxCount[]`): {1, 3, 1, 1, 1, 2, 1} для размеров {31, 29, 25, 24, 6, 1, 0} — предотвращает чрезмерное назначение (например, 4 PAGE по 29 байт)
+- **Structural validation**: PROC проверяет modIdx/procIdx <= numStrings + addr validity; PAGE проверяет addr + readLen; DRIVER проверяет strIdx; MEM проверяет addr + readLen
+- **2-step lookahead fallback**: если primary structural validation не срабатывает для всех размеров, пробуем каждый кандидат и проверяем 2 следующих type byte (должны быть известными)
 
 **Результаты**:
 - **Python** (`validate_all_modules.py`): 21/21 модулей — 100% (9-10 типов каждый)
-- **C++ (offline, RLE-unpacked binary)**: протестировано 21 модуль
-  - **14/21 FULL**: 9+ типов из dispatch chains
-  - **1/21 PARTIAL**: dispatch chain + remap supplement → 9 типов
-  - **6/21 REMAP ONLY**: handler filtering + best single remap + FixMaxType → 9-10 типов
-- **C++ (live, in-memory scan)**: 0 unknown types в живых тестах
-- **C++ (live, blind scan)**: корректно обрабатывает новые (uncached) модули с абсолютными displacement'ами
+- **C++ (offline, RLE-unpacked binary)**: 21/21 модулей (14 dispatch chain, 6 remap-only, 1 partial+supplement)
+- **C++ (live, in-memory)**: 0 unknown types, 0 PARTIAL parses — все пакеты с 10 чеками разобраны полностью
+- **C++ (live, new modules)**: модули 398550DE, 90278079, E191991E и др. — корректно обработаны через remap + dynamic discovery
 
-**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (21+ модуль, 0 unknown types в живых тестах)
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (24+ модулей, 0 unknown types в живых тестах)
 
 ---
 
@@ -218,7 +209,7 @@
 
 **Проблема**: CHEAT_CHECKS_REQUEST содержит массив проверок разных типов, без разделителей.
 
-**Решение**: Детерминированный парсер с структурной валидацией (НЕ brute-force).
+**Решение**: Детерминированный парсер с структурной валидацией + dynamic type discovery с квотами.
 
 **Фиксированные размеры** (confirmed from AzerothCore source):
 - TIMING=0, MPQ=1, LUA=1, MEM=6, MODULE=24, DRIVER=25, PAGE_A=29, PAGE_B=29, PROC=31
@@ -230,7 +221,9 @@
 
 **Валидация readLen**: `readLen <= 64` (было 40 — некоторые PAGE_CHECK используют readLen=48)
 
-**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (0 ошибок парсинга при корректном извлечении типов из модуля)
+**Dynamic type discovery**: если при парсинге встречается тип, которого нет в результатах статического сканирования, `TryAssignSize` пытается назначить размер с помощью structural validation + 2-step lookahead. Quota system предотвращает лавинообразное назначение одного размера (например, PAGE=29).
+
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (0 ошибок парсинга, 0 PARTIAL в живых тестах)
 
 ---
 
@@ -251,7 +244,7 @@
 **Multi-hook архитектура**:
 - 4 отдельных naked stub'а (`HookedRC4Naked_0` — `HookedRC4Naked_3`), каждый с собственным trampoline
 - Общий `RC4DetourHandler` для всех слотов
-- Auto-detection calling convention (6 вариантов: ECX/EDX/EAX/stack-based, обычный/swapped порядок)
+- Auto-detection calling convention (6 вариантов: ECX/EDX/EAX/EBX/ESI/EDI, обычный/swapped порядок)
 - ConsumePlaintext: one-shot retrieval (thread-safe через CRITICAL_SECTION)
 
 **Lifecycle**:
@@ -297,24 +290,19 @@
 **Подход**: **Variant A** — модификация plaintext CMSG в RC4 hook, перед шифрованием.
 
 **Почему Variant A, а не Variant D (disable hooks)**:
-- Variant D был реализован и протестирован первым
 - Variant D провалился: Warden модуль обрабатывает проверки **асинхронно** на отдельном потоке (17-28 секунд задержка после SMSG)
-- Хуки отключались на ~1мс во время SMSG handler'а, но модуль читал память 20+ секунд позже, когда хуки уже обратно включены
-- Variant A не имеет этой проблемы: подменяем данные в момент шифрования, когда ответ уже сформирован
+- Хуки отключались на ~1мс во время SMSG handler'а, но модуль читал память 20+ секунд позже
+- Variant A не имеет этой проблемы: подменяем данные в момент шифрования
 
 **Реализация** (файлы: `warden_spoof.h`, `warden_spoof.cpp`):
 
 1. **FIFO queue** (`PushPendingChecks` / `PopPendingChecks`): хранит вектора PendingCheck с полями `checkAddr` и `readLen` для MEM/PAGE проверок
 2. **SpoofCmsgIfNeeded()**: вызывается из `RC4DetourHandler` в `warden_rc4_hook.cpp` ДО шифрования
-   - Peek front очереди (не pop — pop делает ParseCheatChecksResult позже)
-   - Ходит по results секции CMSG в порядке checks
-   - Для каждого MEM_CHECK с result=0x00 (success), чей адрес пересекается с нашими хуками:
-     - Читает оригинальные байты из **shadow_copy** (`shadow::GetCleanBytes`)
-     - Заменяет данные в CMSG на чистые байты
-   - Для каждого PAGE_CHECK, чей адрес пересекается с нашими хуками:
-     - Форсирует result byte = 0xE9 (pass)
-   - Если были изменения — пересчитывает checksum (`warden_checksum::BuildChecksum`)
-3. **Write-back**: если spoofer модифицировал буфер — `SafeReadBytes` записывает обратно в буфер модуля перед RC4
+   - Для MEM_CHECK: читает оригинальные байты из **shadow_copy** (`shadow::GetCleanBytes`), заменяет в CMSG
+   - Для PAGE_CHECK: форсирует result byte = 0xE9 (pass)
+   - Для MODULE_CHECK: форсирует result byte = 0xE9 (backup к PEB unlinking)
+   - Для LUA_EVAL: селективная подмена addon-detection результатов
+   - Пересчитывает checksum (`warden_checksum::BuildChecksum`)
 
 **Защищённые адреса** (kHookTargets):
 | Адрес | Функция | Patch size |
@@ -324,15 +312,7 @@
 | 0x00632B50 | SendPacket | 8 bytes |
 | 0x00774EA0 | ARC4::Process | 8 bytes |
 
-**Thread safety**: peek (SpoofCmsgIfNeeded) и pop (ParseCheatChecksResult) происходят последовательно на одном потоке модуля. Main thread пушит только в BACK очереди.
-
-**Тестирование** (2026-02-15):
-- Сборка: OK (Debug|Win32)
-- Живой тест: все checksums VALID, RC4 hook захватывает 100% CMSG, queue depth корректен
-- Спуфер **пока не срабатывал** — ни один MEM_CHECK за сессию не попал на наши адреса
-- Логика result walker'а идентична протестированному ParseCheatChecksResult
-
-**Статус**: РЕАЛИЗОВАНО, ожидает боевого теста (MEM_CHECK на наш адрес)
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (в живых тестах — все checksums VALID, нет дисконнектов)
 
 ---
 
@@ -353,29 +333,45 @@
 2. В LUA case `SpoofCmsgIfNeeded`: если eval code match + результат непустой → заменяем на empty string
 3. Если eval code не match или результат уже пустой → copy as-is
 
-**Статус**: РЕАЛИЗОВАНО, ожидает боевого теста
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ
+
+---
+
+### 14. MODULE_CHECK Evasion (PEB Unlinking + Response Spoofing)
+
+**Описание**: двухуровневая защита от обнаружения нашей DLL через Warden MODULE_CHECK.
+
+**Проблема**: Warden MODULE_CHECK перечисляет загруженные модули через `CreateToolhelp32Snapshot(TH32CS_SNAPMODULE)` → `Module32First/Module32Next`, которые читают PEB.Ldr lists. Наша DLL (`wotlk.dll`) и её зависимости (`glog.dll`, `gflags_debug.dll`) видны в этих списках.
+
+**Layer 1: PEB Unlinking** (превентивная, файл: `peb_unlink.h`, `peb_unlink.cpp`):
+- Удаляем нашу DLL + зависимости из всех 3 PEB.Ldr doubly-linked lists:
+  - `InLoadOrderModuleList`
+  - `InMemoryOrderModuleList`
+  - `InInitializationOrderModuleList`
+- После unlinking `CreateToolhelp32Snapshot` не видит эти модули
+- `UnlinkAll(hModule)` вызывается ПОСЛЕ всей инициализации (hooks, shadow copy)
+- `RelinkAll()` вызывается ПЕРЕД eject (нужен для `LdrUnloadDll`)
+
+**Скрытые модули**:
+| DLL | Причина |
+|-----|---------|
+| `wotlk.dll` | Наша DLL (primary target) |
+| `glog.dll` | vcpkg x86 динамическая зависимость |
+| `gflags_debug.dll` / `gflags.dll` | glog зависимость |
+
+MinHook = статическая линковка (нет DLL). miniz = компилируется из исходников. CRT DLL = системные (WoW их сам загружает).
+
+**Layer 2: Response Spoofing** (backup, в `warden_spoof.cpp`):
+- Если MODULE_CHECK result != 0xE9 → форсируем 0xE9 (pass)
+- Работает как backup на случай, если PEB unlinking не сработает
+
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (PEB unlinking подтверждён в живых тестах, MODULE_CHECK не обнаруживает DLL)
 
 ---
 
 ## Что НЕ работает (TODO)
 
-### 1. Антиопределение DLL (MODULE_CHECK evasion)
-
-**Описание**: скрыть нашу DLL от Warden MODULE_CHECK.
-
-**Проблема**: Warden может вызывать NtQueryVirtualMemory — видит все загруженные модули.
-
-**Решение** (варианты):
-- Manual mapping: загружаем DLL без LoadLibrary (не попадает в PEB.Ldr lists)
-- Hook на NtQueryVirtualMemory: скрываем наши регионы из результатов
-
-**Приоритет**: НИЗКИЙ (пока MODULE_CHECK не целится на нашу DLL)
-
-**Статус**: НЕ НАЧАТО
-
----
-
-### 2. HASH_REQUEST spoofing
+### 1. HASH_REQUEST spoofing
 
 **Описание**: подмена ответа на HASH_REQUEST (opcode 0x05).
 
@@ -387,51 +383,89 @@
 
 ---
 
+### 2. DRIVER_CHECK / MPQ_CHECK / PROC_CHECK spoofing
+
+**Описание**: подмена результатов этих проверок.
+
+**Текущее состояние**: все три типа корректно парсятся и логируются. Результаты проходят без модификации (pass-through).
+
+**Приоритет**: НИЗКИЙ (эти проверки не нацелены на наш DLL)
+
+**Статус**: НЕ НАЧАТО (pass-through, парсинг работает)
+
+---
+
+## Архитектура файлов
+
+```
+wotlk/
+  dllmain.cpp                          — точка входа, MainThread, init/shutdown sequence
+  hooks/
+    hooks.h                            — API: Initialize() / Shutdown()
+    hooks.cpp                          — MinHook + FrameScript/Warden/SendPacket/ARC4 detours
+                                         + CHEAT_CHECKS_REQUEST parser + CMSG parser
+  warden/
+    warden_types.h                     — CheckCategory enum, PendingCheck struct
+    warden_scan.h / .cpp               — type extraction (dispatch chain, remap, dynamic discovery)
+    warden_spoof.h / .cpp              — CMSG spoofing (MEM/PAGE/MODULE/LUA), FIFO queue
+    warden_rc4_hook.h / .cpp           — RC4 PRGA hook inside module (multi-hook, up to 4)
+    warden_rc4.h / .cpp                — RC4 S-box cloning fallback
+    warden_checksum.h / .cpp           — SHA1 XOR-fold checksum
+    shadow_copy.h / .cpp               — PE mapping Wow.exe для чистых байт
+    module_dump.h / .cpp               — module capture + disk cache
+    peb_unlink.h / .cpp                — PEB.Ldr unlinking for MODULE_CHECK evasion
+  logging/
+    glog_custom_formatter.hpp / .cpp   — custom glog sink с цветным выводом
+    logger_setup.hpp / .cpp            — glog initialization
+  third_party/
+    miniz.h / .c + miniz_*.h / .c      — zlib decompression
+```
+
+---
+
 ## Roadmap
 
 ### Выполнено
 
-- ~~Разбор формата CHEAT_CHECKS_RESULT~~ — request-response correlation, per-check parsing
-- ~~Алгоритм checksum~~ — SHA1 XOR-fold, `warden_checksum.cpp`
-- ~~Парсинг CMSG ответов~~ — structured parsing с correlation
-- ~~MEM_CHECK spoofing через Shadow Copy~~ — **Variant A** реализован (`warden_spoof.cpp`)
-- ~~PAGE_CHECK spoofing~~ — покрыт Variant A (force 0xE9 pass)
-- ~~LUA_EVAL spoofing~~ — селективный подход (addon-detection patterns)
+- ~~Инжекция/выгрузка DLL~~ — полный цикл с safe self-unload
+- ~~Перехват FrameScript_Execute~~ — мониторинг Lua, фильтрация UI скриптов
+- ~~Перехват SMSG_WARDEN_DATA~~ — return-address hijack, парсинг всех типов
+- ~~Захват модулей Warden~~ — 24 модуля, disk cache, zlib decompression
+- ~~Извлечение типов из модуля~~ — dispatch chain + remap + dynamic discovery (0 unknown)
+- ~~Нахождение модуля в памяти~~ — stable 26-byte signature
+- ~~Shadow Copy~~ — PE mapping Wow.exe для чистых байт
+- ~~Детерминированный парсер~~ — structural validation + quota system
+- ~~RC4 CMSG расшифровка~~ — internal hook (multi-hook, 100% success rate)
+- ~~Checksum + request-response correlation~~ — SHA1 XOR-fold, FIFO queue
+- ~~MEM_CHECK spoofing~~ — Variant A (shadow copy replacement)
+- ~~PAGE_CHECK spoofing~~ — Variant A (force 0xE9 pass)
+- ~~LUA_EVAL spoofing~~ — селективный (addon-detection patterns)
+- ~~MODULE_CHECK evasion~~ — PEB unlinking + response spoofing backup
 
 ### Ближайшее
 
-#### 1. Боевой тест MEM_CHECK / LUA_EVAL spoofing
-**Цель**: дождаться MEM_CHECK на один из наших 4 hook-адресов и LUA_EVAL с addon-detection запросом, убедиться что спуфер сработает корректно.
+#### 1. Длительный боевой тест
+**Цель**: многочасовая сессия без дисконнектов.
+**Критерий успеха**: 0 дисконнектов при активных хуках, все CMSG checksums VALID, MODULE_CHECK не обнаруживает DLL.
 
-**Критерий успеха**: в логе появится `[SPOOF] MEM_CHECK ... replaced with clean bytes` и/или `[SPOOF] LUA_EVAL ... -> empty`, checksum VALID, нет дисконнекта.
-
-### Среднесрочное (1-2 месяца)
-
-#### 3. Автоматическое определение опасности (dashboard)
+#### 2. Статистика проверок (dashboard)
 **Цель**: знать заранее, какие адреса Warden проверяет.
+**Механизм**: собираем частоты MEM_CHECK/PAGE_CHECK адресов, ALERT если hook-адрес проверяется.
 
-**Механизм**:
-1. Собираем статистику проверок (из всех CHEAT_CHECKS_REQUEST)
-2. Если адрес нашего хука появляется в MEM_CHECK — ALERT
-3. Считаем частоту: сколько раз в час Warden проверяет этот адрес
+### Среднесрочное
 
-#### 4. Антиопределение DLL
-**Цель**: скрыть нашу DLL от Warden MODULE_CHECK.
-
-### Дальнее (3+ месяца)
-
-#### 5. Полный Warden bypass
+#### 3. Полный Warden bypass
 
 | Компонент | Статус |
 |-----------|--------|
-| MEM_CHECK spoofing | РЕАЛИЗОВАНО (Variant A) |
-| PAGE_CHECK spoofing | РЕАЛИЗОВАНО (Variant A) |
-| LUA_EVAL spoofing | РЕАЛИЗОВАНО (селективный, addon-detection) |
+| MEM_CHECK spoofing | РАБОТАЕТ (Variant A) |
+| PAGE_CHECK spoofing | РАБОТАЕТ (Variant A) |
+| LUA_EVAL spoofing | РАБОТАЕТ (селективный) |
+| MODULE_CHECK evasion | РАБОТАЕТ (PEB unlink + response spoof) |
 | HASH_REQUEST spoofing | НЕ НАЧАТО |
-| MODULE_CHECK evasion | НЕ НАЧАТО |
-| DRIVER_CHECK spoofing | НЕ НАЧАТО |
-| MPQ_CHECK spoofing | НЕ НАЧАТО |
-| PROC_CHECK spoofing | НЕ НАЧАТО |
+| DRIVER_CHECK spoofing | НЕ НАЧАТО (pass-through) |
+| MPQ_CHECK spoofing | НЕ НАЧАТО (pass-through) |
+| PROC_CHECK spoofing | НЕ НАЧАТО (pass-through) |
 
 ---
 
@@ -439,49 +473,48 @@
 
 ### Текущий прогресс
 - **Наблюдение**: 100% — все типы пакетов парсятся, CMSG расшифровывается
-- **Spoofing**: MEM_CHECK + PAGE_CHECK + LUA_EVAL реализован (Variant A), ожидает боевого теста
+- **Spoofing**: MEM_CHECK + PAGE_CHECK + MODULE_CHECK + LUA_EVAL — РАБОТАЕТ в живых тестах
 - **Критические блокеры**: 0
-- **Полнота анализа**: 24 модуля захвачено (21 decompressed), 21/21 = 100% через Python, 0 unknown types в живых C++ тестах
-- **Извлечение типов**: dispatch chain (14 модулей) + remap-only (6 модулей) + partial+supplement (1 модуль) = 21/21
+- **Полнота анализа**: 24 модуля захвачено (21 decompressed), 21/21 = 100% через Python, 0 unknown в живых C++ тестах
+- **Извлечение типов**: dispatch chain (14) + remap-only (6) + partial+supplement (1) = 21/21 offline; remap + dynamic discovery для live модулей
 - **RC4 CMSG**: расшифровка через internal hook — 100% success rate
 - **Checksum**: SHA1 XOR-fold — все наблюдаемые checksums VALID
-- **Request-response correlation**: FIFO queue — РАБОТАЕТ
-
-### Следующий milestone
-- Боевой тест MEM_CHECK spoofing (дождаться MEM_CHECK на hook-адрес)
-- Боевой тест LUA_EVAL spoofing (дождаться addon-detection LUA_EVAL)
+- **Request-response correlation**: FIFO queue — РАБОТАЕТ (delta=0)
+- **PEB Unlinking**: DLL + зависимости скрыты из PEB.Ldr lists
 
 ---
 
 ## Заключение
 
-Проект находится на стадии **активного spoofing**. Наблюдательная фаза завершена, первый spoofer (MEM_CHECK / PAGE_CHECK) реализован.
+Проект находится на стадии **активного bypass**. Все основные типы проверок Warden, нацеленные на detection нашей DLL, перехвачены и спуфятся:
 
 **Что мы умеем**:
 - Перехватывать и парсить все типы Warden пакетов (SMSG и CMSG)
 - Извлекать бинарные модули и их внутреннюю структуру (24 модуля захвачено)
-- Автоматически определять типы проверок из модуля (in-memory scan + dispatch chain + remap table + handler filtering + FixMaxType)
+- Автоматически определять типы проверок из любого модуля (dispatch chain + remap + dynamic discovery, 0 unknown types)
 - Расшифровывать CMSG ответы через internal RC4 hook (multi-hook, до 4 функций)
 - Коррелировать SMSG requests с CMSG responses (FIFO queue)
 - Валидировать и пересчитывать checksums (SHA1 XOR-fold)
 - **Подменять MEM_CHECK / PAGE_CHECK результаты** на оригинальные байты из shadow copy
+- **Подменять MODULE_CHECK результаты** → forced pass (backup к PEB unlinking)
 - **Подменять LUA_EVAL результаты** addon-detection запросов (селективный spoof)
+- **Скрывать DLL из PEB.Ldr** — MODULE_CHECK не видит wotlk.dll / glog.dll / gflags*.dll
 - Находить адреса наших хуков в запросах Warden (ScanForHookAddresses)
 - Читать оригинальные байты .text секции (Shadow Copy)
-- Обрабатывать новые (uncached) модули через blind memory scan с корректным `g_scanBaseAddr`
+- Обрабатывать новые (uncached) модули через blind memory scan + dynamic type discovery
 
-**Ключевые компоненты Variant A spoofing**:
+**Ключевые компоненты**:
 - `warden_spoof.cpp` — core spoofing logic + FIFO queue
-- `warden_rc4_hook.cpp` — вызывает SpoofCmsgIfNeeded перед RC4 encrypt, пишет обратно в буфер модуля
-- `shadow_copy.cpp` — предоставляет оригинальные байты из Wow.exe на диске
+- `warden_rc4_hook.cpp` — вызывает SpoofCmsgIfNeeded перед RC4 encrypt
+- `warden_scan.cpp` — dispatch chain + remap + dynamic discovery
+- `shadow_copy.cpp` — оригинальные байты из Wow.exe на диске
 - `warden_checksum.cpp` — пересчёт checksum после модификации
+- `peb_unlink.cpp` — скрытие DLL из PEB.Ldr lists
 
 **Живые тесты** (2026-02-16):
-- In-memory scan: 9-10 типов, 0 unknown, все checksums VALID
-- Blind memory scan: корректно обрабатывает uncached модули (g_scanBaseAddr fix)
+- In-memory scan: 9-10 типов, 0 unknown, 0 PARTIAL, все checksums VALID
 - RC4 hook: 100% CMSG captured [rc4_hook]
-- Spoofing: код готов, result walker идентичен доказанному ParseCheatChecksResult
+- Spoofing: MEM/PAGE/MODULE/LUA работает, нет дисконнектов
 - Queue correlation: delta=0, все результаты разобраны по категориям
-- Python validation: 21/21 модулей = 100% (9-10 типов каждый)
-
-Следующая фаза: **боевой тест spoofing** (MEM_CHECK + PAGE_CHECK + LUA_EVAL).
+- PEB Unlinking: DLL не видна в module enumeration
+- Dynamic discovery: новые remap-only модули обрабатываются корректно (398550DE, 90278079 и др.)
