@@ -5,6 +5,7 @@
 #include <glog/logging.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 #include <unordered_map>
@@ -1033,10 +1034,21 @@ bool ExtractFromRemapCrossRef(const uint8_t* data, size_t dataSize,
         const uint8_t* table = data + r.remapOff;
         size_t tableLen = static_cast<size_t>(r.maxType) + 1;
 
-        // Count occurrences of each index byte
+        // Compute max valid handler index from jump table size
+        int maxHandler = -1;
+        if (r.jtableOff < r.remapOff) {
+            uint32_t gap = r.remapOff - r.jtableOff;
+            if (gap >= 4 && gap % 4 == 0)
+                maxHandler = static_cast<int>(gap / 4 - 1);
+        }
+
+        // Count occurrences of each index byte (only valid handler indices)
         uint16_t indexCounts[256] = {};
-        for (size_t i = 0; i < tableLen; ++i)
-            indexCounts[table[i]]++;
+        for (size_t i = 0; i < tableLen; ++i) {
+            uint8_t idx = table[i];
+            if (maxHandler >= 0 && idx > maxHandler) continue;
+            indexCounts[idx]++;
+        }
 
         // Default = most common index
         uint8_t defaultIdx = 0;
@@ -1048,13 +1060,14 @@ bool ExtractFromRemapCrossRef(const uint8_t* data, size_t dataSize,
             }
         }
 
-        // Group type bytes by their index value
+        // Group type bytes by their index value — skip entries with invalid handler index
         // groups[idx] = list of raw type offsets
         std::unordered_map<uint8_t, std::vector<uint8_t>> groups;
         for (size_t i = 0; i < tableLen; ++i) {
             uint8_t idx = table[i];
-            if (idx != defaultIdx)
-                groups[idx].push_back(static_cast<uint8_t>(i));
+            if (idx == defaultIdx) continue;
+            if (maxHandler >= 0 && idx > maxHandler) continue;
+            groups[idx].push_back(static_cast<uint8_t>(i));
         }
 
         // Collect singletons + pairs + triplets with shift applied
@@ -1106,10 +1119,21 @@ bool ExtractFromSingleRemap(const uint8_t* data, size_t dataSize,
 
     const uint8_t* table = data + r.remapOff;
 
-    // Find default handler index (most common value)
+    // Compute max valid handler index from jump table size
+    int maxHandler = -1;
+    if (r.jtableOff < r.remapOff) {
+        uint32_t gap = r.remapOff - r.jtableOff;
+        if (gap >= 4 && gap % 4 == 0)
+            maxHandler = static_cast<int>(gap / 4 - 1);
+    }
+
+    // Find default handler index (most common value, only valid handler indices)
     uint16_t indexCounts[256] = {};
-    for (size_t i = 0; i < tableLen; ++i)
-        indexCounts[table[i]]++;
+    for (size_t i = 0; i < tableLen; ++i) {
+        uint8_t idx = table[i];
+        if (maxHandler >= 0 && idx > maxHandler) continue;
+        indexCounts[idx]++;
+    }
 
     uint8_t defaultIdx = 0;
     uint16_t maxCount = 0;
@@ -1120,10 +1144,10 @@ bool ExtractFromSingleRemap(const uint8_t* data, size_t dataSize,
         }
     }
 
-    // All entries that differ from the default are real type IDs
+    // All entries that differ from the default are real type IDs (skip invalid handler indices)
     std::unordered_set<uint8_t> types;
     for (size_t i = 0; i < tableLen; ++i) {
-        if (table[i] != defaultIdx)
+        if (table[i] != defaultIdx && (maxHandler < 0 || table[i] <= maxHandler))
             types.insert(static_cast<uint8_t>((i + r.shift) & 0xFF));
     }
 
@@ -1145,6 +1169,77 @@ bool ExtractFromSingleRemap(const uint8_t* data, size_t dataSize,
         return true;
     }
     return false;
+}
+
+// Fix maxType for remap tables where the CMP immediate was < 0x80 and got missed
+// by DetectRemapTableInfo. Backward-scans from the movzx remap reference to find
+// the last CMP + JA/JAE pair.
+uint8_t FixMaxType(const uint8_t* data, size_t dataSize, const RemapTableInfo& r)
+{
+    if (r.maxType != 0xFF) return r.maxType;  // already valid
+
+    // Step 1: Find movzx byte [reg + remapOff] reference in code
+    // Pattern: 0F B6 [80-BF, rm!=4] [LE32 disp]
+    size_t codeAddr = 0;
+    bool found = false;
+    for (size_t i = 0; i + 6 < dataSize; ++i) {
+        if (data[i] == 0x0F && data[i + 1] == 0xB6
+            && data[i + 2] >= 0x80 && data[i + 2] <= 0xBF && (data[i + 2] & 7) != 4) {
+            uint32_t disp;
+            std::memcpy(&disp, data + i + 3, 4);
+            if (g_scanBaseAddr != 0 && disp >= g_scanBaseAddr)
+                disp -= static_cast<uint32_t>(g_scanBaseAddr);
+            if (disp == r.remapOff) {
+                codeAddr = i;
+                found = true;
+                break;
+            }
+        }
+    }
+    if (!found) return 0xFF;
+
+    // Step 2: Forward-disassemble from (codeAddr - 60) to codeAddr,
+    // tracking the LAST CMP + JA/JAE pair
+    size_t start = (codeAddr > 60) ? codeAddr - 60 : 0;
+    uint8_t bestCmp = 0xFF;
+    uint8_t lastCmpImm = 0;
+    bool hasCmp = false;
+
+    for (size_t pos = start; pos < codeAddr; ) {
+        uint8_t b = data[pos];
+        // CMP r32, imm8 (83 F8-FF XX)
+        if (b == 0x83 && pos + 2 < dataSize && data[pos + 1] >= 0xF8 && data[pos + 1] <= 0xFF) {
+            lastCmpImm = data[pos + 2]; hasCmp = (lastCmpImm > 0);
+            pos += 3; continue;
+        }
+        // CMP al, imm8 (3C XX)
+        if (b == 0x3C && pos + 1 < dataSize) {
+            lastCmpImm = data[pos + 1]; hasCmp = (lastCmpImm > 0);
+            pos += 2; continue;
+        }
+        // CMP eax, imm32 (3D XX 00 00 00)
+        if (b == 0x3D && pos + 4 < dataSize
+            && data[pos + 2] == 0 && data[pos + 3] == 0 && data[pos + 4] == 0) {
+            lastCmpImm = data[pos + 1]; hasCmp = (lastCmpImm > 0);
+            pos += 5; continue;
+        }
+        // JA short (77 XX) or JA near (0F 87 XX XX XX XX)
+        if (hasCmp && (b == 0x77 || (b == 0x0F && pos + 1 < dataSize && data[pos + 1] == 0x87))) {
+            bestCmp = lastCmpImm;
+        }
+        // JAE short (73 XX) or JAE near (0F 83 XX XX XX XX)
+        if (hasCmp && (b == 0x73 || (b == 0x0F && pos + 1 < dataSize && data[pos + 1] == 0x83))) {
+            bestCmp = lastCmpImm;
+        }
+        size_t len = X86InsnLen(data + pos, codeAddr - pos);
+        pos += len ? len : 1;
+    }
+
+    if (bestCmp != 0xFF) {
+        LOG(INFO) << "[WARDEN_SCAN] FixMaxType: remap @ 0x" << std::hex << r.remapOff
+                  << " maxType fixed 0xFF -> 0x" << static_cast<int>(bestCmp);
+    }
+    return bestCmp;
 }
 
 // Helper: pre-scan XOR-to-MOVZX window for register loads, then run chain walker.
@@ -1273,15 +1368,28 @@ bool ScanForDispatchChainInBinary(const uint8_t* data, size_t size, size_t scanS
         if (remapInfos.size() >= 2)
             remapOk = ExtractFromRemapCrossRef(data, size, remapInfos, remapTypes);
         if (!remapOk) {
+            // Try each table with maxType fixup, pick table closest to 9 entries
             for (const auto& r : remapInfos) {
-                if (ExtractFromSingleRemap(data, size, r, remapTypes)) {
-                    remapOk = true;
-                    break;
+                RemapTableInfo fixed = r;
+                fixed.maxType = FixMaxType(data, size, r);
+                std::unordered_set<uint8_t> candidate;
+                if (ExtractFromSingleRemap(data, size, fixed, candidate)) {
+                    if (candidate.size() >= 9 && candidate.size() <= 10) {
+                        remapTypes = candidate;
+                        remapOk = true;
+                        break;  // perfect match
+                    }
+                    if (!remapOk ||
+                        std::abs(static_cast<int>(candidate.size()) - 9) <
+                        std::abs(static_cast<int>(remapTypes.size()) - 9)) {
+                        remapTypes = candidate;
+                        remapOk = true;
+                    }
                 }
             }
         }
 
-        if (remapOk && remapTypes.size() > allChainTypes.size()) {
+        if (remapOk && remapTypes.size() > allChainTypes.size() && remapTypes.size() <= 12) {
             // Remap table found more types — use it as the definitive set
             g_typeIDs = remapTypes;
             LOG(INFO) << "[WARDEN_SCAN] Remap table supplemented chain: "
@@ -1308,10 +1416,23 @@ bool ScanForDispatchChainInBinary(const uint8_t* data, size_t size, size_t scanS
             remapOk = ExtractFromRemapCrossRef(data, size, remapInfos, remapTypes);
         }
         if (!remapOk) {
+            // Try each table with maxType fixup, pick table closest to 9 entries
             for (const auto& r : remapInfos) {
-                if (ExtractFromSingleRemap(data, size, r, remapTypes)) {
-                    remapOk = true;
-                    break;
+                RemapTableInfo fixed = r;
+                fixed.maxType = FixMaxType(data, size, r);
+                std::unordered_set<uint8_t> candidate;
+                if (ExtractFromSingleRemap(data, size, fixed, candidate)) {
+                    if (candidate.size() >= 9 && candidate.size() <= 10) {
+                        remapTypes = candidate;
+                        remapOk = true;
+                        break;  // perfect match
+                    }
+                    if (!remapOk ||
+                        std::abs(static_cast<int>(candidate.size()) - 9) <
+                        std::abs(static_cast<int>(remapTypes.size()) - 9)) {
+                        remapTypes = candidate;
+                        remapOk = true;
+                    }
                 }
             }
         }
@@ -1396,13 +1517,34 @@ bool ScanRegionForDispatcher(uintptr_t baseAddr, size_t regionSize)
         return false;
 
     // Primary: XOR-anchored dispatch chain scanner (works on in-memory code too)
+    // Set base address so absolute displacements in relocated code get adjusted
+    g_scanBaseAddr = baseAddr;
     if (ScanForDispatchChainInBinary(buf.data(), regionSize, 0)) {
         LOG(INFO) << "[WARDEN_SCAN] (found in memory region 0x"
                   << std::hex << std::uppercase << std::setfill('0')
                   << std::setw(8) << baseAddr
                   << ", " << std::dec << regionSize << " bytes)";
+
+        // Store runtime address if not already set by FindModuleInMemory
+        if (g_moduleRuntimeBase == 0) {
+            MEMORY_BASIC_INFORMATION mbi2;
+            if (VirtualQuery(reinterpret_cast<LPCVOID>(baseAddr), &mbi2, sizeof(mbi2))
+                == sizeof(mbi2))
+            {
+                g_moduleRuntimeBase = reinterpret_cast<uintptr_t>(mbi2.AllocationBase);
+                g_moduleRuntimeSize = regionSize;
+                LOG(INFO) << "[WARDEN_SCAN] Saved runtime base 0x"
+                          << std::hex << std::uppercase << std::setfill('0')
+                          << std::setw(8) << g_moduleRuntimeBase
+                          << " from blind scan";
+            }
+        }
+
         return true;
     }
+
+    // Reset base address if XOR-anchored scan failed (avoid stale state for next region)
+    g_scanBaseAddr = 0;
 
     // Fallback: cmp-cluster scanner
     size_t offset = 0;
@@ -1421,6 +1563,21 @@ bool ScanRegionForDispatcher(uintptr_t baseAddr, size_t regionSize)
             oss << " 0x" << std::hex << std::setfill('0') << std::setw(2)
                 << static_cast<int>(id);
         LOG(INFO) << oss.str();
+
+        // Store runtime address if not already set by FindModuleInMemory
+        if (g_moduleRuntimeBase == 0) {
+            MEMORY_BASIC_INFORMATION mbi2;
+            if (VirtualQuery(reinterpret_cast<LPCVOID>(baseAddr), &mbi2, sizeof(mbi2))
+                == sizeof(mbi2))
+            {
+                g_moduleRuntimeBase = reinterpret_cast<uintptr_t>(mbi2.AllocationBase);
+                g_moduleRuntimeSize = regionSize;
+                LOG(INFO) << "[WARDEN_SCAN] Saved runtime base 0x"
+                          << std::hex << std::uppercase << std::setfill('0')
+                          << std::setw(8) << g_moduleRuntimeBase
+                          << " from blind scan (cmp-cluster)";
+            }
+        }
 
         return true;
     }
@@ -1465,7 +1622,7 @@ int TryAssignSize(const uint8_t* data, size_t pos, size_t checkEnd,
             std::memcpy(&addr, data + pos + 26, 4);
             uint8_t readLen = data[pos + 30];
             valid = (modIdx <= numStrings && procIdx <= numStrings &&
-                     IsValidAddress(addr) && readLen >= 1 && readLen <= 40);
+                     IsValidAddress(addr) && readLen >= 1 && readLen <= 64);
             break;
         }
         case 29: {
@@ -1473,7 +1630,7 @@ int TryAssignSize(const uint8_t* data, size_t pos, size_t checkEnd,
             uint32_t addr;
             std::memcpy(&addr, data + pos + 24, 4);
             uint8_t readLen = data[pos + 28];
-            valid = (IsValidAddress(addr) && readLen >= 1 && readLen <= 40);
+            valid = (IsValidAddress(addr) && readLen >= 1 && readLen <= 64);
             break;
         }
         case 25: {
@@ -1502,7 +1659,7 @@ int TryAssignSize(const uint8_t* data, size_t pos, size_t checkEnd,
             std::memcpy(&addr, data + pos + 1, 4);
             uint8_t readLen = data[pos + 5];
             valid = (data[pos] == 0x00 && IsValidAddress(addr) &&
-                     readLen >= 1 && readLen <= 40);
+                     readLen >= 1 && readLen <= 64);
             break;
         }
         case 1: {

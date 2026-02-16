@@ -38,10 +38,12 @@ void ClearPendingChecks();
 // Get current queue depth (for logging)
 size_t GetQueueDepth();
 
-// Try to spoof CMSG CHEAT_CHECKS_RESULT in-place.
+// Spoof CMSG CHEAT_CHECKS_RESULT using copy-based rebuild.
 // Called from RC4 hook handler BEFORE encryption.
-// Modifies MEM_CHECK/PAGE_CHECK results that target our hook addresses,
-// replacing patched bytes with originals from shadow_copy.
+// - MEM_CHECK targeting hook addresses: replaces data with shadow_copy originals
+// - PAGE_CHECK targeting hook addresses: forces 0xE9 (pass)
+// - LUA_EVAL with non-empty string result: replaces with empty string
+// Updates resultLen and recomputes checksum if modified.
 // Returns true if buffer was modified.
 bool SpoofCmsgIfNeeded(uint8_t* data, size_t len);
 

@@ -146,16 +146,18 @@ size_t GetQueueDepth()
 }
 
 // ===========================================================================
-// Core: spoof CMSG CHEAT_CHECKS_RESULT in-place
+// Core: spoof CMSG CHEAT_CHECKS_RESULT (copy-based rebuild)
 //
 // CMSG format: [0x02][resultLen:2 LE][checksum:4][results:N]
 //
 // Walk results using pending checks (front of queue, peek only).
-// For each MEM_CHECK result=0x00 (success) targeting a hook address:
-//   replace the data bytes with original bytes from shadow_copy.
-// For each PAGE_CHECK targeting a hook address with result != 0xE9:
-//   replace result byte with 0xE9 (pass).
-// If any modification was made, recompute checksum.
+// Copies each result from old buffer to new buffer, modifying as needed:
+//   - MEM_CHECK targeting hook address: replace data with shadow_copy originals
+//   - PAGE_CHECK targeting hook address: force 0xE9 (pass)
+//   - LUA_EVAL with non-empty string result: replace with empty string
+// Copy-based approach handles variable-length LUA results correctly
+// (in-place would break offsets when result shrinks).
+// If modified: update resultLen, copy back, zero trailing, recompute checksum.
 // ===========================================================================
 
 bool SpoofCmsgIfNeeded(uint8_t* data, size_t len)
@@ -166,7 +168,7 @@ bool SpoofCmsgIfNeeded(uint8_t* data, size_t len)
 
     uint16_t resultLen = static_cast<uint16_t>(data[1]) |
                          (static_cast<uint16_t>(data[2]) << 8);
-    if (len != static_cast<size_t>(7) + resultLen || resultLen == 0)
+    if (len < static_cast<size_t>(7) + resultLen || resultLen == 0)
         return false;
 
     // Peek at front of pending checks queue (don't pop — ParseCheatChecksResult will pop later)
@@ -183,46 +185,49 @@ bool SpoofCmsgIfNeeded(uint8_t* data, size_t len)
     if (checks.empty())
         return false;
 
-    // Walk results section in check order
-    uint8_t* results = data + 7;
-    size_t pos = 0;
+    // Copy-based walk: read from oldResults, write to newResults
+    const uint8_t* oldResults = data + 7;
+    uint8_t newResults[4096];
+    size_t oldPos = 0, newPos = 0;
     bool modified = false;
     int spoofCount = 0;
 
     for (size_t i = 0; i < checks.size(); ++i) {
         const auto& chk = checks[i];
 
-        if (pos >= resultLen)
+        if (oldPos >= resultLen)
             break;
 
-        uint8_t resultByte = results[pos];
+        uint8_t resultByte = oldResults[oldPos];
 
         switch (chk.category) {
         case CheckCategory::TIMING:
             // 5 bytes always: [result:1][ticks:4]
-            if (pos + 5 > resultLen) { pos = resultLen; continue; }
-            pos += 5;
+            if (oldPos + 5 > resultLen) goto done;
+            std::memcpy(newResults + newPos, oldResults + oldPos, 5);
+            oldPos += 5; newPos += 5;
             break;
 
         case CheckCategory::MEM:
             if (resultByte != 0x00) {
                 // Fail — 1 byte
-                pos += 1;
+                newResults[newPos++] = oldResults[oldPos++];
             } else {
                 // Success: [0x00][data:readLen]
                 size_t totalSize = 1 + chk.readLen;
-                if (pos + totalSize > resultLen) { pos = resultLen; continue; }
+                if (oldPos + totalSize > resultLen) goto done;
+
+                std::memcpy(newResults + newPos, oldResults + oldPos, totalSize);
 
                 // Check if this MEM_CHECK targets one of our hooks
                 if (chk.checkAddr != 0 && chk.readLen > 0) {
                     int hookIdx = FindOverlappingHook(chk.checkAddr, chk.readLen);
                     if (hookIdx >= 0) {
-                        // Read original bytes from shadow_copy
                         uint8_t clean[256];
                         if (chk.readLen <= sizeof(clean) &&
                             shadow::GetCleanBytes(chk.checkAddr, clean, chk.readLen))
                         {
-                            std::memcpy(results + pos + 1, clean, chk.readLen);
+                            std::memcpy(newResults + newPos + 1, clean, chk.readLen);
                             modified = true;
                             spoofCount++;
 
@@ -236,12 +241,13 @@ bool SpoofCmsgIfNeeded(uint8_t* data, size_t len)
                         }
                     }
                 }
-                pos += totalSize;
+                oldPos += totalSize; newPos += totalSize;
             }
             break;
 
         case CheckCategory::PAGE:
             // 1 byte result: 0xE9 = pass, anything else = fail
+            newResults[newPos] = resultByte;
             if (chk.checkAddr != 0 && chk.readLen > 0) {
                 int hookIdx = FindOverlappingHook(chk.checkAddr, chk.readLen);
                 if (hookIdx >= 0 && resultByte != 0xE9) {
@@ -251,54 +257,87 @@ bool SpoofCmsgIfNeeded(uint8_t* data, size_t len)
                               << " target=" << kHookTargets[hookIdx].name
                               << " result=0x" << std::setw(2) << (int)resultByte
                               << " -> 0xE9 (forced pass)";
-                    results[pos] = 0xE9;
+                    newResults[newPos] = 0xE9;
                     modified = true;
                     spoofCount++;
                 }
             }
-            pos += 1;
+            oldPos += 1; newPos += 1;
             break;
 
         case CheckCategory::PROC:
         case CheckCategory::MODULE:
         case CheckCategory::DRIVER:
             // Fixed 1-byte result
-            pos += 1;
+            newResults[newPos++] = oldResults[oldPos++];
             break;
 
         case CheckCategory::MPQ:
             if (resultByte != 0x00) {
-                pos += 1;
+                newResults[newPos++] = oldResults[oldPos++];
             } else {
                 // [0x00][SHA1:20]
-                if (pos + 21 > resultLen) { pos = resultLen; continue; }
-                pos += 21;
+                if (oldPos + 21 > resultLen) goto done;
+                std::memcpy(newResults + newPos, oldResults + oldPos, 21);
+                oldPos += 21; newPos += 21;
             }
             break;
 
         case CheckCategory::LUA:
             if (resultByte != 0x00) {
-                pos += 1;
+                // Fail — 1 byte
+                newResults[newPos++] = oldResults[oldPos++];
             } else {
-                // [0x00][strlen:1][string:N]
-                if (pos + 2 > resultLen) { pos = resultLen; continue; }
-                uint8_t strLen = results[pos + 1];
-                if (pos + 2 + strLen > resultLen) { pos = resultLen; continue; }
-                pos += 2 + strLen;
+                // Success: [0x00][strlen:1][string:N]
+                if (oldPos + 2 > resultLen) goto done;
+                uint8_t strLen = oldResults[oldPos + 1];
+                if (oldPos + 2 + strLen > resultLen) goto done;
+
+                if (strLen > 0) {
+                    // Spoof: replace non-empty string with empty
+                    std::string origStr(
+                        reinterpret_cast<const char*>(oldResults + oldPos + 2), strLen);
+                    newResults[newPos++] = 0x00;  // result = success
+                    newResults[newPos++] = 0x00;  // strlen = 0
+                    modified = true;
+                    spoofCount++;
+
+                    LOG(INFO) << "[SPOOF] LUA_EVAL #" << std::dec << (i + 1)
+                              << " eval=\"" << chk.context << "\""
+                              << " result=\"" << origStr << "\" -> empty";
+                } else {
+                    // Already empty string — copy as-is
+                    std::memcpy(newResults + newPos, oldResults + oldPos, 2);
+                    newPos += 2;
+                }
+                oldPos += 2 + strLen;
             }
             break;
         }
     }
 
+done:
     if (!modified)
         return false;
 
-    // Recompute checksum over modified results
-    uint32_t newChecksum = warden_checksum::BuildChecksum(results, resultLen);
+    // Update resultLen in header
+    uint16_t newResultLen = static_cast<uint16_t>(newPos);
+    std::memcpy(data + 1, &newResultLen, 2);
+
+    // Copy new results back
+    std::memcpy(data + 7, newResults, newPos);
+
+    // Zero trailing bytes (cleanliness — server won't read past newResultLen)
+    if (newPos < resultLen)
+        std::memset(data + 7 + newPos, 0, resultLen - newPos);
+
+    // Recompute checksum over new results
+    uint32_t newChecksum = warden_checksum::BuildChecksum(data + 7, newResultLen);
     std::memcpy(data + 3, &newChecksum, 4);
 
     LOG(INFO) << "[SPOOF] Spoofed " << std::dec << spoofCount
-              << " check(s), new checksum=0x" << std::hex << std::setfill('0')
+              << " check(s), resultLen " << resultLen << " -> " << newResultLen
+              << ", new checksum=0x" << std::hex << std::setfill('0')
               << std::setw(8) << newChecksum;
 
     return true;

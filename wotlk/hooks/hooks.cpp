@@ -727,6 +727,12 @@ static void __cdecl WardenPostHandlerImpl()
                     warden_rc4_hook::Install(moduleAddr, moduleRtSize);
             } else {
                 warden_scan::ScanAndExtractTypeIDs();
+
+                // Try RC4 hook from blind scan results
+                uintptr_t moduleAddr = warden_scan::GetModuleRuntimeAddress();
+                size_t moduleRtSize  = warden_scan::GetModuleRuntimeSize();
+                if (moduleAddr != 0 && moduleRtSize > 0)
+                    warden_rc4_hook::Install(moduleAddr, moduleRtSize);
             }
 
             // S-box scanning — always run as fallback even if RC4 hook is active.
