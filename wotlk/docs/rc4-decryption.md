@@ -368,27 +368,31 @@ bool LooksLikeRC4Context(void* ptr) {
 - SMSG calls: пропускаются (ECX не проходит LooksLikeRC4Context)
 - CMSG calls: захватываются (ECX проходит валидацию + CMSG structure validation)
 
-### 4.7 Installation Lifecycle
+### 4.7 Installation Lifecycle (Deferred Install)
 
-**Installation** (в MODULE_INITIALIZE handler):
+**ВАЖНО**: RC4 хуки устанавливаются **ПОСЛЕ** обработки HASH_REQUEST, не раньше.
+
+После HASH_RESULT обе стороны (модуль и сервер) re-key свой RC4 cipher хешем. Если наши 5-byte JMP патчи
+стоят в коде модуля во время вычисления hash — модуль получит corrupted hash, re-key произойдёт с разными
+ключами (RC4 desync → disconnect).
+
+**Порядок**:
+1. **MODULE_USE** → `Remove()` — снимаем все хуки от предыдущего модуля
+2. **WardenPreHandler** → `FindModuleInMemory` + `ScanForRC4States` + `CloneAllStates` (read-only, **без Install**)
+3. **MODULE_INITIALIZE** → сканирование dispatch chain / remap (**без Install**)
+4. **HASH_REQUEST handler** → модуль вычисляет SHA1 на **чистом** (unpatched) коде
+5. **HASH_REQUEST PostHandler** → `Install(addr, rtSize)` — **теперь безопасно** ставить хуки
+
+**Installation** (в HASH_REQUEST PostHandler):
 ```cpp
-// 1. Находим модуль в памяти (FindModuleInMemory)
-// 2. Сканируем ВСЕ RC4 PRGA функции (ScanRuntimeForAllRC4)
-std::vector<uintptr_t> funcAddrs = ScanRuntimeForAllRC4(moduleAddr, moduleSize);
-if (funcAddrs.empty()) {
-    LOG(ERROR) << "No RC4 functions found, falling back to S-box cloning";
-    return;
+if (!warden_rc4_hook::IsActive()) {
+    if (warden_scan::GetModuleRuntimeAddress() == 0)
+        warden_scan::FindModuleInMemory(nullptr, 0);
+    uintptr_t addr = warden_scan::GetModuleRuntimeAddress();
+    size_t rtSize  = warden_scan::GetModuleRuntimeSize();
+    if (addr != 0 && rtSize > 0)
+        warden_rc4_hook::Install(addr, rtSize);
 }
-
-// 3. Устанавливаем хуки (до kMaxRC4Hooks=4)
-for (size_t i = 0; i < funcAddrs.size() && installed < kMaxRC4Hooks; ++i) {
-    MH_CreateHook(funcAddrs[i], g_nakedStubs[installed], &g_trampolines[installed]);
-    MH_EnableHook(funcAddrs[i]);
-    // ... track in g_hookedAddrs[], g_hooksActive[]
-}
-g_numHooks = installed;
-
-LOG(INFO) << installed << " hook(s) installed successfully";
 ```
 
 **Removal** (в MODULE_USE handler + Shutdown):

@@ -50,4 +50,36 @@ bool ValidateChecksum(uint32_t expected, const uint8_t* data, uint32_t length)
     return BuildChecksum(data, length) == expected;
 }
 
+bool ComputeSHA1(const uint8_t* data, uint32_t length, uint8_t outDigest[20])
+{
+    HCRYPTPROV hProv = 0;
+    HCRYPTHASH hHash = 0;
+
+    if (!CryptAcquireContextW(&hProv, nullptr, nullptr, PROV_RSA_FULL,
+                              CRYPT_VERIFYCONTEXT))
+        return false;
+
+    if (!CryptCreateHash(hProv, CALG_SHA1, 0, 0, &hHash)) {
+        CryptReleaseContext(hProv, 0);
+        return false;
+    }
+
+    if (!CryptHashData(hHash, data, length, 0)) {
+        CryptDestroyHash(hHash);
+        CryptReleaseContext(hProv, 0);
+        return false;
+    }
+
+    DWORD digestLen = 20;
+    if (!CryptGetHashParam(hHash, HP_HASHVAL, outDigest, &digestLen, 0)) {
+        CryptDestroyHash(hHash);
+        CryptReleaseContext(hProv, 0);
+        return false;
+    }
+
+    CryptDestroyHash(hHash);
+    CryptReleaseContext(hProv, 0);
+    return true;
+}
+
 } // namespace warden_checksum

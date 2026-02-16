@@ -2,7 +2,7 @@
 
 Этот документ показывает текущее состояние проекта: что уже работает, что не работает, и к чему мы стремимся.
 
-Последнее обновление: 2026-02-16.
+Последнее обновление: 2026-02-17.
 
 ---
 
@@ -247,13 +247,20 @@
 - Auto-detection calling convention (6 вариантов: ECX/EDX/EAX/EBX/ESI/EDI, обычный/swapped порядок)
 - ConsumePlaintext: one-shot retrieval (thread-safe через CRITICAL_SECTION)
 
-**Lifecycle**:
-- **Early install**: в `WardenPreHandler`, ДО обработки handler'а — для перехвата HASH_RESULT (отправляется синхронно во время SMSG handler'а)
-  - `FindModuleInMemory(nullptr, 0)` ищет модуль по стабильной 26-byte сигнатуре (не требует decompressed binary)
-  - Устанавливается однократно (guard `!IsActive()`)
-- **Late install**: в MODULE_INITIALIZE (guard: `!IsActive()`) — если early install не сработал
-- Removed: на MODULE_USE и при Shutdown — все хуки снимаются
-- Fallback: если ни одна RC4 функция не найдена — используем S-box cloning (warden_rc4.cpp)
+**Speculative CMSG scan** (`TrySpeculativeCmsgScan`):
+- Когда calling convention неизвестна или даёт невалидные значения для конкретной RC4 функции
+- Пробирует все 9 значений (EAX/ECX/EDX/EBX/ESI/EDI/stk1/stk2/stk3) для поиска валидного CMSG буфера
+- Проверяет opcode byte (0x02=CHEAT_CHECKS_RESULT, 0x04=HASH_RESULT) + matching length в другом значении
+
+**Lifecycle** (deferred install — RC4 re-key safety):
+- **Deferred install**: в `HASH_REQUEST` PostHandler, ПОСЛЕ того как модуль вычислил integrity hash на **чистом** коде
+  - Если модуль не найден: `FindModuleInMemory(nullptr, 0)`
+  - Сканирование S-box: `ScanForRC4States()`
+  - Хуки НЕ ставятся до HASH_REQUEST — патчи в коде модуля корруптят integrity hash → RC4 re-key desync → disconnect
+- **WardenPreHandler**: только `FindModuleInMemory` + `ScanForRC4States` + `CloneAllStates` (без Install)
+- **MODULE_INITIALIZE**: сканирование dispatch chain / remap (без Install)
+- **Removed**: на MODULE_USE и при Shutdown — все хуки снимаются
+- **Fallback**: если ни одна RC4 функция не найдена — используем S-box cloning (warden_rc4.cpp)
 
 **Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (100% success rate — все CMSG расшифрованы через [rc4_hook])
 
@@ -374,25 +381,38 @@ MinHook = статическая линковка (нет DLL). miniz = комп
 
 ---
 
-### 15. HASH_REQUEST / HASH_RESULT перехват
+### 15. HASH_REQUEST / HASH_RESULT — deferred hook install
 
-**Описание**: полный перехват цикла HASH_REQUEST (SMSG opcode 0x05) → HASH_RESULT (CMSG opcode 0x04).
+**Описание**: корректная обработка цикла HASH_REQUEST (SMSG opcode 0x05) → HASH_RESULT (CMSG opcode 0x04) без нарушения RC4 re-keying.
 
-**Проблема**: HASH_RESULT отправляется клиентом **синхронно** во время SMSG handler'а (ДО MODULE_INITIALIZE). Ранее RC4 хуки ставились только в MODULE_INITIALIZE — HASH_RESULT не перехватывался.
+**Проблема (RC4 re-key desync)**:
+После отправки HASH_RESULT обе стороны (модуль и сервер) **re-key** свой Warden RC4 cipher хешем из HASH_RESULT.
+- Если наши MinHook патчи (5-byte JMP) установлены в коде модуля ДО вычисления hash → модуль вычисляет **H_corrupted** (из-за патченного кода)
+- Если подменить hash в plaintext: сервер re-key с SHA1(seed), но модуль re-key с H_corrupted → **RC4 desync** → все последующие пакеты — мусор → disconnect
 
-**Решение**: **Early RC4 hook install** в `WardenPreHandler`:
-1. Перед вызовом оригинального handler'а проверяем: `!warden_rc4_hook::IsActive()`
-2. Если модуль ещё не найден: `FindModuleInMemory(nullptr, 0)` — использует стабильную 26-byte сигнатуру, НЕ требует decompressed binary
-3. Если модуль найден: устанавливаем RC4 хуки → перехватываем HASH_RESULT при шифровании
+**Решение**: **Deferred RC4 hook install** — не ставить патчи в код модуля до тех пор, пока HASH_REQUEST не обработан:
+
+| Этап | Действие |
+|------|----------|
+| MODULE_USE | Reset: `ClearHashSeed()`, `ClearPendingChecks()`, Remove RC4 hooks |
+| WardenPreHandler | `FindModuleInMemory` + `ScanForRC4States` + `CloneAllStates` (read-only, **без Install**) |
+| MODULE_INITIALIZE | Scan dispatch chain / remap / binary (**без Install**) |
+| HASH_REQUEST handler | Модуль вычисляет SHA1 на **чистом коде** → правильный hash → обе стороны re-key одинаково |
+| HASH_REQUEST PostHandler | **Теперь** устанавливаем RC4 hooks + сохраняем seed |
+| CHEAT_CHECKS_REQUEST | RC4 hooks активны → spoofing работает |
 
 **Парсинг HASH_REQUEST** (в `WardenPostHandlerImpl`):
 - Извлекаем 16-byte seed (bytes 1..16)
-- Сохраняем через `warden_spoof::StoreHashSeed()` для сопоставления с HASH_RESULT
+- `warden_spoof::StoreHashSeed()` — для диагностического сопоставления
+- `warden_rc4_hook::Install()` — установка хуков ПОСЛЕ hash computation
+- `warden_rc4::ScanForRC4States()` — сканирование S-box кандидатов
 
-**Парсинг HASH_RESULT** (в `SendPacketHandler` + `RC4DetourHandler`):
-- RC4 hook захватывает CMSG plaintext (21 байт: [0x04][SHA1:20])
-- `SpoofHashResultIfNeeded()` — инфраструктура для будущей подмены (текущая реализация: no-op stub, логирует SHA1)
-- SendPacket логирует HASH_RESULT + сопоставляет с сохранённым seed
+**Диагностика HASH_RESULT** (в `SendPacketHandler`):
+- S-box cloning позволяет расшифровать HASH_RESULT для логирования
+- `SpoofHashResultIfNeeded()` — **только логирование** (не модифицирует буфер — модификация вызывает RC4 re-key desync)
+- `TryExtractHashSeedFromCurrentPacket()` — извлечение seed из текущего SMSG CDataStore (до PostHandler)
+
+**`ClearHashSeed()` на MODULE_USE** — предотвращает использование протухшего seed от предыдущего модуля при переключении модулей.
 
 **Исправленные опкоды CMSG** (warden_types.h):
 | Опкод | Значение | Было |
@@ -401,7 +421,7 @@ MinHook = статическая линковка (нет DLL). miniz = комп
 | HASH_RESULT | 0x04 | 0x05 (неверно) |
 | MODULE_FAILED | 0x05 | отсутствовал |
 
-**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (HASH_RESULT перехватывается, RC4 хуки ставятся ДО handler'а)
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (deferred install, модуль вычисляет hash на чистом коде, 0 дисконнектов)
 
 ---
 
@@ -428,12 +448,13 @@ wotlk/
     hooks.h                            — API: Initialize() / Shutdown()
     hooks.cpp                          — MinHook + FrameScript/Warden/SendPacket/ARC4 detours
                                          + CHEAT_CHECKS_REQUEST parser + CMSG parser
-                                         + early RC4 install + HASH_REQUEST/RESULT parsing
+                                         + deferred RC4 install (HASH_REQUEST PostHandler)
+                                         + HASH_RESULT diagnostics
   warden/
     warden_types.h                     — CheckCategory enum, PendingCheck struct, CMSG/SMSG opcodes
     warden_scan.h / .cpp               — type extraction (dispatch chain, remap, dynamic discovery)
-    warden_spoof.h / .cpp              — CMSG spoofing (MEM/PAGE/MODULE/LUA/HASH), FIFO queue, hash seed storage
-    warden_rc4_hook.h / .cpp           — RC4 PRGA hook inside module (multi-hook, up to 4) + early install
+    warden_spoof.h / .cpp              — CMSG spoofing (MEM/PAGE/MODULE/LUA), FIFO queue, hash seed storage, ClearHashSeed
+    warden_rc4_hook.h / .cpp           — RC4 PRGA hook inside module (multi-hook, up to 4) + speculative scan
     warden_rc4.h / .cpp                — RC4 S-box cloning fallback
     warden_checksum.h / .cpp           — SHA1 XOR-fold checksum
     shadow_copy.h / .cpp               — PE mapping Wow.exe для чистых байт
@@ -466,7 +487,7 @@ wotlk/
 - ~~PAGE_CHECK spoofing~~ — Variant A (force 0xE9 pass)
 - ~~LUA_EVAL spoofing~~ — селективный (addon-detection patterns)
 - ~~MODULE_CHECK evasion~~ — PEB unlinking + response spoofing backup
-- ~~HASH_REQUEST/RESULT перехват~~ — early RC4 install + seed/hash parsing + spoof infrastructure
+- ~~HASH_REQUEST/RESULT~~ — deferred RC4 install (after hash computation) + seed/hash diagnostics
 
 ### Ближайшее
 
@@ -488,7 +509,7 @@ wotlk/
 | PAGE_CHECK spoofing | РАБОТАЕТ (Variant A) |
 | LUA_EVAL spoofing | РАБОТАЕТ (селективный) |
 | MODULE_CHECK evasion | РАБОТАЕТ (PEB unlink + response spoof) |
-| HASH_REQUEST/RESULT перехват | РАБОТАЕТ (early RC4 install + spoof stub) |
+| HASH_REQUEST/RESULT | РАБОТАЕТ (deferred RC4 install, hash на чистом коде) |
 | DRIVER_CHECK spoofing | НЕ НАЧАТО (pass-through) |
 | MPQ_CHECK spoofing | НЕ НАЧАТО (pass-through) |
 | PROC_CHECK spoofing | НЕ НАЧАТО (pass-through) |
@@ -525,7 +546,7 @@ wotlk/
 - **Подменять MODULE_CHECK результаты** → forced pass (backup к PEB unlinking)
 - **Подменять LUA_EVAL результаты** addon-detection запросов (селективный spoof)
 - **Скрывать DLL из PEB.Ldr** — MODULE_CHECK не видит wotlk.dll / glog.dll / gflags*.dll
-- **Перехватывать HASH_REQUEST/RESULT** — early RC4 install + seed storage + spoof infrastructure
+- **Корректно обрабатывать HASH_REQUEST/RESULT** — deferred RC4 install + seed storage + diagnostics
 - Находить адреса наших хуков в запросах Warden (ScanForHookAddresses)
 - Читать оригинальные байты .text секции (Shadow Copy)
 - Обрабатывать новые (uncached) модули через blind memory scan + dynamic type discovery
@@ -538,15 +559,19 @@ wotlk/
 - `warden_checksum.cpp` — пересчёт checksum после модификации
 - `peb_unlink.cpp` — скрытие DLL из PEB.Ldr lists
 
-**Живые тесты** (2026-02-16):
+**Живые тесты** (2026-02-17):
 - In-memory scan: 9-10 типов, 0 unknown, 0 PARTIAL, все checksums VALID
-- RC4 hook: 100% CMSG captured [rc4_hook], early install перехватывает HASH_RESULT
+- RC4 hook: 100% CMSG captured [rc4_hook], deferred install после HASH_REQUEST
 - Spoofing: MEM/PAGE/MODULE/LUA работает, нет дисконнектов
-- HASH_REQUEST/RESULT: seed сохраняется, SHA1 логируется, SpoofHashResultIfNeeded stub работает
+- HASH_REQUEST/RESULT: deferred install — модуль вычисляет hash на чистом коде, 0 re-key desync
 - Queue correlation: delta=0, все результаты разобраны по категориям
 - PEB Unlinking: DLL не видна в module enumeration
 - Dynamic discovery: новые remap-only модули обрабатываются корректно (398550DE, 90278079 и др.)
+- Стабильная сессия 3+ минут, несколько циклов CHEAT_CHECKS без дисконнектов
 
-**Исправленные баги** (2026-02-16):
+**Исправленные баги** (2026-02-16 — 2026-02-17):
 - **resultLen truncation**: при частичном pending checks (parser не распознал все типы) SpoofCmsgIfNeeded обрезала результаты — вызывало дисконнект. Исправлено: оставшиеся байты копируются as-is.
 - **CMSG opcodes**: HASH_RESULT=0x04 (было 0x05), MEM_CHECKS_RESULT=0x03 (было 0x04), добавлен MODULE_FAILED=0x05.
+- **RC4 re-key desync** (2026-02-17): early RC4 hook install патчил код модуля ДО вычисления integrity hash → модуль вычислял corrupted hash → подмена hash в plaintext вызывала re-key desync (модуль и сервер re-key с разными ключами) → disconnect. Исправлено: deferred install — хуки ставятся ПОСЛЕ HASH_REQUEST PostHandler, когда hash уже вычислен и отправлен на чистом коде.
+- **Stale hash seed** (2026-02-17): при переключении модулей (второй MODULE_USE) seed от первого модуля не очищался → `SpoofHashResultIfNeeded` использовал протухший seed → wrong hash → disconnect. Исправлено: `ClearHashSeed()` на MODULE_USE.
+- **Speculative CMSG scan false positives**: speculative scan находил "HASH_RESULT" в мусорных буферах (byte[0]==0x04 + matching len=21) и модифицировал их. Теперь `SpoofHashResultIfNeeded` только логирует (не модифицирует буфер).

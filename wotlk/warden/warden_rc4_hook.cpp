@@ -438,6 +438,74 @@ static std::vector<uintptr_t> ScanRuntimeForAllRC4(uintptr_t base, size_t size)
 }
 
 // ===========================================================================
+// Speculative CMSG scan: when calling convention is unknown, probe all
+// register and stack values to find a valid CMSG buffer.
+//
+// For each candidate pointer, reads 1 byte to check the CMSG opcode.
+// For HASH_RESULT (0x04) expects len=21; for CHEAT_CHECKS_RESULT (0x02)
+// reads the resultLen header and expects len=7+resultLen.
+// Then checks if any OTHER candidate value equals the expected length.
+//
+// Very cheap (9 single-byte reads + integer comparisons) with strong
+// validation — false positives require both a pointer to memory starting
+// with 0x04/0x02 AND a matching length in another register/stack slot.
+// ===========================================================================
+
+static bool TrySpeculativeCmsgScan(
+    uint32_t eax, uint32_t ecx, uint32_t edx, uint32_t ebx,
+    uint32_t esi, uint32_t edi, uint32_t stk1, uint32_t stk2, uint32_t stk3,
+    uint32_t& outPtr, uint32_t& outLen)
+{
+    uint32_t vals[] = { eax, ecx, edx, ebx, esi, edi, stk1, stk2, stk3 };
+    static const char* names[] = {
+        "EAX","ECX","EDX","EBX","ESI","EDI","stk1","stk2","stk3"
+    };
+
+    for (int pi = 0; pi < 9; ++pi) {
+        if (!IsValidPointer(vals[pi]))
+            continue;
+
+        // Probe first byte: is it a CMSG opcode we care about?
+        uint8_t opcode;
+        if (!SafeReadBytes(reinterpret_cast<const void*>(vals[pi]), &opcode, 1))
+            continue;
+
+        uint32_t expectedLen = 0;
+        if (opcode == WARDEN_CMSG_HASH_RESULT) {
+            expectedLen = 21;
+        } else if (opcode == WARDEN_CMSG_CHEAT_CHECKS_RESULT) {
+            // Read 3-byte header: [0x02][resultLen:2 LE]
+            uint8_t header[3];
+            if (!SafeReadBytes(reinterpret_cast<const void*>(vals[pi]), header, 3))
+                continue;
+            uint16_t rLen = static_cast<uint16_t>(header[1]) |
+                            (static_cast<uint16_t>(header[2]) << 8);
+            if (rLen > kMaxCaptureSize - 7)
+                continue;
+            expectedLen = 7u + rLen;
+        } else {
+            continue;
+        }
+
+        // Check if any OTHER candidate holds the expected length
+        for (int li = 0; li < 9; ++li) {
+            if (li == pi) continue;
+            if (vals[li] == expectedLen) {
+                outPtr = vals[pi];
+                outLen = expectedLen;
+                LOG(INFO) << "[RC4_HOOK] Speculative scan: found "
+                          << WardenClientOpcodeToString(opcode)
+                          << " at " << names[pi] << "=0x" << std::hex
+                          << std::setfill('0') << std::setw(8) << vals[pi]
+                          << " len=" << names[li] << "=" << std::dec << expectedLen;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// ===========================================================================
 // Naked hook stubs and detour handler
 // ===========================================================================
 
@@ -547,19 +615,31 @@ static void __cdecl RC4DetourHandler(uintptr_t savedEsp)
     case 5: dataPtr = stk1; dataLen = stk2; break;  // EAX=ctx
     case 6: dataPtr = stk2; dataLen = stk1; break;  // EAX=ctx, swapped
     default:
-        // Convention unknown — try heuristic for immediate capture
-        if (IsValidPointer(stk1) && IsReasonableLength(stk2)) {
-            dataPtr = stk1; dataLen = stk2;
-        } else if (IsValidPointer(stk2) && IsReasonableLength(stk3)) {
-            dataPtr = stk2; dataLen = stk3;
-        } else if (IsReasonableLength(stk1) && IsValidPointer(stk2)) {
-            dataPtr = stk2; dataLen = stk1;
+        // Convention unknown — speculative CMSG scan first (validated),
+        // then heuristic fallback for other CMSG types.
+        TrySpeculativeCmsgScan(eax, ecx, edx, ebx, esi, edi,
+                               stk1, stk2, stk3, dataPtr, dataLen);
+        // Heuristic fallback for 1-byte CMSGs (MODULE_MISSING/OK/FAILED)
+        if (!IsValidPointer(dataPtr) || !IsReasonableLength(dataLen)) {
+            if (IsValidPointer(stk1) && IsReasonableLength(stk2)) {
+                dataPtr = stk1; dataLen = stk2;
+            } else if (IsValidPointer(stk2) && IsReasonableLength(stk3)) {
+                dataPtr = stk2; dataLen = stk3;
+            } else if (IsReasonableLength(stk1) && IsValidPointer(stk2)) {
+                dataPtr = stk2; dataLen = stk1;
+            }
         }
         break;
     }
 
-    if (!IsValidPointer(dataPtr) || !IsReasonableLength(dataLen))
-        return;
+    // Fallback: if convention produced invalid values (e.g., different RC4
+    // functions within the same module use different calling conventions),
+    // try speculative CMSG scan across all registers/stack values.
+    if (!IsValidPointer(dataPtr) || !IsReasonableLength(dataLen)) {
+        if (!TrySpeculativeCmsgScan(eax, ecx, edx, ebx, esi, edi,
+                                     stk1, stk2, stk3, dataPtr, dataLen))
+            return;
+    }
 
     // Read data buffer BEFORE the original RC4 function modifies it.
     // For encrypt calls: this is the plaintext CMSG.

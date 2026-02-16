@@ -240,28 +240,27 @@ static void __cdecl WardenPreHandler(uintptr_t savedEsp)
     g_wardenArc4CallNum = 0;
     g_wardenHandlerStartTick = GetTickCount();
 
+    // Find the Warden module in process memory (for S-box scanning below).
+    // Do NOT install RC4 hooks here — the module computes a SHA1 integrity
+    // hash during HASH_REQUEST processing, and our 5-byte JMP patches would
+    // corrupt the result.  After HASH_RESULT is sent and both sides re-key,
+    // hooks are installed in the HASH_REQUEST PostHandler.
+    if (warden_scan::GetModuleRuntimeAddress() == 0)
+        warden_scan::FindModuleInMemory(nullptr, 0);
+
+    // Scan for RC4 S-box candidates if module is found but no candidates yet.
+    // Needed for cached modules where HASH_REQUEST arrives before
+    // MODULE_INITIALIZE (which normally triggers ScanForRC4States).
+    // S-box clones are used as fallback in SendPacket to decrypt/XOR-patch
+    // HASH_RESULT if the RC4 hook misses the encryption call.
+    if (!warden_rc4::HasCandidates() && warden_scan::GetModuleRuntimeAddress() != 0)
+        warden_rc4::ScanForRC4States();
+
     // Clone all RC4 S-box candidates BEFORE the handler runs.
     // Always clone even if internal RC4 hook is active — the hook may fail
     // for some modules (e.g., hooked function is KSA not PRGA, or called with len=0).
     if (warden_rc4::HasEncryptState() || warden_rc4::HasCandidates())
         warden_rc4::CloneAllStates();
-
-    // Early RC4 hook installation: find the Warden module in process memory
-    // by its stable signature and install RC4 hooks BEFORE the original handler
-    // runs. This captures HASH_RESULT encryption (sent synchronously during
-    // HASH_REQUEST processing, before MODULE_INITIALIZE would normally install hooks).
-    // FindModuleInMemory doesn't need the decompressed binary — it scans
-    // MEM_PRIVATE RWX regions for a hardcoded memcpy-like signature.
-    if (!warden_rc4_hook::IsActive()) {
-        if (warden_scan::GetModuleRuntimeAddress() == 0)
-            warden_scan::FindModuleInMemory(nullptr, 0);
-        uintptr_t addr = warden_scan::GetModuleRuntimeAddress();
-        size_t rtSize = warden_scan::GetModuleRuntimeSize();
-        if (addr != 0 && rtSize > 0) {
-            LOG(INFO) << "[WARDEN] Early RC4 hook install (before handler)";
-            warden_rc4_hook::Install(addr, rtSize);
-        }
-    }
 
     // Temporarily disable FrameScript and Warden hooks to avoid re-entrance
     if (!g_hooksDisabled) {
@@ -705,10 +704,31 @@ static void __cdecl WardenPostHandlerImpl()
             ParseCheatChecksRequest(localBuf, copyLen);
 
         // HASH_REQUEST (0x05): 16-byte seed for module integrity SHA1
+        // By the time PostHandler runs, the original handler has already:
+        //   1. Computed SHA1(module_code) on CLEAN code (no MinHook patches)
+        //   2. Sent HASH_RESULT via RC4-encrypted CMSG
+        //   3. Both sides re-keyed their Warden RC4 with the hash
+        // NOW it is safe to install RC4 hooks — patches won't affect the hash.
         if (firstByte == WARDEN_SMSG_HASH_REQUEST && copyLen >= 17) {
             LOG(INFO) << "[WARDEN]   HASH_REQUEST seed=["
                       << BytesToHex(localBuf + 1, 16) << "]";
             warden_spoof::StoreHashSeed(localBuf + 1, 16);
+
+            // Install RC4 hooks now (deferred from MODULE_INITIALIZE)
+            if (!warden_rc4_hook::IsActive()) {
+                if (warden_scan::GetModuleRuntimeAddress() == 0)
+                    warden_scan::FindModuleInMemory(nullptr, 0);
+                uintptr_t addr = warden_scan::GetModuleRuntimeAddress();
+                size_t rtSize  = warden_scan::GetModuleRuntimeSize();
+                if (addr != 0 && rtSize > 0) {
+                    LOG(INFO) << "[WARDEN] Installing RC4 hooks after HASH_REQUEST"
+                              << " (module code is clean)";
+                    warden_rc4_hook::Install(addr, rtSize);
+                }
+            }
+            // Ensure S-box candidates are available for fallback decryption
+            if (!warden_rc4::HasCandidates() && warden_scan::GetModuleRuntimeAddress() != 0)
+                warden_rc4::ScanForRC4States();
         }
 
         // Module capture → dump to disk
@@ -717,8 +737,9 @@ static void __cdecl WardenPostHandlerImpl()
             warden_scan::Reset();
             warden_rc4::Reset();
             module_dump::Reset();
-            // Clear pending checks queue (new module = new session)
+            // Clear pending checks queue and hash seed (new module = new session)
             warden_spoof::ClearPendingChecks();
+            warden_spoof::ClearHashSeed();
             module_dump::OnModuleUse(localBuf, copyLen);
             // Proactively try to load from disk cache
             if (copyLen >= 17)
@@ -746,24 +767,13 @@ static void __cdecl WardenPostHandlerImpl()
                     if (!warden_scan::ScanModuleBinary(moduleData, moduleLen))
                         warden_scan::ScanAndExtractTypeIDs();
 
-                // Try to install internal RC4 hook (primary CMSG decryption)
-                // Skip if already installed (e.g., by early install in WardenPreHandler)
-                if (!warden_rc4_hook::IsActive()) {
-                    uintptr_t moduleAddr = warden_scan::GetModuleRuntimeAddress();
-                    size_t moduleRtSize  = warden_scan::GetModuleRuntimeSize();
-                    if (moduleAddr != 0 && moduleRtSize > 0)
-                        warden_rc4_hook::Install(moduleAddr, moduleRtSize);
-                }
+                // RC4 hook install is DEFERRED until HASH_REQUEST PostHandler.
+                // The module computes a SHA1 integrity hash during HASH_REQUEST —
+                // our 5-byte JMP patches would corrupt the result and cause RC4
+                // re-key desync (module re-keys with corrupted hash, server with
+                // correct one → all subsequent packets garbled → disconnect).
             } else {
                 warden_scan::ScanAndExtractTypeIDs();
-
-                // Try RC4 hook from blind scan results
-                if (!warden_rc4_hook::IsActive()) {
-                    uintptr_t moduleAddr = warden_scan::GetModuleRuntimeAddress();
-                    size_t moduleRtSize  = warden_scan::GetModuleRuntimeSize();
-                    if (moduleAddr != 0 && moduleRtSize > 0)
-                        warden_rc4_hook::Install(moduleAddr, moduleRtSize);
-                }
             }
 
             // S-box scanning — always run as fallback even if RC4 hook is active.
@@ -1237,9 +1247,30 @@ static void __cdecl SendPacketHandler(uintptr_t savedEsp)
             LOG(INFO) << "[CMSG] HASH_RESULT SHA1=["
                       << BytesToHex(plaintext + 1, 20) << "]";
             const uint8_t* seed = warden_spoof::GetStoredHashSeed();
-            if (seed)
-                LOG(INFO) << "[CMSG]   (seed was ["
+            if (!seed) {
+                uint8_t extracted[16];
+                if (hooks::TryExtractHashSeedFromCurrentPacket(extracted)) {
+                    warden_spoof::StoreHashSeed(extracted, 16);
+                    seed = warden_spoof::GetStoredHashSeed();
+                }
+            }
+            if (seed) {
+                LOG(INFO) << "[CMSG]   (seed=["
                           << BytesToHex(seed, 16) << "])";
+                // Diagnostic only — verify hash matches SHA1(seed).
+                // Do NOT XOR-patch: both sides re-key with this hash, so
+                // changing what the server sees would desync the RC4 session.
+                uint8_t expected[20];
+                if (warden_checksum::ComputeSHA1(seed, 16, expected)) {
+                    if (memcmp(plaintext + 1, expected, 20) != 0) {
+                        LOG(WARNING) << "[CMSG] HASH_RESULT MISMATCH (diagnostic)!"
+                            << " module=[" << BytesToHex(plaintext + 1, 20)
+                            << "] expected=[" << BytesToHex(expected, 20) << "]";
+                    } else {
+                        LOG(INFO) << "[CMSG] HASH_RESULT matches SHA1(seed) — OK";
+                    }
+                }
+            }
         }
 
         return; // skip final LOG below (already logged)
@@ -1285,6 +1316,31 @@ __declspec(naked) static void HookedSendPacketNaked()
 // ===========================================================================
 
 namespace hooks {
+
+bool TryExtractHashSeedFromCurrentPacket(uint8_t outSeed[16])
+{
+    if (!g_savedCDataStore)
+        return false;
+
+    uintptr_t buffer;
+    uint32_t size, readPos;
+    if (!SafeReadCDataStore(g_savedCDataStore, &buffer, &size, &readPos))
+        return false;
+
+    uint32_t payloadStart = g_savedReadPos;
+    if (payloadStart >= size || (size - payloadStart) < 17)
+        return false;
+
+    uint8_t localBuf[17];
+    if (!SafeReadBytes((const uint8_t*)(buffer + payloadStart), localBuf, 17))
+        return false;
+
+    if (localBuf[0] != WARDEN_SMSG_HASH_REQUEST)
+        return false;
+
+    std::memcpy(outSeed, localBuf + 1, 16);
+    return true;
+}
 
 bool Initialize()
 {

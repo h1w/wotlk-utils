@@ -10,4 +10,7 @@ uint32_t BuildChecksum(const uint8_t* data, uint32_t length);
 // Validate checksum against expected value
 bool ValidateChecksum(uint32_t expected, const uint8_t* data, uint32_t length);
 
+// Compute raw SHA1 digest (20 bytes) using WinCrypt
+bool ComputeSHA1(const uint8_t* data, uint32_t length, uint8_t outDigest[20]);
+
 } // namespace warden_checksum

@@ -2,6 +2,7 @@
 #include "warden_types.h"
 #include "warden_checksum.h"
 #include "shadow_copy.h"
+#include "../hooks/hooks.h"
 
 #define NOMINMAX
 #include <Windows.h>
@@ -187,17 +188,56 @@ const uint8_t* GetStoredHashSeed()
     return g_hashSeedValid ? g_hashSeed : nullptr;
 }
 
+void ClearHashSeed()
+{
+    g_hashSeedValid = false;
+    memset(g_hashSeed, 0, sizeof(g_hashSeed));
+}
+
 bool SpoofHashResultIfNeeded(uint8_t* data, size_t len)
 {
-    // Currently a no-op stub.
-    // The module computes the correct hash because our hooks don't modify
-    // its code before HASH_RESULT is sent. Infrastructure for future use.
     if (!data || len != 21 || data[0] != WARDEN_CMSG_HASH_RESULT)
         return false;
 
-    LOG(INFO) << "[SPOOF] HASH_RESULT seen (21 bytes), SHA1=["
-              << BytesToHex(data + 1, 20) << "] — not modified (stub)";
-    return false;
+    const uint8_t* seed = GetStoredHashSeed();
+    if (!seed) {
+        // HASH_RESULT is encrypted synchronously during the original handler,
+        // BEFORE PostHandler stores the seed.  But the SMSG CDataStore has
+        // already been decrypted in-place — extract the seed directly.
+        uint8_t extracted[16];
+        if (hooks::TryExtractHashSeedFromCurrentPacket(extracted)) {
+            StoreHashSeed(extracted, 16);
+            seed = GetStoredHashSeed();
+        }
+    }
+    if (!seed) {
+        LOG(WARNING) << "[SPOOF] HASH_RESULT seen but no seed available — cannot verify";
+        return false;
+    }
+
+    // Compute expected hash: SHA1(seed)
+    uint8_t expected[20];
+    if (!warden_checksum::ComputeSHA1(seed, 16, expected)) {
+        LOG(ERROR) << "[SPOOF] ComputeSHA1 failed for HASH_RESULT verification";
+        return false;
+    }
+
+    // Compare with module's hash (bytes 1..20 of HASH_RESULT)
+    if (memcmp(data + 1, expected, 20) == 0) {
+        LOG(INFO) << "[SPOOF] HASH_RESULT matches SHA1(seed) — OK";
+        return false;
+    }
+
+    // Hash mismatch — LOG ONLY, do NOT modify buffer.
+    // Replacing the hash causes RC4 re-key desync: module re-keys with its
+    // own hash, server re-keys with ours → all subsequent packets garbled.
+    // The correct defense is deferring RC4 hook installation until after
+    // HASH_REQUEST so the module computes its hash on clean (unpatched) code.
+    LOG(WARNING) << "[SPOOF] HASH_RESULT MISMATCH (diagnostic only)! Module SHA1=["
+                 << BytesToHex(data + 1, 20) << "] expected=["
+                 << BytesToHex(expected, 20)
+                 << "] — NOT replacing (would cause RC4 re-key desync)";
+    return true;
 }
 
 // ===========================================================================

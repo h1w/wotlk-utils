@@ -53,9 +53,12 @@ void StoreHashSeed(const uint8_t* seed, size_t len);
 // Get stored hash seed (returns nullptr if not stored)
 const uint8_t* GetStoredHashSeed();
 
+// Clear stored hash seed (call on MODULE_USE so stale seed isn't used for new module)
+void ClearHashSeed();
+
 // Spoof HASH_RESULT (CMSG opcode 0x04) if needed.
 // Called from RC4 hook handler BEFORE encryption.
-// Currently a no-op stub — infrastructure for future use.
+// Computes SHA1(seed) and replaces the hash if it differs from expected.
 // Returns true if buffer was modified.
 bool SpoofHashResultIfNeeded(uint8_t* data, size_t len);
 
