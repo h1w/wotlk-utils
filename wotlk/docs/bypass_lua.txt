@@ -1,2 +1,0 @@
-# NOTE: This file is a duplicate. See plans/bypass_lua.txt for the original version.
-# This was a pre-project research document. See warden_bypass_plan.md for the actual implementation.

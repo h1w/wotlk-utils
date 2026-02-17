@@ -2,6 +2,7 @@
 #include "warden_types.h"
 #include "warden_checksum.h"
 #include "shadow_copy.h"
+#include "mpq_cache.h"
 #include "../hooks/hooks.h"
 
 #define NOMINMAX
@@ -376,19 +377,64 @@ bool SpoofCmsgIfNeeded(uint8_t* data, size_t len)
             oldPos++;
             break;
 
-        case CheckCategory::PROC:
         case CheckCategory::DRIVER:
-            // Fixed 1-byte result
-            newResults[newPos++] = oldResults[oldPos++];
+            // Force 0xE9 (driver not found) — hides VM drivers and cheat-tool drivers
+            if (oldResults[oldPos] != 0xE9) {
+                LOG(INFO) << "[SPOOF] DRIVER_CHECK #" << std::dec << (i + 1)
+                          << " name=\"" << chk.context << "\""
+                          << " result=0x" << std::hex << std::setfill('0')
+                          << std::setw(2) << (int)oldResults[oldPos]
+                          << " -> 0xE9 (forced pass)";
+                newResults[newPos++] = 0xE9;
+                modified = true;
+                spoofCount++;
+            } else {
+                newResults[newPos++] = oldResults[oldPos];
+            }
+            oldPos++;
+            break;
+
+        case CheckCategory::PROC:
+            // Force 0xE9 (HMAC match) — protects against third-party hooks on system DLLs
+            if (oldResults[oldPos] != 0xE9) {
+                LOG(INFO) << "[SPOOF] PROC_CHECK #" << std::dec << (i + 1)
+                          << " ctx=\"" << chk.context << "\""
+                          << " result=0x" << std::hex << std::setfill('0')
+                          << std::setw(2) << (int)oldResults[oldPos]
+                          << " -> 0xE9 (forced pass)";
+                newResults[newPos++] = 0xE9;
+                modified = true;
+                spoofCount++;
+            } else {
+                newResults[newPos++] = oldResults[oldPos];
+            }
+            oldPos++;
             break;
 
         case CheckCategory::MPQ:
             if (resultByte != 0x00) {
+                // File read error — pass-through
                 newResults[newPos++] = oldResults[oldPos++];
             } else {
-                // [0x00][SHA1:20]
+                // Success: [0x00][SHA1:20]
                 if (oldPos + 21 > resultLen) goto done;
                 std::memcpy(newResults + newPos, oldResults + oldPos, 21);
+
+                // Try to replace SHA1 with cached clean hash
+                const uint8_t* cleanHash = mpq_cache::LookupHash(chk.context);
+                if (cleanHash) {
+                    if (std::memcmp(oldResults + oldPos + 1, cleanHash, 20) != 0) {
+                        std::memcpy(newResults + newPos + 1, cleanHash, 20);
+                        modified = true;
+                        spoofCount++;
+                        LOG(INFO) << "[SPOOF] MPQ_CHECK #" << std::dec << (i + 1)
+                                  << " file=\"" << chk.context << "\""
+                                  << " replaced SHA1 with cached clean hash";
+                    }
+                } else {
+                    // No cached hash — capture this result for future use
+                    mpq_cache::CaptureHash(chk.context, oldResults + oldPos + 1);
+                }
                 oldPos += 21; newPos += 21;
             }
             break;

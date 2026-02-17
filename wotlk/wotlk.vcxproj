@@ -138,6 +138,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="hooks\hooks.h" />
+    <ClInclude Include="warden\mpq_cache.h" />
     <ClInclude Include="warden\module_dump.h" />
     <ClInclude Include="warden\shadow_copy.h" />
     <ClInclude Include="warden\warden_rc4.h" />
@@ -159,6 +160,7 @@
   <ItemGroup>
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="hooks\hooks.cpp" />
+    <ClCompile Include="warden\mpq_cache.cpp" />
     <ClCompile Include="warden\module_dump.cpp" />
     <ClCompile Include="warden\shadow_copy.cpp" />
     <ClCompile Include="warden\warden_checksum.cpp" />

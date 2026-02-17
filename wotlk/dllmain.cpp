@@ -5,6 +5,7 @@
 #include "logging/logger_setup.hpp"
 #include "hooks/hooks.h"
 #include "warden/shadow_copy.h"
+#include "warden/mpq_cache.h"
 #include "warden/peb_unlink.h"
 #include <glog/logging.h>
 
@@ -45,6 +46,14 @@ DWORD WINAPI MainThread(LPVOID lpParam)
         LOG(WARNING) << "Shadow copy initialization failed (non-fatal)";
     }
 
+    // Load MPQ hash cache — must be before hooks (SpoofCmsgIfNeeded calls LookupHash)
+    // and before PEB unlinking (uses GetModuleFileName).
+    if (mpq_cache::Initialize(hModule)) {
+        LOG(INFO) << "MPQ hash cache initialized";
+    } else {
+        LOG(WARNING) << "MPQ hash cache initialization failed (non-fatal)";
+    }
+
     if (hooks::Initialize()) {
         LOG(INFO) << "Hooks initialized successfully";
     } else {
@@ -68,6 +77,9 @@ DWORD WINAPI MainThread(LPVOID lpParam)
 
     // Restore PEB entries before unload — LdrUnloadDll needs them to find the module.
     peb_unlink::RelinkAll();
+
+    // Save captured MPQ hashes before shutdown
+    mpq_cache::Shutdown();
 
     // Даём время завершиться вызовам хуков, которые могут быть in-flight
     // в основном потоке игры (FrameScript_Execute вызывается из main thread)

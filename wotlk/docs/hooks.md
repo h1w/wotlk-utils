@@ -517,7 +517,7 @@ __except(EXCEPTION_EXECUTE_HANDLER) {
 
 Дополнительно, **warden_rc4_hook.cpp** устанавливает до 4 хуков на RC4 PRGA функции **внутри** Warden модуля (не WoW.exe). Эти хуки захватывают CMSG plaintext ДО шифрования и являются основным методом расшифровки CMSG. Кроме того, именно в этой точке вызывается **warden_spoof::SpoofCmsgIfNeeded** — подмена MEM_CHECK / PAGE_CHECK результатов на оригинальные байты из shadow copy перед RC4 шифрованием (Variant A spoofing).
 
-**Early RC4 hook install**: RC4 хуки теперь устанавливаются в `WardenPreHandler` **ДО** обработки SMSG пакета (а не только в MODULE_INITIALIZE). Это позволяет перехватить HASH_RESULT, который отправляется синхронно во время handler'а. `FindModuleInMemory(nullptr, 0)` ищет модуль по 26-byte сигнатуре без необходимости в decompressed binary.
+**Deferred RC4 hook install**: RC4 хуки устанавливаются в **HASH_REQUEST PostHandler** — ПОСЛЕ того как модуль вычислил integrity hash на чистом коде. В `WardenPreHandler` выполняется только `FindModuleInMemory` + `ScanForRC4States` + `CloneAllStates` (read-only, без Install). Это предотвращает RC4 re-key desync: если установить MinHook патчи до HASH_REQUEST, модуль вычислит corrupted hash → обе стороны re-key с разными ключами → disconnect.
 
 **HASH_REQUEST/RESULT**: `WardenPostHandlerImpl` парсит HASH_REQUEST seed (16 байт), `RC4DetourHandler` + `SendPacketHandler` перехватывают и логируют HASH_RESULT (21 байт: [0x04][SHA1:20]).
 

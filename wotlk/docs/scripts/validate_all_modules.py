@@ -41,7 +41,7 @@ MAX_MOVZX_DIST = 18
 CHAIN_SCAN_LEN = 400
 MAX_BRANCHES = 16
 MIN_CHAIN_TYPES = 3
-MAX_JUMP_DIST = 6
+MAX_JUMP_DIST = 10
 REMAP_CHECK_DIST = 60
 
 
@@ -408,6 +408,7 @@ def walk_chain(data, start, pre_regs=None):
         pos = origin
         scan_end = min(origin + CHAIN_SCAN_LEN, len(data))
         regs = dict(pre_regs)
+        push_stack = []  # track push imm8 values for pop reg
 
         while pos < scan_end:
             if pos in visited and pos != origin:
@@ -420,7 +421,7 @@ def walk_chain(data, start, pre_regs=None):
                 break
             if b0 == 0xE8:  # call
                 break
-            if 0x50 <= b0 <= 0x57 or b0 == 0x68 or b0 == 0x6A:  # push
+            if 0x50 <= b0 <= 0x57 or b0 == 0x68:  # push reg / push imm32
                 break
             if b0 == 0xFF and pos + 1 < scan_end and (data[pos + 1] & 0x38) == 0x10:  # call [reg]
                 break
@@ -582,6 +583,25 @@ def walk_chain(data, start, pre_regs=None):
                             types.add(acc & 0xFF)
                             pos = after; handled = True; continue
 
+            # === PUSH imm8 (6A XX) — track for pop+cmp pattern ===
+            if not handled and b0 == 0x6A and pos + 1 < scan_end:
+                imm = data[pos + 1]
+                push_stack.append(imm)
+                # Skip following je/jne (handles previous cmp equality, already recorded)
+                r = find_and_classify_jcc(data, pos + 2)
+                if r:
+                    joff, jk, tgt, after = r
+                    if jk in (JCC_EQ, JCC_NE):
+                        pos = after; handled = True; continue
+                pos += 2; handled = True; continue
+
+            # === POP r32 (58-5F) — assign last pushed imm8 to register ===
+            if not handled and 0x58 <= b0 <= 0x5F:
+                reg = b0 - 0x58
+                if push_stack:
+                    regs[reg] = push_stack.pop()
+                pos += 1; handled = True; continue
+
             # === JMP rel8 (EB XX) ===
             if not handled and b0 == 0xEB and pos + 1 < scan_end:
                 rel = read_s8(data, pos + 1)
@@ -663,6 +683,7 @@ def analyze_module(data, verbose=False):
         print(f"  XOR+MOVZX sites: {len(sites)}")
 
     chain_types_all = set()
+    chain_sets = []  # per-chain type sets (for intersection)
     chain_count = 0
     remaps = []  # list of (remap_off, jtable_off, shift, max_type)
 
@@ -690,6 +711,7 @@ def analyze_module(data, verbose=False):
         if types:
             chain_count += 1
             chain_types_all |= types
+            chain_sets.append(set(types))
             if verbose:
                 print(f"    XOR @0x{xor_off:04X}: dispatch chain, {len(types)} types: "
                       f"{' '.join(f'0x{t:02X}' for t in sorted(types))}")
@@ -698,6 +720,21 @@ def analyze_module(data, verbose=False):
     if len(chain_types_all) >= MIN_CHAIN_TYPES:
         result = set(chain_types_all)
         strategy = f"dispatch({chain_count})"
+
+        # When multiple chains disagree (union > 10), intersection removes phantom BST pivots
+        if chain_count >= 2 and len(result) > 10 and len(chain_sets) >= 2:
+            chain_intersection = chain_sets[0]
+            for s in chain_sets[1:]:
+                chain_intersection = chain_intersection & s
+            if 9 <= len(chain_intersection) <= 10:
+                result = chain_intersection
+                strategy = f"dispatch_intersection({chain_count})"
+            else:
+                # Intersection too small — use the single best chain (most complete)
+                best = max(chain_sets, key=len)
+                if 9 <= len(best) <= 10:
+                    result = best
+                    strategy = f"dispatch_best({chain_count})"
 
         # Supplement with remap if incomplete
         if len(result) < 9 and remaps:
@@ -710,10 +747,11 @@ def analyze_module(data, verbose=False):
             # Single remap supplement
             if len(result) < 9 and len(remaps) >= 1:
                 for roff, jtoff, sh, mx in remaps:
-                    remap_all = extract_remap_all(data, roff, mx, sh, jtable_off=jtoff)
+                    fixed_mx = _fix_max_type_capstone(data, roff, jtoff, sh, mx)
+                    remap_all = extract_remap_all(data, roff, fixed_mx, sh, jtable_off=jtoff)
                     if 9 <= len(remap_all) <= 12:
                         result = remap_all
-                        strategy = f"dispatch({chain_count})+single_remap"
+                        strategy = f"dispatch({chain_count})+single_remap_fixed"
                         break
 
         details = f"{chain_count}d+{len(remaps)}r"

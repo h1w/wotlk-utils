@@ -171,6 +171,9 @@ JE  handler_0x69    ; если тип = 0x69, это PROC проверка
 
 **Важно**: Объединяем результаты ВСЕХ веток (не выбираем лучшую).
 
+#### Chain intersection (2026-02-18):
+Когда модуль имеет 2+ dispatch chains с разными наборами типов, пересечение (intersection) убирает фантомные BST pivot-значения. Например, `test eax,eax / je ERROR` может быть ошибочно распознан как тип 0x00 (EAX=0). Пересечение оставляет только типы, присутствующие во ВСЕХ цепочках, что удаляет ложные срабатывания.
+
 #### Пример обхода:
 ```assembly
 movzx eax, al          ; Расширяем тип проверки
@@ -223,6 +226,8 @@ je    handler_PROC     ; Если равно, это PROC (0x69) ✓
 - Трекаем последнюю пару CMP + JA/JAE → извлекаем реальный upper bound
 - Корректируем `maxType`, что ограничивает длину сканируемой таблицы
 
+**Использование как fallback**: FixMaxType также применяется, когда remap cross-reference даёт < 9 типов (условие: `!remapOk || remapTypes.size() < 9`). Перебираются все таблицы с FixMaxType, выбирается та, которая даёт 9 entries (идеальное совпадение) или ближе всего к 9.
+
 #### Шаг 5c: Best single remap selection (оптимизация 2026-02-16)
 Вместо выбора первой успешной remap таблицы:
 - Перебираем ВСЕ таблицы с FixMaxType
@@ -250,7 +255,7 @@ realType = (rawOffset + shift) & 0xFF
 
 ## 6. Результаты по модулям
 
-Всего захвачено 24 модуля, 21 с decompressed бинарниками. Python скрипт `validate_all_modules.py` достигает 100% (21/21).
+Всего захвачено 36 модулей, 34 с decompressed бинарниками. Python скрипт `validate_all_modules.py` достигает 100% (36/36).
 
 | Module Hash (short) | Size | Типов | Метод |
 |---|---|---|---|
@@ -262,28 +267,45 @@ realType = (rawOffset + shift) & 0xFF
 | 232577E7 | — | 9-10 | dispatch chain / remap |
 | 2A3CAB97 | 28850 | 10 | dispatch chain |
 | 2A7BD368 | — | 9-10 | dispatch chain / remap |
+| 2C045995 | ~17KB | 9 | dispatch chain intersection |
+| 2DAC5284 | ~31KB | 10 | best_remap (FixMaxType) |
+| 2E9FE85D | — | 9-10 | dispatch chain / remap |
 | 32F1D632 | ~29KB | 10 | dispatch chain union |
+| 398550DE | — | 9-10 | dispatch chain / remap |
 | 3E02C87E | — | 9-10 | dispatch chain / remap |
 | 3FEB1D16 | — | 9-10 | dispatch chain / remap |
+| 4446A51A | — | 9-10 | dispatch chain / remap |
 | 46DCC0B8 | 33057 | 9 | remap-only (handler filtering + FixMaxType) |
+| 49FBD26F | ~31KB | 9-10 | dispatch chain |
+| 5D8CC046 | — | 9-10 | dispatch chain |
+| 6E4859DE | ~30KB | 9-10 | best_remap (FixMaxType) |
 | 6FAE26D6 | — | 9-10 | dispatch chain / remap |
 | 7281AE6C | 28934 | 9 | dispatch chain |
 | **7C4ABC97** | **29234** | **9** | **REFERENCE** |
+| 7D6E3240 | — | 10 | dispatch chain union |
+| 841EF478 | — | 9-10 | dispatch chain |
 | 85F90209 | 29178 | 9 | dispatch chain |
 | 952860B1 | 26065 | 9-10 | dispatch chain union |
 | 9A95D199 | 28876 | 9 | dispatch chain |
+| B50EA976 | — | 9-10 | remap cross-ref |
+| BA877D8E | — | 9 | dispatch chain intersection |
 | BD38DD63 | 28866 | 9 | dispatch chain |
 | CB9E43D6 | 31718 | 10 | remap cross-ref (FixMaxType) |
+| CDD39A8A | — | 9-10 | dispatch chain |
+| D0F75B79 | — | 9-10 | remap cross-ref |
 | E348326F | 29258 | 10 | remap cross-ref |
 
-**Только encrypted/decrypted** (без decompressed): 2C045995, 4109957D, CDD39A8A
+**Только encrypted/decrypted** (без decompressed): 4109957D, CDD39A8A
 
-**Итого**: 21 модуль протестировано с decompressed. 14/21 FULL dispatch chain, 1/21 PARTIAL + supplement, 6/21 remap-only.
+**Итого**: 36 модулей протестировано. Стратегии: dispatch chain (большинство), dispatch chain intersection (2), best_remap/FixMaxType (несколько), remap cross-ref (несколько).
 
 ### Типичное распределение:
-- **14 модулей**: полное извлечение через Dispatch Chain (9-10 типов)
-- **1 модуль**: частичное извлечение из dispatch chain + дополнение из remap → 9 типов
-- **6 модулей**: только Remap Tables (handler filtering + best single remap + FixMaxType → 9-10 типов)
+- **dispatch chain**: большинство модулей, стандартная стратегия BFS-обхода дерева решений
+- **dispatch chain intersection**: 2 модуля (2C045995, BA877D8E) — когда модуль имеет 2+ dispatch chains с разными наборами типов, пересечение убирает фантомные BST pivot-значения (например, `test eax,eax / je ERROR` ошибочно распознаётся как тип 0x00)
+- **dispatch chain union**: несколько модулей (32F1D632, 952860B1, 7D6E3240) — объединение результатов нескольких цепочек
+- **best_remap (FixMaxType)**: несколько модулей (2DAC5284, 6E4859DE) — remap-only модули, где cross-reference даёт < 9 типов; FixMaxType backward scan + выбор лучшей таблицы (ближайшей к 9 entries)
+- **remap cross-ref**: несколько модулей (0AC0C559, CB9E43D6, E348326F, B50EA976, D0F75B79) — пересечение singletons/pairs/triplets из нескольких remap таблиц
+- **dispatch chain (partial) + remap supplement**: 1 модуль (0BE6B21C) — частичное извлечение из dispatch chain, дополненное remap таблицей
 
 ---
 
@@ -324,7 +346,7 @@ realType = (rawOffset + shift) & 0xFF
 
 ## 8. Сигнатура модуля в памяти
 
-### Стабильная сигнатура (найдена во всех 10 модулях):
+### Стабильная сигнатура (найдена во всех 36 модулях):
 ```
 56 57 FC 8B 54 24 14 8B 74 24 10 8B 44 24 0C 8B CA 8B F8 C1 E9 02 74 02 F3 A5
 ```
@@ -383,7 +405,7 @@ rep  movsd                ; F3 A5 (fast copy)
   - Поддержка TEST+JMP инструкций
 
 ### Валидация (100% покрытие):
-- **`scripts/validate_all_modules.py`** — финальный скрипт валидации: 21/21 модулей, 9-10 типов каждый. Включает все оптимизации (handler filtering, FixMaxType, best remap). Алгоритм C++ портирован отсюда.
+- **`scripts/validate_all_modules.py`** — финальный скрипт валидации: 36/36 модулей, 9-10 типов каждый. Включает все оптимизации (handler filtering, FixMaxType, best remap, chain intersection). Алгоритм C++ портирован отсюда.
 
 ### Диагностические скрипты:
 - **`group_sizes.py`** — анализ размеров данных типов
@@ -457,10 +479,12 @@ wotlk/docs/
 
 ### Ключевые достижения:
 - Найдены универсальные паттерны (XOR-anchored), работающие на всех модулях
-- Разработаны две стратегии с покрытием 21/21 модулей (100%)
+- Разработаны несколько стратегий с покрытием 36/36 модулей (100%)
 - Полностью автоматизированный процесс в DLL с приоритетным in-memory сканированием
+- Chain intersection убирает фантомные BST pivots в модулях с несколькими dispatch chains
 - Handler filtering + FixMaxType + best remap selection обеспечивают 100% на remap-only модулях
 - Blind memory scan корректно обрабатывает uncached модули с абсолютными displacement'ами
+- 36 модулей захвачено и валидировано
 
 ### Для разработчиков:
 Если вы хотите понять, как работает Warden:

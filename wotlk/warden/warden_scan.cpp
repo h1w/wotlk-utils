@@ -43,12 +43,16 @@ constexpr int kSizeMaxCount[] = { 1, 3, 1, 1, 1, 2, 1 };
 static_assert(sizeof(kSizeMaxCount) / sizeof(kSizeMaxCount[0]) == kNumKnownSizes,
               "kSizeMaxCount must match kKnownSizes");
 
+// Max types discoverable at runtime (server may send types not in module binary)
+constexpr int kMaxDynamicTypes = 3;
+
 // State
 bool g_hasTypeIDs = false;
 bool g_allSizesKnown = false;
 std::unordered_set<uint8_t> g_typeIDs;
 std::unordered_map<uint8_t, int> g_typeSizes; // type -> data size (-1 = unknown)
 size_t g_stringCount = 0; // number of strings in current packet (for index validation)
+int g_dynamicDiscoveryCount = 0; // types discovered at runtime (not from static scan)
 
 // Cached module runtime address/size (set by FindModuleInMemory)
 uintptr_t g_moduleRuntimeBase = 0;
@@ -281,7 +285,7 @@ bool ScanBufferForSubChain(const uint8_t* buf, size_t bufSize,
 
 constexpr size_t kMaxMovzxDist = 18;     // max bytes between XOR and movzx r32, r8
 constexpr size_t kRemapCheckDist = 60;   // max bytes to search for remap table pattern
-constexpr size_t kMaxJumpDist = 6;       // max bytes between cmp/sub end and conditional jump
+constexpr size_t kMaxJumpDist = 10;      // max bytes between cmp/sub end and conditional jump
 constexpr size_t kChainScanLen = 400;    // max bytes to scan per branch of dispatch chain
 constexpr size_t kMaxBranches = 16;      // max branches to follow in dispatch tree
 constexpr size_t kMinChainTypes = 3;     // minimum types to accept as valid dispatcher
@@ -582,6 +586,7 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
             std::memcpy(regVals, preRegVals, 8);
             std::memcpy(regValid, preRegValid, 8);
         }
+        std::vector<uint8_t> pushStack; // track push imm8 values for pop+cmp
 
         size_t pos = br.start;
         size_t scanEnd = std::min(br.start + kChainScanLen, dataSize);
@@ -904,6 +909,33 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
                 }
             }
 
+            // === PUSH imm8 (6A XX) — track for pop+cmp pattern ===
+            if (!handled && b0 == 0x6A && pos + 1 < scanEnd) {
+                uint8_t imm = data[pos + 1];
+                pushStack.push_back(imm);
+                // Skip following je/jne (handles previous cmp equality, already recorded)
+                CondJumpKind jk;
+                size_t joff = FindCondJump(data, dataSize, pos + 2, kMaxJumpDist, &jk);
+                if (joff != kNoMatch && (jk == CJ_EQUAL || jk == CJ_NOT_EQUAL)) {
+                    pos = joff + CondJumpLen(data, joff);
+                } else {
+                    pos += 2;
+                }
+                handled = true;
+            }
+
+            // === POP r32 (58-5F) — assign last pushed imm8 to register ===
+            if (!handled && b0 >= 0x58 && b0 <= 0x5F) {
+                uint8_t reg = b0 - 0x58;
+                if (!pushStack.empty()) {
+                    regVals[reg] = pushStack.back();
+                    regValid[reg] = true;
+                    pushStack.pop_back();
+                }
+                pos += 1;
+                handled = true;
+            }
+
             // === JMP rel8 (EB XX) — follow unconditional jump ===
             if (!handled && b0 == 0xEB && pos + 1 < scanEnd) {
                 int8_t disp = static_cast<int8_t>(data[pos + 1]);
@@ -925,7 +957,7 @@ void ExtractDispatchChainTypes(const uint8_t* data, size_t dataSize,
             // === Stop conditions ===
             if (!handled) {
                 // push (50-57, 68, 6A, FF /6)
-                if ((b0 >= 0x50 && b0 <= 0x57) || b0 == 0x68 || b0 == 0x6A)
+                if ((b0 >= 0x50 && b0 <= 0x57) || b0 == 0x68)
                     break;
                 // call (E8, FF /2)
                 if (b0 == 0xE8) break;
@@ -1335,6 +1367,7 @@ bool ScanForDispatchChainInBinary(const uint8_t* data, size_t size, size_t scanS
     // Step 2: Classify each site and extract types
     // Union all dispatch chain type sets (different chains may cover different types)
     std::unordered_set<uint8_t> allChainTypes;
+    std::vector<std::unordered_set<uint8_t>> chainSets; // per-chain sets (for intersection)
     size_t bestXorOff = 0;
     size_t bestChainSize = 0;
     int chainCount = 0;
@@ -1374,6 +1407,7 @@ bool ScanForDispatchChainInBinary(const uint8_t* data, size_t size, size_t scanS
 
             for (uint8_t t : types)
                 allChainTypes.insert(t);
+            chainSets.push_back(types);
             chainCount++;
             if (types.size() > bestChainSize) {
                 bestChainSize = types.size();
@@ -1398,12 +1432,47 @@ bool ScanForDispatchChainInBinary(const uint8_t* data, size_t size, size_t scanS
                 << static_cast<int>(id);
         LOG(INFO) << oss.str();
 
+        // When multiple chains disagree, intersection removes phantom BST pivots
+        // (e.g. test eax,eax / je ERROR misclassified as type 0x00)
+        if (chainCount >= 2 && chainSets.size() >= 2) {
+            std::unordered_set<uint8_t> intersection = chainSets[0];
+            for (size_t ci = 1; ci < chainSets.size(); ++ci) {
+                std::unordered_set<uint8_t> tmp;
+                for (uint8_t t : intersection) {
+                    if (chainSets[ci].count(t))
+                        tmp.insert(t);
+                }
+                intersection = std::move(tmp);
+            }
+            // Only use intersection if chains actually disagree (intersection < union)
+            if (intersection.size() < allChainTypes.size()) {
+                if (intersection.size() >= 9 && intersection.size() <= 10) {
+                    allChainTypes = intersection;
+                    LOG(INFO) << "[WARDEN_SCAN] Chain intersection: " << chainCount
+                              << " chains, union=" << sorted.size()
+                              << " -> intersection=" << intersection.size() << " types";
+                } else {
+                    // Intersection too small — use the single best chain (most complete)
+                    const std::unordered_set<uint8_t>* best = &chainSets[0];
+                    for (size_t ci = 1; ci < chainSets.size(); ++ci) {
+                        if (chainSets[ci].size() > best->size())
+                            best = &chainSets[ci];
+                    }
+                    if (best->size() >= 9 && best->size() <= 10) {
+                        allChainTypes = *best;
+                        LOG(INFO) << "[WARDEN_SCAN] Best single chain: " << best->size()
+                                  << " types (union=" << sorted.size() << " was too large)";
+                    }
+                }
+            }
+        }
+
         // Try to supplement from remap table (authoritative — contains ALL types)
         std::unordered_set<uint8_t> remapTypes;
         bool remapOk = false;
         if (remapInfos.size() >= 2)
             remapOk = ExtractFromRemapCrossRef(data, size, remapInfos, remapTypes);
-        if (!remapOk) {
+        if (!remapOk || remapTypes.size() < 9) {
             // Try each table with maxType fixup, pick table closest to 9 entries
             for (const auto& r : remapInfos) {
                 RemapTableInfo fixed = r;
@@ -1451,7 +1520,7 @@ bool ScanForDispatchChainInBinary(const uint8_t* data, size_t size, size_t scanS
                       << remapInfos.size() << " remap tables)...";
             remapOk = ExtractFromRemapCrossRef(data, size, remapInfos, remapTypes);
         }
-        if (!remapOk) {
+        if (!remapOk || remapTypes.size() < 9) {
             // Try each table with maxType fixup, pick table closest to 9 entries
             for (const auto& r : remapInfos) {
                 RemapTableInfo fixed = r;
@@ -1813,6 +1882,7 @@ void Reset()
     g_stringCount = 0;
     g_typeIDs.clear();
     g_typeSizes.clear();
+    g_dynamicDiscoveryCount = 0;
     g_moduleRuntimeBase = 0;
     g_moduleRuntimeSize = 0;
     g_scanBaseAddr = 0;
@@ -2225,25 +2295,33 @@ bool AssignTypeSizes(const uint8_t* data, size_t checkStart,
         pos++; // consume type byte
 
         if (!g_typeIDs.count(realType)) {
-            // Dynamic type discovery: try to assign a size for this unknown type.
-            // The quota system in TryAssignSize prevents over-assignment.
+            // Unknown type — try bounded dynamic discovery
+            if (g_dynamicDiscoveryCount >= kMaxDynamicTypes) {
+                LOG(WARNING) << "[WARDEN_SCAN] Unknown type 0x" << std::hex << std::setfill('0')
+                             << std::setw(2) << (int)realType
+                             << " at offset " << std::dec << (pos - 1)
+                             << " — discovery limit reached (" << kMaxDynamicTypes << ")";
+                return false;
+            }
+
             int discoveredSize = TryAssignSize(data, pos, checkEnd, g_stringCount, xorByte);
             if (discoveredSize < 0) {
                 LOG(WARNING) << "[WARDEN_SCAN] Unknown type 0x" << std::hex << std::setfill('0')
                              << std::setw(2) << (int)realType
                              << " at offset " << std::dec << (pos - 1)
-                             << " — discovery failed (no valid size)";
+                             << " — dynamic discovery failed";
                 return false;
             }
 
             g_typeIDs.insert(realType);
             g_typeSizes[realType] = discoveredSize;
+            g_dynamicDiscoveryCount++;
             newAssignments = true;
-            LOG(INFO) << "[WARDEN_SCAN] Discovered type 0x" << std::hex << std::setfill('0')
-                      << std::setw(2) << (int)realType << " = "
-                      << std::dec << discoveredSize << " bytes ("
-                      << GetTypeName(realType) << ") [dynamic]";
-
+            LOG(INFO) << "[WARDEN_SCAN] Dynamic discovery: type 0x"
+                      << std::hex << std::setfill('0') << std::setw(2) << (int)realType
+                      << " = " << std::dec << discoveredSize << " bytes ("
+                      << GetTypeName(realType) << ") [" << g_dynamicDiscoveryCount
+                      << "/" << kMaxDynamicTypes << "]";
             pos += static_cast<size_t>(discoveredSize);
             continue;
         }
