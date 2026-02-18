@@ -1,0 +1,85 @@
+# User Interface — WoW 3.3.5a (build 12340)
+
+> Source: offsets.txt, sections "Object Funcs 1/2/3"
+
+## All Functions
+
+| Address | Name |
+|---------|------|
+| `0x00428000` | CGlueMgr__UpdateCurrentScreen |
+| `0x0043A4A0` | M2ModelHeader__ReadCameras |
+| `0x004858E0` | CRenderBatch__QueueCallback |
+| `0x00485970` | CRenderBatch__Clear |
+| `0x00486B20` | CSimpleFontString__UpdateString |
+| `0x00490840` | CSimpleFrame__OnFrameRender |
+| `0x004932C0` | CSimpleFrame__LoadXML |
+| `0x00495EB0` | CSimpleTop__CSimpleTop |
+| `0x004A8570` | CaptureScreen |
+| `0x004B6920` | FillInSolidTexture |
+| `0x004B7020` | GetTexture_0 |
+| `0x004B94E0` | HashNewTexture_0 |
+| `0x004B9550` | TextureCreateSolid |
+| `0x004B9760` | TextureCreate |
+| `0x004BE9C0` | TextBlockGenerateFont |
+| `0x004C21B0` | ScreenToWorld |
+| `0x004F5960` | CGWorldFrame__GetActiveCamera |
+| `0x004F7880` | CGWorldFrame__PerformDefaultAction |
+| `0x004F8EA0` | CGWorldFrame__Render |
+| `0x004FA040` | CGWorldFrame__OnLayerUpdate |
+| `0x004FA390` | CGWorldFrame_C__CGWorldFrame_C |
+| `0x004FA560` | CGWorldFrame___vector_deleting_destructor_ |
+| `0x004FA5F0` | CGWorldFrame__OnWorldUpdate |
+| `0x004FAF60` | CGWorldFrame___scalar_deleting_destructor_ |
+| `0x004FAF90` | CGWorldFrame__RenderWorld |
+| `0x004FB080` | CGWorldFrame__OnFrameRender |
+| `0x00513660` | CGGameUI__GetCursorItem |
+| `0x005136D0` | CGGameUI__GetCursorVirtualItem |
+| `0x00519280` | CGGameUI__ClearCursor |
+| `0x00520770` | CGGameUI__SetCursorItem |
+| `0x00521040` | CGWorldFrame__CreateFrames |
+| `0x00544140` | CGWorldFrame_C__TranslateToMapCoords |
+| `0x00546310` | CGWorldMap__SetMap |
+| `0x00547170` | CGWorldMap__SetMapToCurrentZone |
+| `0x0055E700` | CGUIBindings__GetCommand |
+| `0x005622E0` | CGUIBindings__GetCommandKey_0 |
+| `0x00562490` | CGUIBindings__GetCommandAction |
+| `0x0056D4D0` | CGMailFrame__Show |
+| `0x00588190` | CGLootWindow__GetNumLootItems |
+| `0x00588310` | CGLootWindow__GetLootItemRarity |
+| `0x005974A0` | CModelComplex__CopyCameras |
+| `0x005977C0` | CModelComplex__CModelComplex_0 |
+| `0x00598EC0` | CGTabardCreationFrame__Close |
+| `0x00598F40` | j_CGTabardCreationFrame__Close |
+| `0x005A97F0` | CGActionBar__GetTexture |
+| `0x00615860` | SmartScreenRectClearAllGrids |
+| `0x006162C0` | CGCursor_C__Update |
+| `0x00616630` | CursorSetHeldItem |
+| `0x00616800` | CursorSetCursorMode |
+| `0x00616830` | CGCursor_C__SetCursorFromName |
+| `0x00621070` | CSimpleUI__CreateTooltip |
+| `0x006BDE80` | GxuFontCreateFont |
+| `0x006D1E20` | CGGameUI__OpenGossipWindow |
+| `0x006DFC40` | CGPlayer_C__AutoEquipCursorItem |
+| `0x007176B0` | GetAnimationDataRecField_6 |
+| `0x00717A20` | CGUnit_C__GetCreatureModelDataRec |
+| `0x00717B20` | CGUnit_C__GetModel |
+| `0x0071DAA0` | IsAnimationDataId_RifleRelated |
+| `0x00725F50` | CGUnit_C__QueryModelStats |
+| `0x007385C0` | CGUnit_C__AnimationData |
+| `0x0073AB90` | CGUnit_C__PlayEmoteAnimation |
+| `0x00740450` | UpdateMountModel |
+| `0x00766140` | ConsoleScreenInitialize |
+| `0x007662A0` | ConsoleScreenDestroy |
+| `0x0077F310` | CGWorldFrame__Intersect |
+| `0x0077FBF0` | M2Model__IsOutdoors |
+| `0x007D9990` | CMap__LoadTexture |
+| `0x0081C0D0` | M2Model__M2Initialize |
+| `0x00835B30` | M2ModelHeader__ReadSkinTextureUnits |
+| `0x00835B80` | M2ModelHeader__ReadByteArray |
+| `0x00835BD0` | M2ModelHeader__ReadVector3 |
+| `0x00835C20` | M2ModelHeader__ReadInt32_Array |
+| `0x00836B60` | M2ModelHeader__ReadTextures |
+| `0x00836E40` | M2ModelHeader__ReadEvents |
+| `0x008382A0` | M2ModelHeader__ReadTransparency |
+| `0x0083AF90` | M2ModelHeader__ReadParticleEmitters |
+| `0x0083CF00` | M2Cache__ReadM2ModelHeader |

@@ -1,5 +1,6 @@
 #include "warden_rc4.h"
 #include "warden_types.h"
+#include "../offsets/offsets.h"
 
 #define NOMINMAX
 #include <Windows.h>
@@ -52,13 +53,6 @@ static void EnsureLockInitialized()
         g_lockInitialized = true;
     }
 }
-
-// WoW .text section bounds (to exclude from scan)
-static constexpr uintptr_t kImageBase   = 0x00400000;
-static constexpr uintptr_t kTextRVA     = 0x00001000;
-static constexpr size_t    kTextSize    = 0x005DD3B3;
-static constexpr uintptr_t kTextStart   = kImageBase + kTextRVA;
-static constexpr uintptr_t kTextEnd     = kTextStart + kTextSize;
 
 // Max region size to scan (64 MB — large heap regions may contain S-boxes)
 static constexpr size_t kMaxRegionSize = 64 * 1024 * 1024;
@@ -242,7 +236,7 @@ static void EnumReadableRegions(Fn callback, size_t minSize,
         }
 
         // Exclude WoW .text section
-        if (base >= kTextStart && base < kTextEnd) {
+        if (base >= offsets::TextStart && base < offsets::TextEnd) {
             addr = regionEnd;
             continue;
         }

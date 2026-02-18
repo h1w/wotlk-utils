@@ -4,6 +4,7 @@
 #include "shadow_copy.h"
 #include "mpq_cache.h"
 #include "../hooks/hooks.h"
+#include "../offsets/offsets.h"
 
 #define NOMINMAX
 #include <Windows.h>
@@ -36,10 +37,10 @@ static constexpr struct {
     uintptr_t   addr;
     const char* name;
 } kHookTargets[] = {
-    { 0x00819210, "FrameScript_Execute" },
-    { 0x007DA850, "WardenHandler" },
-    { 0x00632B50, "SendPacket" },
-    { 0x00774EA0, "ARC4::Process" },
+    { offsets::FrameScript_Execute, "FrameScript_Execute" },
+    { offsets::WardenHandler,       "WardenHandler" },
+    { offsets::SendPacket,          "SendPacket" },
+    { offsets::ARC4_Process,        "ARC4::Process" },
 };
 static constexpr size_t kNumTargets = sizeof(kHookTargets) / sizeof(kHookTargets[0]);
 

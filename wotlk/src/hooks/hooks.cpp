@@ -12,6 +12,7 @@
 #include "../warden/warden_rc4_hook.h"
 #include "../warden/warden_checksum.h"
 #include "../warden/warden_spoof.h"
+#include "../offsets/offsets.h"
 
 #include <cstdint>
 #include <cstring>
@@ -24,11 +25,10 @@
 
 // ===========================================================================
 // FrameScript::Execute — исполнение Lua-кода игровым движком
-// Адрес:      0x00819210  (WoW 3.3.5a build 12340)
+// Адрес:      offsets::FrameScript_Execute (see offsets/functions.h)
 // Конвенция:  __cdecl
 // ===========================================================================
 
-static constexpr uintptr_t kFrameScriptExecute = 0x00819210;
 static constexpr size_t kMaxCodeLogLen = 300;
 
 using FrameScript_Execute_t = void(__cdecl*)(const char* code,
@@ -98,7 +98,6 @@ static void __cdecl HookedFrameScriptExecute(const char* code,
 //   +0x14  uint32_t  m_read
 // ===========================================================================
 
-static constexpr uintptr_t kWardenHandler = 0x007DA850;
 static constexpr size_t kMaxDecryptedDump = 256;
 static constexpr size_t kMaxWardenPayload = 4096;
 
@@ -125,9 +124,6 @@ static bool g_hooksDisabled = false;
 // Warden RC4 encryption уже применена к payload на этом уровне.
 // ===========================================================================
 
-static constexpr uintptr_t kSendPacket = 0x00632B50;
-static constexpr uint32_t kCmsgWardenDataOpcode = 0x2E7;
-
 static void* g_originalSendPacket = nullptr;
 static volatile LONG g_cmsgWardenCount = 0;
 static DWORD g_lastSmsgWardenTick = 0;
@@ -144,7 +140,6 @@ static volatile LONG g_sendPacketDiagCount = 0;
 // SMSG=4 bytes. Kept for diagnostics only.
 // ===========================================================================
 
-static constexpr uintptr_t kARC4Process = 0x00774EA0;
 static void* g_originalARC4Process = nullptr;
 
 // Flag: true while inside Warden handler (between Pre and Post)
@@ -265,8 +260,8 @@ static void __cdecl WardenPreHandler(uintptr_t savedEsp)
     // Temporarily disable FrameScript and Warden hooks to avoid re-entrance
     if (!g_hooksDisabled) {
         g_hooksDisabled = true;
-        MH_DisableHook(reinterpret_cast<LPVOID>(kFrameScriptExecute));
-        MH_DisableHook(reinterpret_cast<LPVOID>(kWardenHandler));
+        MH_DisableHook(reinterpret_cast<LPVOID>(offsets::FrameScript_Execute));
+        MH_DisableHook(reinterpret_cast<LPVOID>(offsets::WardenHandler));
     }
 
     uint32_t* s = (uint32_t*)savedEsp;
@@ -320,10 +315,10 @@ static bool __cdecl IsPrintableAscii(const uint8_t* src, size_t count)
 static void ScanForHookAddresses(const uint8_t* data, size_t start, size_t end)
 {
     static constexpr struct { uintptr_t addr; const char* name; } kTargets[] = {
-        { kFrameScriptExecute, "FrameScript_Execute" },
-        { kWardenHandler,      "WardenHandler" },
-        { kSendPacket,         "SendPacket" },
-        { kARC4Process,        "ARC4_Process" },
+        { offsets::FrameScript_Execute, "FrameScript_Execute" },
+        { offsets::WardenHandler,      "WardenHandler" },
+        { offsets::SendPacket,         "SendPacket" },
+        { offsets::ARC4_Process,        "ARC4_Process" },
     };
 
     for (const auto& t : kTargets) {
@@ -516,17 +511,17 @@ static void ParseCheatChecksRequest(const uint8_t* data, size_t len)
             info << " addr=0x" << std::hex << std::setfill('0') << std::setw(8) << addr
                  << " len=" << std::dec << (int)readLen;
 
-            bool targetsFrameScript = (addr < kFrameScriptExecute + kHookPatchSize)
-                                   && (kFrameScriptExecute < static_cast<uintptr_t>(addr) + readLen);
-            bool targetsWarden = (addr < kWardenHandler + kHookPatchSize)
-                              && (kWardenHandler < static_cast<uintptr_t>(addr) + readLen);
+            bool targetsFrameScript = (addr < offsets::FrameScript_Execute + kHookPatchSize)
+                                   && (offsets::FrameScript_Execute < static_cast<uintptr_t>(addr) + readLen);
+            bool targetsWarden = (addr < offsets::WardenHandler + kHookPatchSize)
+                              && (offsets::WardenHandler < static_cast<uintptr_t>(addr) + readLen);
 
             if (targetsFrameScript)
                 info << " *** TARGETS HOOK: FrameScript_Execute 0x"
-                     << std::hex << kFrameScriptExecute << " ***";
+                     << std::hex << offsets::FrameScript_Execute << " ***";
             if (targetsWarden)
                 info << " *** TARGETS HOOK: WardenHandler 0x"
-                     << std::hex << kWardenHandler << " ***";
+                     << std::hex << offsets::WardenHandler << " ***";
 
             memCheckCount++;
 
@@ -820,8 +815,8 @@ static void __cdecl WardenPostHandler()
 
     // Re-install hooks disabled during PreHandler
     if (g_hooksDisabled) {
-        MH_EnableHook(reinterpret_cast<LPVOID>(kFrameScriptExecute));
-        MH_EnableHook(reinterpret_cast<LPVOID>(kWardenHandler));
+        MH_EnableHook(reinterpret_cast<LPVOID>(offsets::FrameScript_Execute));
+        MH_EnableHook(reinterpret_cast<LPVOID>(offsets::WardenHandler));
         g_hooksDisabled = false;
     }
 
@@ -1194,7 +1189,7 @@ static void __cdecl SendPacketHandler(uintptr_t savedEsp)
               << opcode << " size=" << std::dec << size;
 
     // Fast path: skip non-warden packets
-    if (opcode != kCmsgWardenDataOpcode)
+    if (opcode != offsets::CMSG_WARDEN_DATA)
         return;
 
     LONG pktNum = InterlockedIncrement(&g_cmsgWardenCount);
@@ -1371,7 +1366,7 @@ bool Initialize()
 
     // --- FrameScript_Execute hook ---
     status = MH_CreateHook(
-        reinterpret_cast<LPVOID>(kFrameScriptExecute),
+        reinterpret_cast<LPVOID>(offsets::FrameScript_Execute),
         reinterpret_cast<LPVOID>(&HookedFrameScriptExecute),
         reinterpret_cast<LPVOID*>(&g_originalFrameScriptExecute));
 
@@ -1382,7 +1377,7 @@ bool Initialize()
         return false;
     }
 
-    status = MH_EnableHook(reinterpret_cast<LPVOID>(kFrameScriptExecute));
+    status = MH_EnableHook(reinterpret_cast<LPVOID>(offsets::FrameScript_Execute));
     if (status != MH_OK) {
         LOG(ERROR) << "MH_EnableHook(FrameScript_Execute) failed: "
                    << MH_StatusToString(status);
@@ -1391,13 +1386,13 @@ bool Initialize()
     }
 
     LOG(INFO) << "Hook installed: FrameScript_Execute @ 0x"
-              << std::hex << kFrameScriptExecute;
+              << std::hex << offsets::FrameScript_Execute;
 
     // --- SMSG_WARDEN_DATA hook ---
     g_wardenPostHandlerAddr = (void*)&WardenPostHandlerNaked;
 
     status = MH_CreateHook(
-        reinterpret_cast<LPVOID>(kWardenHandler),
+        reinterpret_cast<LPVOID>(offsets::WardenHandler),
         reinterpret_cast<LPVOID>(&HookedWardenHandlerNaked),
         reinterpret_cast<LPVOID*>(&g_originalWardenHandler));
 
@@ -1407,7 +1402,7 @@ bool Initialize()
         return true;
     }
 
-    status = MH_EnableHook(reinterpret_cast<LPVOID>(kWardenHandler));
+    status = MH_EnableHook(reinterpret_cast<LPVOID>(offsets::WardenHandler));
     if (status != MH_OK) {
         LOG(ERROR) << "MH_EnableHook(WardenHandler) failed: "
                    << MH_StatusToString(status);
@@ -1415,11 +1410,11 @@ bool Initialize()
     }
 
     LOG(INFO) << "Hook installed: SMSG_WARDEN_DATA @ 0x"
-              << std::hex << kWardenHandler;
+              << std::hex << offsets::WardenHandler;
 
     // --- ClientServices::SendPacket hook ---
     status = MH_CreateHook(
-        reinterpret_cast<LPVOID>(kSendPacket),
+        reinterpret_cast<LPVOID>(offsets::SendPacket),
         reinterpret_cast<LPVOID>(&HookedSendPacketNaked),
         reinterpret_cast<LPVOID*>(&g_originalSendPacket));
 
@@ -1427,19 +1422,19 @@ bool Initialize()
         LOG(ERROR) << "MH_CreateHook(SendPacket) failed: "
                    << MH_StatusToString(status);
     } else {
-        status = MH_EnableHook(reinterpret_cast<LPVOID>(kSendPacket));
+        status = MH_EnableHook(reinterpret_cast<LPVOID>(offsets::SendPacket));
         if (status != MH_OK) {
             LOG(ERROR) << "MH_EnableHook(SendPacket) failed: "
                        << MH_StatusToString(status);
         } else {
             LOG(INFO) << "Hook installed: SendPacket @ 0x"
-                      << std::hex << kSendPacket;
+                      << std::hex << offsets::SendPacket;
         }
     }
 
     // --- ARC4::Process hook (non-fatal) ---
     status = MH_CreateHook(
-        reinterpret_cast<LPVOID>(kARC4Process),
+        reinterpret_cast<LPVOID>(offsets::ARC4_Process),
         reinterpret_cast<LPVOID>(&HookedARC4ProcessNaked),
         reinterpret_cast<LPVOID*>(&g_originalARC4Process));
 
@@ -1447,13 +1442,13 @@ bool Initialize()
         LOG(ERROR) << "MH_CreateHook(ARC4::Process) failed: "
                    << MH_StatusToString(status);
     } else {
-        status = MH_EnableHook(reinterpret_cast<LPVOID>(kARC4Process));
+        status = MH_EnableHook(reinterpret_cast<LPVOID>(offsets::ARC4_Process));
         if (status != MH_OK) {
             LOG(ERROR) << "MH_EnableHook(ARC4::Process) failed: "
                        << MH_StatusToString(status);
         } else {
             LOG(INFO) << "Hook installed: ARC4::Process @ 0x"
-                      << std::hex << kARC4Process;
+                      << std::hex << offsets::ARC4_Process;
         }
     }
 
@@ -1469,10 +1464,10 @@ void Shutdown()
     warden_rc4_hook::Remove();
     warden_rc4_hook::Cleanup();
 
-    MH_DisableHook(reinterpret_cast<LPVOID>(kARC4Process));
-    MH_DisableHook(reinterpret_cast<LPVOID>(kSendPacket));
-    MH_DisableHook(reinterpret_cast<LPVOID>(kWardenHandler));
-    MH_DisableHook(reinterpret_cast<LPVOID>(kFrameScriptExecute));
+    MH_DisableHook(reinterpret_cast<LPVOID>(offsets::ARC4_Process));
+    MH_DisableHook(reinterpret_cast<LPVOID>(offsets::SendPacket));
+    MH_DisableHook(reinterpret_cast<LPVOID>(offsets::WardenHandler));
+    MH_DisableHook(reinterpret_cast<LPVOID>(offsets::FrameScript_Execute));
 
     MH_STATUS status = MH_Uninitialize();
     if (status != MH_OK) {
