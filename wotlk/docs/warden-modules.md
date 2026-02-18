@@ -255,7 +255,7 @@ realType = (rawOffset + shift) & 0xFF
 
 ## 6. Результаты по модулям
 
-Всего захвачено 36 модулей, 34 с decompressed бинарниками. Python скрипт `validate_all_modules.py` достигает 100% (36/36).
+Всего захвачено 37 модулей, 35 с decompressed бинарниками. Python скрипт `validate_all_modules.py` достигает 100% (37/37).
 
 | Module Hash (short) | Size | Типов | Метод |
 |---|---|---|---|
@@ -293,11 +293,12 @@ realType = (rawOffset + shift) & 0xFF
 | CB9E43D6 | 31718 | 10 | remap cross-ref (FixMaxType) |
 | CDD39A8A | — | 9-10 | dispatch chain |
 | D0F75B79 | — | 9-10 | remap cross-ref |
+| DE240190 | 30404 | 10 | dispatch chain |
 | E348326F | 29258 | 10 | remap cross-ref |
 
 **Только encrypted/decrypted** (без decompressed): 4109957D, CDD39A8A
 
-**Итого**: 36 модулей протестировано. Стратегии: dispatch chain (большинство), dispatch chain intersection (2), best_remap/FixMaxType (несколько), remap cross-ref (несколько).
+**Итого**: 37 модулей протестировано. Стратегии: dispatch chain (большинство), dispatch chain intersection (2), best_remap/FixMaxType (несколько), remap cross-ref (несколько).
 
 ### Типичное распределение:
 - **dispatch chain**: большинство модулей, стандартная стратегия BFS-обхода дерева решений
@@ -346,7 +347,7 @@ realType = (rawOffset + shift) & 0xFF
 
 ## 8. Сигнатура модуля в памяти
 
-### Стабильная сигнатура (найдена во всех 36 модулях):
+### Стабильная сигнатура (найдена во всех 37 модулях):
 ```
 56 57 FC 8B 54 24 14 8B 74 24 10 8B 44 24 0C 8B CA 8B F8 C1 E9 02 74 02 F3 A5
 ```
@@ -405,7 +406,7 @@ rep  movsd                ; F3 A5 (fast copy)
   - Поддержка TEST+JMP инструкций
 
 ### Валидация (100% покрытие):
-- **`scripts/validate_all_modules.py`** — финальный скрипт валидации: 36/36 модулей, 9-10 типов каждый. Включает все оптимизации (handler filtering, FixMaxType, best remap, chain intersection). Алгоритм C++ портирован отсюда.
+- **`scripts/validate_all_modules.py`** — финальный скрипт валидации: 37/37 модулей, 9-10 типов каждый. Включает все оптимизации (handler filtering, FixMaxType, best remap, chain intersection). Алгоритм C++ портирован отсюда.
 
 ### Диагностические скрипты:
 - **`group_sizes.py`** — анализ размеров данных типов
@@ -467,9 +468,9 @@ wotlk/docs/
    - Отправляем серверу
 
 ### Файлы кода:
-- **`warden/warden_type_extraction.cpp`** — основная логика извлечения
-- **`warden/warden_module.cpp`** — загрузка и кеширование модулей
-- **`warden/warden_scan.cpp`** — поиск модуля в памяти
+- **`src/warden/warden_type_extraction.cpp`** — основная логика извлечения
+- **`src/warden/warden_module.cpp`** — загрузка и кеширование модулей
+- **`src/warden/warden_scan.cpp`** — поиск модуля в памяти
 
 ---
 
@@ -479,12 +480,12 @@ wotlk/docs/
 
 ### Ключевые достижения:
 - Найдены универсальные паттерны (XOR-anchored), работающие на всех модулях
-- Разработаны несколько стратегий с покрытием 36/36 модулей (100%)
+- Разработаны несколько стратегий с покрытием 37/37 модулей (100%)
 - Полностью автоматизированный процесс в DLL с приоритетным in-memory сканированием
 - Chain intersection убирает фантомные BST pivots в модулях с несколькими dispatch chains
 - Handler filtering + FixMaxType + best remap selection обеспечивают 100% на remap-only модулях
 - Blind memory scan корректно обрабатывает uncached модули с абсолютными displacement'ами
-- 36 модулей захвачено и валидировано
+- 37 модулей захвачено и валидировано
 
 ### Для разработчиков:
 Если вы хотите понять, как работает Warden:

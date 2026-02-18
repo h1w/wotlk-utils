@@ -20,29 +20,32 @@
 ```
 wotlk-utils/
 ├── injector/           # Программа-инжектор (консольное приложение x86)
-│   ├── main.cpp        # Основной код инжектора
-│   └── logging/        # Настройка логирования для инжектора
+│   └── src/
+│       ├── main.cpp        # Основной код инжектора
+│       └── logging/        # Настройка логирования для инжектора
 │
 ├── wotlk/              # DLL, которая инжектируется в Wow.exe
-│   ├── dllmain.cpp     # Точка входа DLL (загрузка/выгрузка)
-│   ├── hooks/          # Перехватчики функций (используем MinHook)
-│   │   ├── framescript_execute.cpp  # Хук выполнения Lua-кода
-│   │   ├── warden_handler.cpp       # Хук обработчика пакетов Warden
-│   │   ├── send_packet.cpp          # Хук отправки пакетов на сервер
-│   │   └── arc4_process.cpp         # Хук RC4 шифрования заголовков
+│   ├── src/
+│   │   ├── dllmain.cpp     # Точка входа DLL (загрузка/выгрузка)
+│   │   ├── hooks/          # Перехватчики функций (используем MinHook)
+│   │   │   ├── framescript_execute.cpp  # Хук выполнения Lua-кода
+│   │   │   ├── warden_handler.cpp       # Хук обработчика пакетов Warden
+│   │   │   ├── send_packet.cpp          # Хук отправки пакетов на сервер
+│   │   │   └── arc4_process.cpp         # Хук RC4 шифрования заголовков
+│   │   │
+│   │   ├── warden/         # Анализ и обход системы Warden
+│   │   │   ├── warden_scan.cpp          # Сканирование модулей (in-memory + RLE unpack + dispatch chain)
+│   │   │   ├── warden_rc4.cpp           # Поиск RC4 S-box и расшифровка (fallback)
+│   │   │   ├── warden_rc4_hook.cpp      # Хук RC4 PRGA внутри модуля (primary) + вызов spoofing
+│   │   │   ├── warden_spoof.cpp         # MEM/PAGE/MODULE/LUA/HASH spoofing (Variant A)
+│   │   │   ├── module_dump.cpp          # Сохранение модулей на диск
+│   │   │   ├── shadow_copy.cpp          # Чтение оригинальных байт .text из PE на диске
+│   │   │   ├── warden_checksum.cpp      # Checksum algorithm (SHA1 XOR-fold)
+│   │   │   ├── peb_unlink.cpp           # PEB.Ldr unlinking (MODULE_CHECK evasion)
+│   │   │   └── warden_types.h           # Константы Warden opcodes (CMSG/SMSG)
+│   │   │
+│   │   └── logging/        # Настройка логирования для DLL
 │   │
-│   ├── warden/         # Анализ и обход системы Warden
-│   │   ├── warden_scan.cpp          # Сканирование модулей (in-memory + RLE unpack + dispatch chain)
-│   │   ├── warden_rc4.cpp           # Поиск RC4 S-box и расшифровка (fallback)
-│   │   ├── warden_rc4_hook.cpp      # Хук RC4 PRGA внутри модуля (primary) + вызов spoofing
-│   │   ├── warden_spoof.cpp         # MEM/PAGE/MODULE/LUA/HASH spoofing (Variant A)
-│   │   ├── module_dump.cpp          # Сохранение модулей на диск
-│   │   ├── shadow_copy.cpp          # Чтение оригинальных байт .text из PE на диске
-│   │   ├── warden_checksum.cpp      # Checksum algorithm (SHA1 XOR-fold)
-│   │   ├── peb_unlink.cpp           # PEB.Ldr unlinking (MODULE_CHECK evasion)
-│   │   └── warden_types.h           # Константы Warden opcodes (CMSG/SMSG)
-│   │
-│   ├── logging/        # Настройка логирования для DLL
 │   └── docs/           # Документация (ты здесь)
 │
 └── shared/             # Общий код для injector и wotlk

@@ -312,15 +312,19 @@ Warden использует RC4 для шифрования пакетов `CMSG
 
 Функция: `ParseChecksRequest()`
 
-#### 14. DLL: учит размеры данных через DFS solver
+#### 14. DLL: определяет размеры данных через детерминированный парсер
 
 **Проблема**: мы не знаем точный размер данных для каждого типа проверки (например, сколько байт после type byte для PAGE_CHECK_B?).
 
-**Решение**: мы используем **DFS (Depth-First Search)** — алгоритм перебора с возвратом. Мы пробуем разные комбинации размеров, проверяем, парсится ли пакет полностью (доходим ли до последнего байта = xorByte). Если да — запоминаем размеры.
+**Решение**: **детерминированный парсер** с структурной валидацией. При первой встрече неизвестного типа `TryAssignSize` пробует все стандартные размеры (31, 29, 25, 24, 6, 1, 0) и проверяет:
+- **Структурную валидацию**: адреса, readLen, strIdx — валидны ли поля?
+- **Look-ahead (Tier 1)**: следующий байт после кандидата — известный тип или конец секции?
+- **Structural-only fallback (Tier 2)**: если look-ahead не подтвердился, сохраняем как запасной вариант
+- **2-step lookahead (последний resort)**: если ни один размер не прошёл валидацию
 
-После нескольких пакетов мы "обучаемся" и знаем размеры всех типов для данного модуля.
+Quota system (`kSizeMaxCount`) предотвращает чрезмерное назначение (например, max 3 PAGE, max 1 DRIVER). Bounded discovery: max 3 новых типа на модуль.
 
-Функция: `warden_scan::LearnSizesDFS()`
+Функция: `warden_scan::TryAssignSize()`
 
 #### 15. Warden модуль шифрует и отправляет `CMSG_WARDEN_DATA` (opcode 0x02E7)
 
@@ -414,7 +418,7 @@ FreeLibraryAndExitThread(hModule, 0);
 
 Теперь давайте разберем, за что отвечает каждый файл/модуль в проекте.
 
-### **dllmain.cpp** — точка входа
+### **src/dllmain.cpp** — точка входа
 
 **Что делает:**
 - Определяет `DllMain` — функцию, которую Windows вызывает при загрузке/выгрузке DLL
@@ -425,7 +429,7 @@ FreeLibraryAndExitThread(hModule, 0);
 
 ---
 
-### **hooks/hooks.cpp** — центральный "мозг"
+### **src/hooks/hooks.cpp** — центральный "мозг"
 
 **Что делает:**
 - Инициализирует MinHook (`MH_Initialize`)
@@ -478,7 +482,7 @@ FreeLibraryAndExitThread(hModule, 0);
 
 ---
 
-### **warden/module_dump.cpp** — захват Warden-модулей
+### **src/warden/module_dump.cpp** — захват Warden-модулей
 
 **Что делает:**
 - Слушает пакеты `MODULE_USE`, `MODULE_CACHE`, `MODULE_INITIALIZE`
@@ -492,12 +496,12 @@ FreeLibraryAndExitThread(hModule, 0);
 
 ---
 
-### **warden/warden_scan.cpp** — извлечение типов проверок
+### **src/warden/warden_scan.cpp** — извлечение типов проверок
 
 **Что делает:**
 - Сканирует распакованный Warden-модуль в поисках **dispatch chain** или **remap cross-reference**
 - Извлекает соответствие "тип проверки → реальный ID в этом модуле"
-- Реализует **DFS solver** для обучения размеров данных каждого типа
+- Реализует **детерминированный парсер** с структурной валидацией + two-tier matching для определения размеров данных каждого типа
 - Умеет искать hook-адреса в сырых байтах проверок (функция `ScanForHookAddresses`)
 
 **Три стратегии сканирования:**
@@ -510,7 +514,7 @@ FreeLibraryAndExitThread(hModule, 0);
 
 ---
 
-### **warden/warden_rc4.cpp** — поиск RC4 S-box'ов и расшифровка CMSG
+### **src/warden/warden_rc4.cpp** — поиск RC4 S-box'ов и расшифровка CMSG
 
 **ПРИМЕЧАНИЕ:** Это fallback-метод. Основной метод расшифровки — внутренний RC4 хук (warden_rc4_hook.cpp).
 
@@ -532,7 +536,7 @@ FreeLibraryAndExitThread(hModule, 0);
 
 ---
 
-### **warden/warden_rc4_hook.cpp** — внутренний хук RC4 (PRIMARY)
+### **src/warden/warden_rc4_hook.cpp** — внутренний хук RC4 (PRIMARY)
 
 **Что делает:**
 - Сканирует runtime-память Warden модуля для поиска **ВСЕХ** функций RC4 PRGA
@@ -563,7 +567,7 @@ FreeLibraryAndExitThread(hModule, 0);
 
 ---
 
-### **warden/shadow_copy.cpp** — чистая копия .text секции
+### **src/warden/shadow_copy.cpp** — чистая копия .text секции
 
 **Что делает:**
 - Открывает файл `Wow.exe` на диске
@@ -575,7 +579,7 @@ FreeLibraryAndExitThread(hModule, 0);
 
 ---
 
-### **warden/warden_spoof.cpp** — подмена MEM_CHECK / PAGE_CHECK результатов (Variant A)
+### **src/warden/warden_spoof.cpp** — подмена MEM_CHECK / PAGE_CHECK результатов (Variant A)
 
 **Что делает:**
 - Хранит FIFO queue `std::deque<vector<PendingCheck>>` для request-response корреляции
@@ -594,7 +598,7 @@ FreeLibraryAndExitThread(hModule, 0);
 
 ---
 
-### **warden/warden_checksum.cpp** — алгоритм checksum
+### **src/warden/warden_checksum.cpp** — алгоритм checksum
 
 **Что делает:**
 - `BuildChecksum(data, len)`: SHA1(data) -> 5 x uint32_t LE -> XOR-fold -> uint32_t
@@ -603,7 +607,7 @@ FreeLibraryAndExitThread(hModule, 0);
 
 ---
 
-### **injector/main.cpp** — инжекция/выгрузка DLL
+### **injector/src/main.cpp** — инжекция/выгрузка DLL
 
 **Что делает:**
 - Парсит аргументы командной строки (`--eject`)
@@ -669,7 +673,7 @@ FreeLibraryAndExitThread(hModule, 0);
 │  - Читаем РАСШИФРОВАННЫЕ данные из сохраненного CDataStore       │
 │  - Логируем opcode, размер, hex dump                             │
 │  - Парсим пакет (string section, checks section, xorByte)        │
-│  - Вызываем warden_scan::LearnSizesDFS (если нужно)              │
+│  - Вызываем TryAssignSize для неизвестных типов (если нужно)      │
 │  - Логируем все проверки (типы, адреса, строки)                  │
 │  - Восстанавливаем оригинальный return address                   │
 │  - Делаем RET (возвращаемся в настоящего вызывающего)            │
@@ -750,7 +754,7 @@ FreeLibraryAndExitThread(hModule, 0);
 - **CDataStore** — внутренний класс WoW для сериализации/десериализации данных (аналог buffer + read/write position).
 - **Opcode** — код операции, первый байт пакета, определяющий тип пакета.
 - **Shadow copy** — копия данных, сделанная для сравнения или резервирования.
-- **DFS (Depth-First Search)** — алгоритм поиска в глубину, используется для перебора вариантов.
+- **Детерминированный парсер** — парсер, который определяет размер данных неизвестного типа через структурную валидацию + look-ahead confirmation (two-tier matching).
 - **Dispatch chain** — цепочка инструкций вида if-else (через sub/cmp/je), которая диспетчеризует разные типы запросов.
 - **Shellcode** — небольшой фрагмент машинного кода, используемый для выполнения в чужом процессе.
 

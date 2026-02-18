@@ -104,7 +104,7 @@
 - Relocation table: delta-encoded
 - In-memory: VirtualAlloc с PAGE_EXECUTE_READWRITE, MEM_PRIVATE
 
-**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (36 модулей захвачено, 34 с decompressed бинарниками)
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (37 модулей захвачено, 35 с decompressed бинарниками)
 
 ---
 
@@ -157,12 +157,12 @@
 - **2-step lookahead fallback**: если primary structural validation не срабатывает для всех размеров, пробуем каждый кандидат и проверяем 2 следующих type byte (должны быть известными)
 
 **Результаты**:
-- **Python** (`validate_all_modules.py`): 36/36 модулей — 100% (9-10 типов каждый)
-- **C++ (offline, RLE-unpacked binary)**: 36/36 модулей (dispatch chain + remap + chain intersection + FixMaxType fallback)
+- **Python** (`validate_all_modules.py`): 37/37 модулей — 100% (9-10 типов каждый)
+- **C++ (offline, RLE-unpacked binary)**: 37/37 модулей (dispatch chain + remap + chain intersection + FixMaxType fallback)
 - **C++ (live, in-memory)**: 0 unknown types, 0 PARTIAL parses — все пакеты с 10 чеками разобраны полностью
-- **C++ (live, new modules)**: модули 398550DE, 90278079, E191991E, 2C045995, 6E4859DE, BA877D8E и др. — корректно обработаны через chain intersection + FixMaxType fallback + bounded dynamic discovery
+- **C++ (live, new modules)**: модули 398550DE, 90278079, E191991E, 2C045995, 6E4859DE, BA877D8E, DE240190 и др. — корректно обработаны через chain intersection + FixMaxType fallback + bounded dynamic discovery + two-tier matching
 
-**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (36 модулей, 0 unknown types в живых тестах)
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (37 модулей, 0 unknown types в живых тестах)
 
 ---
 
@@ -226,7 +226,12 @@
 
 **Валидация readLen**: `readLen <= 64` (было 40 — некоторые PAGE_CHECK используют readLen=48)
 
-**Dynamic type discovery**: если при парсинге встречается тип, которого нет в результатах статического сканирования, `TryAssignSize` пытается назначить размер с помощью structural validation + 2-step lookahead. Quota system предотвращает лавинообразное назначение одного размера (например, PAGE=29). Bounded с `kMaxDynamicTypes = 3` на модуль.
+**Dynamic type discovery**: если при парсинге встречается тип, которого нет в результатах статического сканирования, `TryAssignSize` пытается назначить размер с помощью structural validation + look-ahead confirmation + 2-step lookahead fallback. Quota system предотвращает лавинообразное назначение одного размера (например, PAGE=29). Bounded с `kMaxDynamicTypes = 3` на модуль.
+
+**Two-tier matching** (2026-02-18): `TryAssignSize` больше не принимает первый структурно-валидный размер. Вместо этого:
+- **Tier 1**: структурная валидация + look-ahead (следующий байт = известный тип или конец секции) → принимается немедленно
+- **Tier 2**: только структурная валидация → сохраняется как fallback, продолжаем пробовать меньшие размеры
+- Это решает проблему disambiguation PAGE(29) vs DRIVER(25): PAGE проходит структурную валидацию (addr/readLen), но look-ahead попадает на мусор; DRIVER(25) проходит и валидацию, и look-ahead → Tier 1 побеждает
 
 **Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (0 ошибок парсинга, 0 PARTIAL в живых тестах)
 
@@ -447,29 +452,30 @@ MinHook = статическая линковка (нет DLL). miniz = комп
 
 ```
 wotlk/
-  dllmain.cpp                          — точка входа, MainThread, init/shutdown sequence
-  hooks/
-    hooks.h                            — API: Initialize() / Shutdown()
-    hooks.cpp                          — MinHook + FrameScript/Warden/SendPacket/ARC4 detours
-                                         + CHEAT_CHECKS_REQUEST parser + CMSG parser
-                                         + deferred RC4 install (HASH_REQUEST PostHandler)
-                                         + HASH_RESULT diagnostics
-  warden/
-    warden_types.h                     — CheckCategory enum, PendingCheck struct, CMSG/SMSG opcodes
-    warden_scan.h / .cpp               — type extraction (dispatch chain, remap, dynamic discovery)
-    warden_spoof.h / .cpp              — CMSG spoofing (MEM/PAGE/MODULE/LUA), FIFO queue, hash seed storage, ClearHashSeed
-    warden_rc4_hook.h / .cpp           — RC4 PRGA hook inside module (multi-hook, up to 4) + speculative scan
-    warden_rc4.h / .cpp                — RC4 S-box cloning fallback
-    warden_checksum.h / .cpp           — SHA1 XOR-fold checksum
-    shadow_copy.h / .cpp               — PE mapping Wow.exe для чистых байт
-    module_dump.h / .cpp               — module capture + disk cache
-    peb_unlink.h / .cpp                — PEB.Ldr unlinking for MODULE_CHECK evasion
-    mpq_cache.h / .cpp                 — кеш clean SHA1 хешей для MPQ_CHECK spoofing
-  logging/
-    glog_custom_formatter.hpp / .cpp   — custom glog sink с цветным выводом
-    logger_setup.hpp / .cpp            — glog initialization
-  third_party/
-    miniz.h / .c + miniz_*.h / .c      — zlib decompression
+  src/
+    dllmain.cpp                          — точка входа, MainThread, init/shutdown sequence
+    hooks/
+      hooks.h                            — API: Initialize() / Shutdown()
+      hooks.cpp                          — MinHook + FrameScript/Warden/SendPacket/ARC4 detours
+                                           + CHEAT_CHECKS_REQUEST parser + CMSG parser
+                                           + deferred RC4 install (HASH_REQUEST PostHandler)
+                                           + HASH_RESULT diagnostics
+    warden/
+      warden_types.h                     — CheckCategory enum, PendingCheck struct, CMSG/SMSG opcodes
+      warden_scan.h / .cpp               — type extraction (dispatch chain, remap, dynamic discovery)
+      warden_spoof.h / .cpp              — CMSG spoofing (MEM/PAGE/MODULE/LUA), FIFO queue, hash seed storage, ClearHashSeed
+      warden_rc4_hook.h / .cpp           — RC4 PRGA hook inside module (multi-hook, up to 4) + speculative scan
+      warden_rc4.h / .cpp                — RC4 S-box cloning fallback
+      warden_checksum.h / .cpp           — SHA1 XOR-fold checksum
+      shadow_copy.h / .cpp               — PE mapping Wow.exe для чистых байт
+      module_dump.h / .cpp               — module capture + disk cache
+      peb_unlink.h / .cpp                — PEB.Ldr unlinking for MODULE_CHECK evasion
+      mpq_cache.h / .cpp                 — кеш clean SHA1 хешей для MPQ_CHECK spoofing
+    logging/
+      glog_custom_formatter.hpp / .cpp   — custom glog sink с цветным выводом
+      logger_setup.hpp / .cpp            — glog initialization
+    third_party/
+      miniz.h / .c + miniz_*.h / .c      — zlib decompression
 ```
 
 ---
@@ -481,7 +487,7 @@ wotlk/
 - ~~Инжекция/выгрузка DLL~~ — полный цикл с safe self-unload
 - ~~Перехват FrameScript_Execute~~ — мониторинг Lua, фильтрация UI скриптов
 - ~~Перехват SMSG_WARDEN_DATA~~ — return-address hijack, парсинг всех типов
-- ~~Захват модулей Warden~~ — 24 модуля, disk cache, zlib decompression
+- ~~Захват модулей Warden~~ — 37 модулей, disk cache, zlib decompression
 - ~~Извлечение типов из модуля~~ — dispatch chain + chain intersection + remap + FixMaxType fallback + bounded dynamic discovery (0 unknown)
 - ~~Нахождение модуля в памяти~~ — stable 26-byte signature
 - ~~Shadow Copy~~ — PE mapping Wow.exe для чистых байт
@@ -530,8 +536,8 @@ wotlk/
 - **Наблюдение**: 100% — все типы пакетов парсятся, CMSG расшифровывается
 - **Spoofing**: MEM_CHECK + PAGE_CHECK + MODULE_CHECK + LUA_EVAL + DRIVER_CHECK + PROC_CHECK + MPQ_CHECK — РАБОТАЕТ в живых тестах
 - **Критические блокеры**: 0
-- **Полнота анализа**: 36 модулей захвачено (34 decompressed), 36/36 = 100% через Python, 0 unknown в живых C++ тестах
-- **Извлечение типов**: 36/36 offline через chain intersection + FixMaxType fallback; bounded dynamic discovery (max 3) для live модулей
+- **Полнота анализа**: 37 модулей захвачено (35 decompressed), 37/37 = 100% через Python, 0 unknown в живых C++ тестах
+- **Извлечение типов**: 37/37 offline через chain intersection + FixMaxType fallback; bounded dynamic discovery (max 3) + two-tier matching для live модулей
 - **RC4 CMSG**: расшифровка через internal hook — 100% success rate
 - **Checksum**: SHA1 XOR-fold — все наблюдаемые checksums VALID
 - **Request-response correlation**: FIFO queue — РАБОТАЕТ (delta=0)
@@ -545,8 +551,8 @@ wotlk/
 
 **Что мы умеем**:
 - Перехватывать и парсить все типы Warden пакетов (SMSG и CMSG)
-- Извлекать бинарные модули и их внутреннюю структуру (36 модулей захвачено)
-- Автоматически определять типы проверок из любого модуля (dispatch chain + chain intersection + remap + FixMaxType fallback + bounded dynamic discovery, 0 unknown types)
+- Извлекать бинарные модули и их внутреннюю структуру (37 модулей захвачено)
+- Автоматически определять типы проверок из любого модуля (dispatch chain + chain intersection + remap + FixMaxType fallback + bounded dynamic discovery + two-tier matching, 0 unknown types)
 - Расшифровывать CMSG ответы через internal RC4 hook (multi-hook, до 4 функций)
 - Коррелировать SMSG requests с CMSG responses (FIFO queue)
 - Валидировать и пересчитывать checksums (SHA1 XOR-fold)
@@ -557,18 +563,18 @@ wotlk/
 - **Корректно обрабатывать HASH_REQUEST/RESULT** — deferred RC4 install + seed storage + diagnostics
 - Находить адреса наших хуков в запросах Warden (ScanForHookAddresses)
 - Читать оригинальные байты .text секции (Shadow Copy)
-- Обрабатывать новые (uncached) модули через blind memory scan + bounded dynamic type discovery
+- Обрабатывать новые (uncached) модули через blind memory scan + bounded dynamic type discovery + two-tier matching
 
 **Ключевые компоненты**:
-- `warden_spoof.cpp` — core spoofing logic + FIFO queue
-- `warden_rc4_hook.cpp` — вызывает SpoofCmsgIfNeeded перед RC4 encrypt
-- `warden_scan.cpp` — dispatch chain + chain intersection + remap + FixMaxType fallback + bounded dynamic discovery
-- `shadow_copy.cpp` — оригинальные байты из Wow.exe на диске
-- `warden_checksum.cpp` — пересчёт checksum после модификации
-- `peb_unlink.cpp` — скрытие DLL из PEB.Ldr lists
+- `src/warden/warden_spoof.cpp` — core spoofing logic + FIFO queue
+- `src/warden/warden_rc4_hook.cpp` — вызывает SpoofCmsgIfNeeded перед RC4 encrypt
+- `src/warden/warden_scan.cpp` — dispatch chain + chain intersection + remap + FixMaxType fallback + bounded dynamic discovery + two-tier matching
+- `src/warden/shadow_copy.cpp` — оригинальные байты из Wow.exe на диске
+- `src/warden/warden_checksum.cpp` — пересчёт checksum после модификации
+- `src/warden/peb_unlink.cpp` — скрытие DLL из PEB.Ldr lists
 
 **Живые тесты** (2026-02-18):
-- 36 модулей захвачено, 36/36 Python validation (100%)
+- 37 модулей захвачено, 37/37 Python validation (100%)
 - Chain intersection + FixMaxType fallback → 0 модулей с < 9 типов
 - Bounded dynamic discovery (max 3) обрабатывает оставшиеся unknown types
 - In-memory scan: 9-10 типов, 0 unknown, 0 PARTIAL, все checksums VALID
@@ -588,3 +594,4 @@ wotlk/
 - **Chain intersection** (2026-02-18): phantom type 0x00 от `test eax,eax / je ERROR` в BST вызывал union=10 (9 real + phantom). Intersection fix удаляет его. Модуль 2C045995: union=10 → intersection=9.
 - **FixMaxType fallback** (2026-02-18): `ExtractFromRemapCrossRef` возвращающий 3 типа (remapOk=true) блокировал FixMaxType fallback. Модуль 6E4859DE: cross-ref дал 3 типа, FixMaxType даёт 9-10. Исправлено: условие `if (!remapOk || remapTypes.size() < 9)`.
 - **Push/pop imm8** (2026-02-18): dispatch chain walker пропускал `push imm8 / pop reg` → эквивалент `mov reg, imm8` в некоторых BST модулях. Модуль BA877D8E.
+- **TryAssignSize PAGE/DRIVER disambiguation** (2026-02-18): первый структурно-валидный размер побеждал без look-ahead → PAGE(29) ошибочно назначался вместо DRIVER(25). PAGE's wider window (29 bytes) захватывал DRIVER's strIdx + 3 байта следующей проверки как фиктивные addr/readLen. Исправлено: two-tier matching — Tier 1 (structure + look-ahead) → Tier 2 (structure-only fallback). Модуль 7281AE6C/DE240190.

@@ -1709,7 +1709,7 @@ int TryAssignSize(const uint8_t* data, size_t pos, size_t checkEnd,
                   size_t numStrings, uint8_t xorByte)
 {
     int bestSize = -1;
-    int matchCount = 0;
+    int firstStructuralMatch = -1;
 
     for (size_t c = 0; c < kNumKnownSizes; ++c) {
         int candidateSize = kKnownSizes[c];
@@ -1793,28 +1793,27 @@ int TryAssignSize(const uint8_t* data, size_t pos, size_t checkEnd,
         }
 
         if (valid) {
-            bestSize = candidateSize;
-            matchCount++;
-            // First valid match wins (largest-first ordering provides best discrimination)
-            break;
+            // Tier 1: structural validation + look-ahead confirmation
+            size_t nextPos = pos + candidateSize;
+            bool lookaheadOk = false;
+            if (nextPos == checkEnd) {
+                lookaheadOk = true;
+            } else if (nextPos < checkEnd) {
+                uint8_t nextType = data[nextPos] ^ xorByte;
+                lookaheadOk = g_typeIDs.count(nextType) > 0;
+            }
+
+            if (lookaheadOk)
+                return candidateSize;  // high confidence: structure + look-ahead agree
+
+            // Tier 2: structural match only — save as fallback, keep trying
+            if (firstStructuralMatch < 0)
+                firstStructuralMatch = candidateSize;
         }
     }
 
-    // If ambiguous (shouldn't happen with largest-first), use look-ahead as tiebreaker
-    if (matchCount > 1 && bestSize >= 0) {
-        for (size_t c = 0; c < kNumKnownSizes; ++c) {
-            int sz = kKnownSizes[c];
-            if (pos + sz > checkEnd) continue;
-            size_t nextPos = pos + sz;
-            if (nextPos == checkEnd)
-                return sz;
-            if (nextPos < checkEnd) {
-                uint8_t nextType = data[nextPos] ^ xorByte;
-                if (g_typeIDs.count(nextType) > 0)
-                    return sz;
-            }
-        }
-    }
+    // Tier 2 fallback: first structural match (no look-ahead confirmation)
+    bestSize = firstStructuralMatch;
 
     // Fallback: if primary structural validation failed for all sizes, try a
     // 2-step next-byte lookahead.  For each candidate size S, check if the byte
