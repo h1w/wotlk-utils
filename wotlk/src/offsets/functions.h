@@ -144,6 +144,7 @@ inline constexpr int OBJECT_ENTRY            = 0x03;
 inline constexpr int OBJECT_SCALE            = 0x04;
 
 // Unit
+inline constexpr int UNIT_FIELD_BYTES_0     = 0x17; // [race][class][gender][powerType]
 inline constexpr int UNIT_CHARM             = 0x06;
 inline constexpr int UNIT_SUMMON            = 0x08;
 inline constexpr int UNIT_CREATEDBY         = 0x0C;
@@ -164,24 +165,74 @@ inline constexpr int UNIT_MAXPOWER4         = 0x24;
 inline constexpr int UNIT_MAXPOWER5         = 0x25;
 inline constexpr int UNIT_MAXPOWER6         = 0x26;
 inline constexpr int UNIT_MAXPOWER7         = 0x27;
+inline constexpr int UNIT_POWER_REGEN       = 0x28; // float[7] mana regen per sec (not casting)
+inline constexpr int UNIT_POWER_REGEN_COMBAT = 0x2F; // float[7] mana regen per sec (casting)
 inline constexpr int UNIT_LEVEL             = 0x36;
 inline constexpr int UNIT_FACTIONTEMPLATE   = 0x37;
-inline constexpr int UNIT_FLAGS             = 0x3C;
-inline constexpr int UNIT_FLAGS_2           = 0x3D;
-inline constexpr int UNIT_DISPLAYID         = 0x40;
-inline constexpr int UNIT_NATIVEDISPLAYID   = 0x41;
-inline constexpr int UNIT_MOUNTDISPLAYID    = 0x42;
+inline constexpr int UNIT_FLAGS             = 0x3B;
+inline constexpr int UNIT_FLAGS_2           = 0x3C;
+inline constexpr int UNIT_DISPLAYID         = 0x43;
+inline constexpr int UNIT_NATIVEDISPLAYID   = 0x44;
+inline constexpr int UNIT_MOUNTDISPLAYID    = 0x45;
+inline constexpr int UNIT_BASEATTACKTIME    = 0x3E; // [0]=main, [1]=offhand (uint32 ms)
+inline constexpr int UNIT_RANGEDATTACKTIME  = 0x40; // uint32 ms
+inline constexpr int UNIT_MINDAMAGE         = 0x46; // float
+inline constexpr int UNIT_MAXDAMAGE         = 0x47; // float
+inline constexpr int UNIT_MINOFFHANDDAMAGE  = 0x48; // float
+inline constexpr int UNIT_MAXOFFHANDDAMAGE  = 0x49; // float
 inline constexpr int UNIT_CREATURETYPE      = 0x49;
-inline constexpr int UNIT_STAT0             = 0x60;
-inline constexpr int UNIT_STAT1             = 0x61;
-inline constexpr int UNIT_STAT2             = 0x62;
-inline constexpr int UNIT_STAT3             = 0x63;
-inline constexpr int UNIT_STAT4             = 0x64;
+inline constexpr int UNIT_STAT0             = 0x54; // Strength
+inline constexpr int UNIT_STAT1             = 0x55; // Agility
+inline constexpr int UNIT_STAT2             = 0x56; // Stamina
+inline constexpr int UNIT_STAT3             = 0x57; // Intellect
+inline constexpr int UNIT_STAT4             = 0x58; // Spirit
+inline constexpr int UNIT_RESISTANCES       = 0x63; // [0]=armor, [1..6]=holy..arcane (7 uint32)
+inline constexpr int UNIT_BASE_MANA         = 0x78;
+inline constexpr int UNIT_BASE_HEALTH       = 0x79;
+inline constexpr int UNIT_ATTACK_POWER      = 0x7B; // uint32
+inline constexpr int UNIT_ATTACK_POWER_MODS = 0x7C; // int32 (signed)
+inline constexpr int UNIT_ATTACK_POWER_MULT = 0x7D; // float
+inline constexpr int UNIT_RANGED_ATTACK_POWER      = 0x7E;
+inline constexpr int UNIT_RANGED_ATTACK_POWER_MODS = 0x7F;
+inline constexpr int UNIT_RANGED_ATTACK_POWER_MULT = 0x80; // float
+inline constexpr int UNIT_MINRANGEDDAMAGE   = 0x81; // float
+inline constexpr int UNIT_MAXRANGEDDAMAGE   = 0x82; // float
 
 // Player
-inline constexpr int PLAYER_XP             = 0x3B6;
-inline constexpr int PLAYER_NEXT_LEVEL_XP  = 0x3B7;
+inline constexpr int PLAYER_XP             = 0x27A;
+inline constexpr int PLAYER_NEXT_LEVEL_XP  = 0x27B;
+inline constexpr int PLAYER_SKILL_INFO      = 0x27C; // 128 entries, each 3 uint32: [id|step][val|max][bonus]
+inline constexpr int PLAYER_BLOCK_PERCENTAGE  = 0x400; // float
+inline constexpr int PLAYER_DODGE_PERCENTAGE  = 0x401; // float
+inline constexpr int PLAYER_PARRY_PERCENTAGE  = 0x402; // float
+inline constexpr int PLAYER_EXPERTISE         = 0x403; // uint32
+inline constexpr int PLAYER_OFFHAND_EXPERTISE = 0x404; // uint32
+inline constexpr int PLAYER_CRIT_PERCENTAGE   = 0x405; // float
+inline constexpr int PLAYER_RANGED_CRIT_PERCENTAGE = 0x406; // float
+inline constexpr int PLAYER_SPELL_CRIT_PERCENTAGE  = 0x408; // float[7] (per school)
+inline constexpr int PLAYER_SHIELD_BLOCK   = 0x40F; // uint32
 inline constexpr int PLAYER_COINAGE        = 0x492;
+inline constexpr int PLAYER_MOD_DAMAGE_DONE_POS = 0x493; // int32[7] (per school)
+inline constexpr int PLAYER_MOD_HEALING_DONE_POS = 0x4A8; // int32
+inline constexpr int PLAYER_KILLS          = 0x4C9; // uint32 (today HKs in low 16 bits)
+inline constexpr int PLAYER_LIFETIME_HKS   = 0x4CC; // uint32
+inline constexpr int PLAYER_COMBAT_RATING  = 0x4CF; // uint32[25] combat ratings
+inline constexpr int PLAYER_HONOR_CURRENCY = 0x4FD; // uint32
+inline constexpr int PLAYER_ARENA_CURRENCY = 0x4FE; // uint32
+
+// Combat rating indices (offsets from PLAYER_COMBAT_RATING)
+inline constexpr int CR_DEFENSE_SKILL = 1;
+inline constexpr int CR_DODGE         = 2;
+inline constexpr int CR_PARRY         = 3;
+inline constexpr int CR_BLOCK         = 4;
+inline constexpr int CR_HIT_MELEE     = 5;
+inline constexpr int CR_HIT_RANGED    = 6;
+inline constexpr int CR_HIT_SPELL     = 7;
+inline constexpr int CR_HASTE_MELEE   = 17;
+inline constexpr int CR_HASTE_RANGED  = 18;
+inline constexpr int CR_HASTE_SPELL   = 19;
+inline constexpr int CR_EXPERTISE     = 23;
+inline constexpr int CR_ARMOR_PEN     = 24;
 
 } // namespace fields
 

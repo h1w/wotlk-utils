@@ -58,6 +58,18 @@ uint32_t Unit::GetLevel() const
     return GetDescU32(offsets::fields::UNIT_LEVEL);
 }
 
+uint8_t Unit::GetRace() const
+{
+    uint32_t bytes0 = GetDescU32(offsets::fields::UNIT_FIELD_BYTES_0);
+    return static_cast<uint8_t>(bytes0 & 0xFF);
+}
+
+uint8_t Unit::GetClassId() const
+{
+    uint32_t bytes0 = GetDescU32(offsets::fields::UNIT_FIELD_BYTES_0);
+    return static_cast<uint8_t>((bytes0 >> 8) & 0xFF);
+}
+
 GUID Unit::GetTargetGUID() const
 {
     return GetDescU64(offsets::fields::UNIT_TARGET);

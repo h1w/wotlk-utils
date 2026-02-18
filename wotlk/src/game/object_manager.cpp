@@ -11,7 +11,8 @@ uintptr_t GetManagerBase()
 {
     uintptr_t conn = mem::ReadPointer(offsets::objmgr::CurMgrPointer);
     if (conn == 0) return 0;
-    return conn + offsets::objmgr::ObjMgrOffset;
+    // ObjMgrOffset is a pointer TO the ObjectManager, not an inline struct
+    return mem::ReadPointer(conn + offsets::objmgr::ObjMgrOffset);
 }
 
 bool IsInGame()
@@ -60,7 +61,26 @@ uintptr_t GetObjectPtr(GUID guid)
 
 uintptr_t GetLocalPlayerPtr()
 {
-    return GetObjectPtr(GetLocalPlayerGUID());
+    GUID guid = GetLocalPlayerGUID();
+    if (guid == GUID_NONE) return 0;
+
+    // Walk linked list directly (pure memory reads, works from any thread)
+    uintptr_t base = GetManagerBase();
+    if (base == 0) return 0;
+
+    uintptr_t obj = mem::ReadPointer(base + offsets::objmgr::FirstObject);
+    int count = 0;
+    constexpr int kMaxObjects = 10000;
+
+    while (obj != 0 && count < kMaxObjects) {
+        GUID objGuid = mem::ReadU64(obj + offsets::objmgr::ObjectGUID);
+        if (objGuid == guid)
+            return obj;
+        obj = mem::ReadPointer(obj + offsets::objmgr::NextObject);
+        ++count;
+    }
+
+    return 0;
 }
 
 void EnumObjects(const EnumCallback& cb)

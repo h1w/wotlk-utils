@@ -22,6 +22,8 @@ public:
 
     // --- Info ---
     uint32_t GetLevel() const;
+    uint8_t  GetRace() const;
+    uint8_t  GetClassId() const;
     GUID     GetTargetGUID() const;
     uint32_t GetFactionTemplate() const;
     uint32_t GetUnitFlags() const;

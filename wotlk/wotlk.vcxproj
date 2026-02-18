@@ -142,6 +142,7 @@
     <ClInclude Include="src\game\game.h" />
     <ClInclude Include="src\game\game_object.h" />
 <ClInclude Include="src\game\local_player.h" />
+    <ClInclude Include="src\game\player_stats.h" />
     <ClInclude Include="src\game\lua_bridge.h" />
     <ClInclude Include="src\game\mem.h" />
     <ClInclude Include="src\game\movement.h" />
@@ -177,6 +178,7 @@
     <ClCompile Include="src\game\game.cpp" />
     <ClCompile Include="src\game\game_object.cpp" />
     <ClCompile Include="src\game\local_player.cpp" />
+    <ClCompile Include="src\game\player_stats.cpp" />
     <ClCompile Include="src\game\lua_bridge.cpp" />
     <ClCompile Include="src\game\mem.cpp" />
     <ClCompile Include="src\game\movement.cpp" />
