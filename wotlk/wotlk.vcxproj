@@ -137,44 +137,44 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="hooks\hooks.h" />
-    <ClInclude Include="warden\mpq_cache.h" />
-    <ClInclude Include="warden\module_dump.h" />
-    <ClInclude Include="warden\shadow_copy.h" />
-    <ClInclude Include="warden\warden_rc4.h" />
-    <ClInclude Include="warden\warden_rc4_hook.h" />
-    <ClInclude Include="warden\warden_scan.h" />
-    <ClInclude Include="warden\warden_checksum.h" />
-    <ClInclude Include="warden\warden_spoof.h" />
-    <ClInclude Include="warden\warden_types.h" />
-    <ClInclude Include="warden\peb_unlink.h" />
-    <ClInclude Include="logging\glog_custom_formatter.hpp" />
-    <ClInclude Include="logging\logger_setup.hpp" />
-    <ClInclude Include="third_party\miniz.h" />
-    <ClInclude Include="third_party\miniz_common.h" />
-    <ClInclude Include="third_party\miniz_export.h" />
-    <ClInclude Include="third_party\miniz_tdef.h" />
-    <ClInclude Include="third_party\miniz_tinfl.h" />
-    <ClInclude Include="third_party\miniz_zip.h" />
+    <ClInclude Include="src\hooks\hooks.h" />
+    <ClInclude Include="src\warden\mpq_cache.h" />
+    <ClInclude Include="src\warden\module_dump.h" />
+    <ClInclude Include="src\warden\shadow_copy.h" />
+    <ClInclude Include="src\warden\warden_rc4.h" />
+    <ClInclude Include="src\warden\warden_rc4_hook.h" />
+    <ClInclude Include="src\warden\warden_scan.h" />
+    <ClInclude Include="src\warden\warden_checksum.h" />
+    <ClInclude Include="src\warden\warden_spoof.h" />
+    <ClInclude Include="src\warden\warden_types.h" />
+    <ClInclude Include="src\warden\peb_unlink.h" />
+    <ClInclude Include="src\logging\glog_custom_formatter.hpp" />
+    <ClInclude Include="src\logging\logger_setup.hpp" />
+    <ClInclude Include="src\third_party\miniz.h" />
+    <ClInclude Include="src\third_party\miniz_common.h" />
+    <ClInclude Include="src\third_party\miniz_export.h" />
+    <ClInclude Include="src\third_party\miniz_tdef.h" />
+    <ClInclude Include="src\third_party\miniz_tinfl.h" />
+    <ClInclude Include="src\third_party\miniz_zip.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="dllmain.cpp" />
-    <ClCompile Include="hooks\hooks.cpp" />
-    <ClCompile Include="warden\mpq_cache.cpp" />
-    <ClCompile Include="warden\module_dump.cpp" />
-    <ClCompile Include="warden\shadow_copy.cpp" />
-    <ClCompile Include="warden\warden_checksum.cpp" />
-    <ClCompile Include="warden\warden_rc4.cpp" />
-    <ClCompile Include="warden\warden_rc4_hook.cpp" />
-    <ClCompile Include="warden\warden_scan.cpp" />
-    <ClCompile Include="warden\warden_spoof.cpp" />
-    <ClCompile Include="warden\peb_unlink.cpp" />
-    <ClCompile Include="logging\glog_custom_formatter.cpp" />
-    <ClCompile Include="logging\logger_setup.cpp" />
-    <ClCompile Include="third_party\miniz.c" />
-    <ClCompile Include="third_party\miniz_tdef.c" />
-    <ClCompile Include="third_party\miniz_tinfl.c" />
-    <ClCompile Include="third_party\miniz_zip.c" />
+    <ClCompile Include="src\dllmain.cpp" />
+    <ClCompile Include="src\hooks\hooks.cpp" />
+    <ClCompile Include="src\warden\mpq_cache.cpp" />
+    <ClCompile Include="src\warden\module_dump.cpp" />
+    <ClCompile Include="src\warden\shadow_copy.cpp" />
+    <ClCompile Include="src\warden\warden_checksum.cpp" />
+    <ClCompile Include="src\warden\warden_rc4.cpp" />
+    <ClCompile Include="src\warden\warden_rc4_hook.cpp" />
+    <ClCompile Include="src\warden\warden_scan.cpp" />
+    <ClCompile Include="src\warden\warden_spoof.cpp" />
+    <ClCompile Include="src\warden\peb_unlink.cpp" />
+    <ClCompile Include="src\logging\glog_custom_formatter.cpp" />
+    <ClCompile Include="src\logging\logger_setup.cpp" />
+    <ClCompile Include="src\third_party\miniz.c" />
+    <ClCompile Include="src\third_party\miniz_tdef.c" />
+    <ClCompile Include="src\third_party\miniz_tinfl.c" />
+    <ClCompile Include="src\third_party\miniz_zip.c" />
   </ItemGroup>
   <ItemGroup>
     <None Include="docs\plan.md" />

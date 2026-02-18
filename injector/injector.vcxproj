@@ -179,13 +179,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="main.cpp" />
-    <ClCompile Include="logging\glog_custom_formatter.cpp" />
-    <ClCompile Include="logging\logger_setup.cpp" />
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\logging\glog_custom_formatter.cpp" />
+    <ClCompile Include="src\logging\logger_setup.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="logging\glog_custom_formatter.hpp" />
-    <ClInclude Include="logging\logger_setup.hpp" />
+    <ClInclude Include="src\logging\glog_custom_formatter.hpp" />
+    <ClInclude Include="src\logging\logger_setup.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

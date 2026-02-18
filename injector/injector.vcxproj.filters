@@ -18,21 +18,21 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="main.cpp">
+    <ClCompile Include="src\main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="logging\glog_custom_formatter.cpp">
+    <ClCompile Include="src\logging\glog_custom_formatter.cpp">
       <Filter>logging</Filter>
     </ClCompile>
-    <ClCompile Include="logging\logger_setup.cpp">
+    <ClCompile Include="src\logging\logger_setup.cpp">
       <Filter>logging</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="logging\glog_custom_formatter.hpp">
+    <ClInclude Include="src\logging\glog_custom_formatter.hpp">
       <Filter>logging</Filter>
     </ClInclude>
-    <ClInclude Include="logging\logger_setup.hpp">
+    <ClInclude Include="src\logging\logger_setup.hpp">
       <Filter>logging</Filter>
     </ClInclude>
   </ItemGroup>

@@ -1,2 +1,0 @@
-#include "object_manager.hpp"
-

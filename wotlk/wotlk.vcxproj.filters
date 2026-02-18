@@ -27,102 +27,102 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="hooks\hooks.h">
+    <ClInclude Include="src\hooks\hooks.h">
       <Filter>hooks</Filter>
     </ClInclude>
-    <ClInclude Include="warden\module_dump.h">
+    <ClInclude Include="src\warden\module_dump.h">
       <Filter>warden</Filter>
     </ClInclude>
-    <ClInclude Include="warden\shadow_copy.h">
+    <ClInclude Include="src\warden\shadow_copy.h">
       <Filter>warden</Filter>
     </ClInclude>
-    <ClInclude Include="warden\warden_rc4.h">
+    <ClInclude Include="src\warden\warden_rc4.h">
       <Filter>warden</Filter>
     </ClInclude>
-    <ClInclude Include="warden\warden_scan.h">
+    <ClInclude Include="src\warden\warden_scan.h">
       <Filter>warden</Filter>
     </ClInclude>
-    <ClInclude Include="warden\warden_types.h">
+    <ClInclude Include="src\warden\warden_types.h">
       <Filter>warden</Filter>
     </ClInclude>
-    <ClInclude Include="warden\warden_rc4_hook.h">
+    <ClInclude Include="src\warden\warden_rc4_hook.h">
       <Filter>warden</Filter>
     </ClInclude>
-    <ClInclude Include="warden\warden_checksum.h">
+    <ClInclude Include="src\warden\warden_checksum.h">
       <Filter>warden</Filter>
     </ClInclude>
-    <ClInclude Include="warden\warden_spoof.h">
+    <ClInclude Include="src\warden\warden_spoof.h">
       <Filter>warden</Filter>
     </ClInclude>
-    <ClInclude Include="logging\glog_custom_formatter.hpp">
+    <ClInclude Include="src\logging\glog_custom_formatter.hpp">
       <Filter>logging</Filter>
     </ClInclude>
-    <ClInclude Include="logging\logger_setup.hpp">
+    <ClInclude Include="src\logging\logger_setup.hpp">
       <Filter>logging</Filter>
     </ClInclude>
-    <ClInclude Include="third_party\miniz.h">
+    <ClInclude Include="src\third_party\miniz.h">
       <Filter>third_party</Filter>
     </ClInclude>
-    <ClInclude Include="third_party\miniz_common.h">
+    <ClInclude Include="src\third_party\miniz_common.h">
       <Filter>third_party</Filter>
     </ClInclude>
-    <ClInclude Include="third_party\miniz_export.h">
+    <ClInclude Include="src\third_party\miniz_export.h">
       <Filter>third_party</Filter>
     </ClInclude>
-    <ClInclude Include="third_party\miniz_tdef.h">
+    <ClInclude Include="src\third_party\miniz_tdef.h">
       <Filter>third_party</Filter>
     </ClInclude>
-    <ClInclude Include="third_party\miniz_tinfl.h">
+    <ClInclude Include="src\third_party\miniz_tinfl.h">
       <Filter>third_party</Filter>
     </ClInclude>
-    <ClInclude Include="third_party\miniz_zip.h">
+    <ClInclude Include="src\third_party\miniz_zip.h">
       <Filter>third_party</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="dllmain.cpp">
+    <ClCompile Include="src\dllmain.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="hooks\hooks.cpp">
+    <ClCompile Include="src\hooks\hooks.cpp">
       <Filter>hooks</Filter>
     </ClCompile>
-    <ClCompile Include="warden\module_dump.cpp">
+    <ClCompile Include="src\warden\module_dump.cpp">
       <Filter>warden</Filter>
     </ClCompile>
-    <ClCompile Include="warden\shadow_copy.cpp">
+    <ClCompile Include="src\warden\shadow_copy.cpp">
       <Filter>warden</Filter>
     </ClCompile>
-    <ClCompile Include="warden\warden_rc4.cpp">
+    <ClCompile Include="src\warden\warden_rc4.cpp">
       <Filter>warden</Filter>
     </ClCompile>
-    <ClCompile Include="warden\warden_scan.cpp">
+    <ClCompile Include="src\warden\warden_scan.cpp">
       <Filter>warden</Filter>
     </ClCompile>
-    <ClCompile Include="warden\warden_rc4_hook.cpp">
+    <ClCompile Include="src\warden\warden_rc4_hook.cpp">
       <Filter>warden</Filter>
     </ClCompile>
-    <ClCompile Include="warden\warden_checksum.cpp">
+    <ClCompile Include="src\warden\warden_checksum.cpp">
       <Filter>warden</Filter>
     </ClCompile>
-    <ClCompile Include="warden\warden_spoof.cpp">
+    <ClCompile Include="src\warden\warden_spoof.cpp">
       <Filter>warden</Filter>
     </ClCompile>
-    <ClCompile Include="logging\glog_custom_formatter.cpp">
+    <ClCompile Include="src\logging\glog_custom_formatter.cpp">
       <Filter>logging</Filter>
     </ClCompile>
-    <ClCompile Include="logging\logger_setup.cpp">
+    <ClCompile Include="src\logging\logger_setup.cpp">
       <Filter>logging</Filter>
     </ClCompile>
-    <ClCompile Include="third_party\miniz.c">
+    <ClCompile Include="src\third_party\miniz.c">
       <Filter>third_party</Filter>
     </ClCompile>
-    <ClCompile Include="third_party\miniz_tdef.c">
+    <ClCompile Include="src\third_party\miniz_tdef.c">
       <Filter>third_party</Filter>
     </ClCompile>
-    <ClCompile Include="third_party\miniz_tinfl.c">
+    <ClCompile Include="src\third_party\miniz_tinfl.c">
       <Filter>third_party</Filter>
     </ClCompile>
-    <ClCompile Include="third_party\miniz_zip.c">
+    <ClCompile Include="src\third_party\miniz_zip.c">
       <Filter>third_party</Filter>
     </ClCompile>
   </ItemGroup>
