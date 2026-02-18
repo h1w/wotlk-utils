@@ -345,16 +345,11 @@ static void ScanForHookAddresses(const uint8_t* data, size_t start, size_t end)
 // Classify a Warden check string by its content
 static const char* ClassifyWardenString(const std::string& s)
 {
-    // MPQ file path (map tiles, models, textures)
-    if (s.find('\\') != std::string::npos) {
-        if (s.find(".adt") != std::string::npos ||
-            s.find(".wmo") != std::string::npos ||
-            s.find(".m2")  != std::string::npos ||
-            s.find(".blp") != std::string::npos ||
-            s.find(".wdl") != std::string::npos ||
-            s.find(".wdt") != std::string::npos)
-            return "MPQ";
-    }
+    // MPQ file path — any string with backslash is a file path inside MPQ archives.
+    // Covers all extensions: .adt, .wmo, .m2, .blp, .wdl, .wdt, .dbc, .skin, .anim, .phys, etc.
+    // No other check type (LUA/DRIVER/PROC) uses backslash-containing strings.
+    if (s.find('\\') != std::string::npos)
+        return "MPQ";
     // Lua variable/expression check
     if (s.find('=') != std::string::npos || s.find('(') != std::string::npos)
         return "LUA_EVAL";
@@ -773,7 +768,28 @@ static void __cdecl WardenPostHandlerImpl()
                 // re-key desync (module re-keys with corrupted hash, server with
                 // correct one → all subsequent packets garbled → disconnect).
             } else {
-                warden_scan::ScanAndExtractTypeIDs();
+                // No decompressed module from disk cache or MODULE_CACHE packets.
+                // Try to find and save the module from process memory (server reused cached module).
+                if (warden_scan::GetModuleRuntimeAddress() == 0)
+                    warden_scan::FindModuleInMemory(nullptr, 0);
+                uintptr_t rtAddr = warden_scan::GetModuleRuntimeAddress();
+                size_t rtSize = warden_scan::GetModuleRuntimeSize();
+                if (rtAddr != 0 && rtSize > 0) {
+                    module_dump::SaveFromMemory(rtAddr, rtSize);
+                    // Retry scanning with the newly saved module
+                    moduleLen = 0;
+                    moduleData = module_dump::GetDecompressedModule(moduleLen);
+                    if (moduleData && moduleLen > 0) {
+                        warden_scan::LogModuleHeader(moduleData, moduleLen);
+                        if (!warden_scan::ScanModuleInMemory())
+                            if (!warden_scan::ScanModuleBinary(moduleData, moduleLen))
+                                warden_scan::ScanAndExtractTypeIDs();
+                    } else {
+                        warden_scan::ScanAndExtractTypeIDs();
+                    }
+                } else {
+                    warden_scan::ScanAndExtractTypeIDs();
+                }
             }
 
             // S-box scanning — always run as fallback even if RC4 hook is active.

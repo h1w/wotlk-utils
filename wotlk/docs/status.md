@@ -98,13 +98,21 @@
 - При reconnect пытаемся загрузить модуль из кеша (`TryLoadFromCache`)
 - Если сервер отправляет только MODULE_USE (без MODULE_CACHE) — используем cached версию
 
+**In-memory захват** (`SaveFromMemory`):
+- Когда сервер переиспользует cached модуль (нет MODULE_CACHE пакетов), DLL находит модуль в памяти процесса через стабильную сигнатуру
+- Читает модуль region-by-region (VirtualQuery-based walker обрабатывает PAGE_NOACCESS страницы)
+- Сохраняет:
+  - `[hash]_inmemory.bin` — runtime image из памяти процесса
+  - `[hash]_meta.txt` — hash, RC4 key, размеры
+- `TryLoadFromCache` теперь fallback к `_inmemory.bin`, если `_decompressed.bin` и `_decrypted.bin` не найдены
+
 **Формат модуля** (НЕ PE!):
 - 40-byte header: moduleSize, relocOff, relocCount, exportTableOff, exportCount, baseIndex, importTableOff, importLibCount, sectionDescCount
 - Section descriptors: 12 байт на секцию (RLE-packed)
 - Relocation table: delta-encoded
 - In-memory: VirtualAlloc с PAGE_EXECUTE_READWRITE, MEM_PRIVATE
 
-**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (37 модулей захвачено, 35 с decompressed бинарниками)
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (38 модулей захвачено, 36 с decompressed бинарниками)
 
 ---
 
@@ -157,12 +165,12 @@
 - **2-step lookahead fallback**: если primary structural validation не срабатывает для всех размеров, пробуем каждый кандидат и проверяем 2 следующих type byte (должны быть известными)
 
 **Результаты**:
-- **Python** (`validate_all_modules.py`): 37/37 модулей — 100% (9-10 типов каждый)
-- **C++ (offline, RLE-unpacked binary)**: 37/37 модулей (dispatch chain + remap + chain intersection + FixMaxType fallback)
+- **Python** (`validate_all_modules.py`): 38/38 модулей — 100% (9-10 типов каждый)
+- **C++ (offline, RLE-unpacked binary)**: 38/38 модулей (dispatch chain + remap + chain intersection + FixMaxType fallback)
 - **C++ (live, in-memory)**: 0 unknown types, 0 PARTIAL parses — все пакеты с 10 чеками разобраны полностью
 - **C++ (live, new modules)**: модули 398550DE, 90278079, E191991E, 2C045995, 6E4859DE, BA877D8E, DE240190 и др. — корректно обработаны через chain intersection + FixMaxType fallback + bounded dynamic discovery + two-tier matching
 
-**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (37 модулей, 0 unknown types в живых тестах)
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (38 модулей, 0 unknown types в живых тестах)
 
 ---
 
@@ -256,6 +264,7 @@
 - Общий `RC4DetourHandler` для всех слотов
 - Auto-detection calling convention (6 вариантов: ECX/EDX/EAX/EBX/ESI/EDI, обычный/swapped порядок)
 - ConsumePlaintext: one-shot retrieval (thread-safe через CRITICAL_SECTION)
+- **Prologue validation**: после `FindFunctionPrologue` проверяет `55 8B EC` (push ebp; mov ebp, esp) перед установкой хука. Кластеры с нестандартным прологом пропускаются с диагностическим логом
 
 **Speculative CMSG scan** (`TrySpeculativeCmsgScan`):
 - Когда calling convention неизвестна или даёт невалидные значения для конкретной RC4 функции
@@ -487,7 +496,7 @@ wotlk/
 - ~~Инжекция/выгрузка DLL~~ — полный цикл с safe self-unload
 - ~~Перехват FrameScript_Execute~~ — мониторинг Lua, фильтрация UI скриптов
 - ~~Перехват SMSG_WARDEN_DATA~~ — return-address hijack, парсинг всех типов
-- ~~Захват модулей Warden~~ — 37 модулей, disk cache, zlib decompression
+- ~~Захват модулей Warden~~ — 38 модулей, disk cache + in-memory capture, zlib decompression
 - ~~Извлечение типов из модуля~~ — dispatch chain + chain intersection + remap + FixMaxType fallback + bounded dynamic discovery (0 unknown)
 - ~~Нахождение модуля в памяти~~ — stable 26-byte signature
 - ~~Shadow Copy~~ — PE mapping Wow.exe для чистых байт
@@ -536,8 +545,8 @@ wotlk/
 - **Наблюдение**: 100% — все типы пакетов парсятся, CMSG расшифровывается
 - **Spoofing**: MEM_CHECK + PAGE_CHECK + MODULE_CHECK + LUA_EVAL + DRIVER_CHECK + PROC_CHECK + MPQ_CHECK — РАБОТАЕТ в живых тестах
 - **Критические блокеры**: 0
-- **Полнота анализа**: 37 модулей захвачено (35 decompressed), 37/37 = 100% через Python, 0 unknown в живых C++ тестах
-- **Извлечение типов**: 37/37 offline через chain intersection + FixMaxType fallback; bounded dynamic discovery (max 3) + two-tier matching для live модулей
+- **Полнота анализа**: 38 модулей захвачено (36 decompressed), 38/38 = 100% через Python, 0 unknown в живых C++ тестах
+- **Извлечение типов**: 38/38 offline через chain intersection + FixMaxType fallback; bounded dynamic discovery (max 3) + two-tier matching для live модулей
 - **RC4 CMSG**: расшифровка через internal hook — 100% success rate
 - **Checksum**: SHA1 XOR-fold — все наблюдаемые checksums VALID
 - **Request-response correlation**: FIFO queue — РАБОТАЕТ (delta=0)
@@ -551,7 +560,7 @@ wotlk/
 
 **Что мы умеем**:
 - Перехватывать и парсить все типы Warden пакетов (SMSG и CMSG)
-- Извлекать бинарные модули и их внутреннюю структуру (37 модулей захвачено)
+- Извлекать бинарные модули и их внутреннюю структуру (38 модулей захвачено)
 - Автоматически определять типы проверок из любого модуля (dispatch chain + chain intersection + remap + FixMaxType fallback + bounded dynamic discovery + two-tier matching, 0 unknown types)
 - Расшифровывать CMSG ответы через internal RC4 hook (multi-hook, до 4 функций)
 - Коррелировать SMSG requests с CMSG responses (FIFO queue)
@@ -574,7 +583,8 @@ wotlk/
 - `src/warden/peb_unlink.cpp` — скрытие DLL из PEB.Ldr lists
 
 **Живые тесты** (2026-02-18):
-- 37 модулей захвачено, 37/37 Python validation (100%)
+- 38 модулей захвачено, 38/38 Python validation (100%)
+- Новый модуль 2E9FE85D захвачен из памяти процесса (cached module, без MODULE_CACHE)
 - Chain intersection + FixMaxType fallback → 0 модулей с < 9 типов
 - Bounded dynamic discovery (max 3) обрабатывает оставшиеся unknown types
 - In-memory scan: 9-10 типов, 0 unknown, 0 PARTIAL, все checksums VALID
@@ -595,3 +605,6 @@ wotlk/
 - **FixMaxType fallback** (2026-02-18): `ExtractFromRemapCrossRef` возвращающий 3 типа (remapOk=true) блокировал FixMaxType fallback. Модуль 6E4859DE: cross-ref дал 3 типа, FixMaxType даёт 9-10. Исправлено: условие `if (!remapOk || remapTypes.size() < 9)`.
 - **Push/pop imm8** (2026-02-18): dispatch chain walker пропускал `push imm8 / pop reg` → эквивалент `mov reg, imm8` в некоторых BST модулях. Модуль BA877D8E.
 - **TryAssignSize PAGE/DRIVER disambiguation** (2026-02-18): первый структурно-валидный размер побеждал без look-ahead → PAGE(29) ошибочно назначался вместо DRIVER(25). PAGE's wider window (29 bytes) захватывал DRIVER's strIdx + 3 байта следующей проверки как фиктивные addr/readLen. Исправлено: two-tier matching — Tier 1 (structure + look-ahead) → Tier 2 (structure-only fallback). Модуль 7281AE6C/DE240190.
+- **Memory read failure на cached модулях** (2026-02-18): `SaveFromMemory` и `ScanRuntimeForAllRC4` не могли прочитать память модуля — первая 0x1000 страница Warden module allocation имеет PAGE_NOACCESS. Одиночный memcpy падает. Исправлено: VirtualQuery-based region walker в 3 местах (module_dump.cpp, warden_rc4_hook.cpp, warden_scan.cpp) — zero-fills нечитаемые страницы.
+- **RC4 hook false positives** (2026-02-18): scanner находил KSA или mid-function код вместо PRGA функций → MH_ERROR_UNSUPPORTED_FUNCTION. Исправлено: prologue validation — требует `55 8B EC` (push ebp; mov ebp, esp) перед установкой хука.
+- **Python scripts inmemory support** (2026-02-18): `validate_all_modules.py` и `find_request_parsers.py` не могли анализировать `_inmemory.bin` дампы (релоцированные адреса ломали детекцию remap tables). Исправлено: `detect_runtime_base()` сканирует code section на абсолютные address references, вычитает base из disp32 operands. Результат: 38/38 модулей (100%).

@@ -6,13 +6,34 @@
 #include "hooks/hooks.h"
 #include "warden/shadow_copy.h"
 #include "warden/mpq_cache.h"
+#include "warden/module_dump.h"
 #include "warden/peb_unlink.h"
 #include <glog/logging.h>
 
 #include <cstdio>
+#include <string>
 
 // Named event для сигнала выгрузки из инжектора
 static const char* kUnloadEventName = "wotlk_unload_event";
+
+// Get the directory of the host process (Wow.exe).
+// Returns path with trailing backslash, e.g. "Z:\Games\wow 3.3.5a client\"
+static std::string GetWowDirectory()
+{
+    wchar_t pathW[MAX_PATH] = {};
+    DWORD len = GetModuleFileNameW(NULL, pathW, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH)
+        return {};
+
+    char pathA[MAX_PATH] = {};
+    WideCharToMultiByte(CP_UTF8, 0, pathW, -1, pathA, MAX_PATH, nullptr, nullptr);
+
+    std::string dir(pathA);
+    size_t lastSlash = dir.find_last_of("\\/");
+    if (lastSlash != std::string::npos)
+        dir = dir.substr(0, lastSlash + 1);
+    return dir;
+}
 
 DWORD WINAPI MainThread(LPVOID lpParam)
 {
@@ -36,9 +57,19 @@ DWORD WINAPI MainThread(LPVOID lpParam)
     GetConsoleMode(hOut, &mode);
     SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
 
-    logger::Initialize({"wotlk", "wotlk", "./logs", true, true});
+    // All output goes under <WoW dir>\wotlk\ — logs, warden_dumps, mpq_hashes.txt
+    std::string wowDir = GetWowDirectory();
+    if (wowDir.empty()) {
+        // Fallback to current working directory if GetModuleFileNameW fails
+        wowDir = ".\\";
+    }
+    std::string outputDir = wowDir + "wotlk\\";
+    CreateDirectoryA(outputDir.c_str(), nullptr);
+
+    logger::Initialize({"wotlk", "wotlk", outputDir + "logs", true, true});
 
     LOG(INFO) << "wotlk DLL loaded successfully";
+    LOG(INFO) << "Output directory: " << outputDir;
 
     if (shadow::Initialize()) {
         LOG(INFO) << "Shadow copy initialized";
@@ -47,12 +78,14 @@ DWORD WINAPI MainThread(LPVOID lpParam)
     }
 
     // Load MPQ hash cache — must be before hooks (SpoofCmsgIfNeeded calls LookupHash)
-    // and before PEB unlinking (uses GetModuleFileName).
-    if (mpq_cache::Initialize(hModule)) {
+    if (mpq_cache::Initialize(outputDir)) {
         LOG(INFO) << "MPQ hash cache initialized";
     } else {
         LOG(WARNING) << "MPQ hash cache initialization failed (non-fatal)";
     }
+
+    // Set warden dump output directory
+    module_dump::SetOutputDir(outputDir + "warden_dumps");
 
     if (hooks::Initialize()) {
         LOG(INFO) << "Hooks initialized successfully";
@@ -78,13 +111,14 @@ DWORD WINAPI MainThread(LPVOID lpParam)
     // Restore PEB entries before unload — LdrUnloadDll needs them to find the module.
     peb_unlink::RelinkAll();
 
-    // Save captured MPQ hashes before shutdown
-    mpq_cache::Shutdown();
-
     // Даём время завершиться вызовам хуков, которые могут быть in-flight
     // в основном потоке игры (FrameScript_Execute вызывается из main thread)
     Sleep(200);
     hooks::Shutdown();
+
+    // Save captured MPQ hashes after hooks are removed —
+    // ensures no in-flight hook calls CaptureHash on a destroyed cache.
+    mpq_cache::Shutdown();
     shadow::Shutdown();
     logger::Shutdown();
 

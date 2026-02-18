@@ -50,25 +50,33 @@ REMAP_CHECK_DIST = 60
 # ============================================================
 
 def load_module(module_hash):
-    """Load and decompress a warden module. Returns decompressed bytes or None."""
-    # Try decompressed first
+    """Load a warden module. Returns (data, needs_unpack) or (None, False).
+
+    needs_unpack=True  → packed decompressed binary, must call unpack_rle()
+    needs_unpack=False → runtime image (from memory), already unpacked
+    """
+    # Try decompressed first (packed binary → needs RLE unpack)
     p = DUMP_DIR / f"warden_{module_hash}_decompressed.bin"
     if p.exists():
-        return p.read_bytes()
-    # Fallback: decompress from decrypted
+        return p.read_bytes(), True
+    # Fallback: decompress from decrypted (also packed → needs unpack)
     p = DUMP_DIR / f"warden_{module_hash}_decrypted.bin"
     if p.exists():
         raw = p.read_bytes()
         if len(raw) < 5:
-            return None
+            return None, False
         # [4-byte LE decompressed size] [zlib stream]
         if raw[4] != 0x78:
-            return None
+            return None, False
         try:
-            return zlib.decompress(raw[4:])
+            return zlib.decompress(raw[4:]), True
         except zlib.error:
-            return None
-    return None
+            return None, False
+    # Fallback: runtime image captured from process memory (already unpacked)
+    p = DUMP_DIR / f"warden_{module_hash}_inmemory.bin"
+    if p.exists():
+        return p.read_bytes(), False
+    return None, False
 
 
 def unpack_rle(data):
@@ -244,10 +252,59 @@ def find_xor_movzx_sites(data):
 
 
 # ============================================================
+# Runtime base detection (for inmemory images with relocations)
+# ============================================================
+
+def detect_runtime_base(data):
+    """Detect runtime base address from relocated pointers in an inmemory image.
+
+    In an inmemory dump, all relocatable 4-byte values have had the runtime
+    base address added.  We scan the code section for absolute address
+    references (MOV eax,[addr] / MOV r32,[addr]) and extract the base by
+    rounding down to a 64 KB boundary (VirtualAlloc guarantee on Windows).
+
+    Returns 0 for packed (non-relocated) images.
+    """
+    if len(data) < 0x28:
+        return 0
+    module_size = struct.unpack_from('<I', data, 0)[0]
+
+    # Quick heuristic: inmemory images have moduleSize == file size
+    if module_size != len(data) or module_size == 0:
+        return 0
+
+    # Scan code section for absolute address references.
+    # Code typically starts at 0x1000 (first section VA).
+    # Require 3+ instructions pointing to the SAME base to avoid false
+    # positives on non-relocated (unpack_rle) images where random byte
+    # sequences can mimic address patterns.
+    candidates = {}  # base -> hit count
+    scan_end = min(len(data) - 5, 0x8000)
+    for i in range(0x1000, scan_end):
+        val = 0
+        # MOV eax, [disp32]: A1 XX XX XX XX
+        if data[i] == 0xA1:
+            val = struct.unpack_from('<I', data, i + 1)[0]
+        # MOV r32, [disp32]: 8B [05|0D|15|1D|25|2D|35|3D] XX XX XX XX
+        elif data[i] == 0x8B and data[i + 1] in (0x05, 0x0D, 0x15, 0x1D,
+                                                   0x25, 0x2D, 0x35, 0x3D):
+            val = struct.unpack_from('<I', data, i + 2)[0]
+        else:
+            continue
+        if val > module_size:
+            base = val & 0xFFFF0000
+            if 0 < val - base < module_size:
+                candidates[base] = candidates.get(base, 0) + 1
+                if candidates[base] >= 3:
+                    return base
+    return 0
+
+
+# ============================================================
 # Remap table detection & extraction
 # ============================================================
 
-def detect_remap(data, after_movzx):
+def detect_remap(data, after_movzx, runtime_base=0):
     """Detect remap table pattern. Returns (remap_off, jtable_off, shift, max_type) or None."""
     end = min(after_movzx + REMAP_CHECK_DIST, len(data))
     shift = 0
@@ -302,7 +359,8 @@ def detect_remap(data, after_movzx):
         m = data[j + 2]
         if not (0x80 <= m <= 0xBF) or (m & 7) == 4:
             continue
-        disp = struct.unpack_from('<I', data, j + 3)[0]
+        raw_disp = struct.unpack_from('<I', data, j + 3)[0]
+        disp = (raw_disp - runtime_base) & 0xFFFFFFFF
         if disp <= 0x100 or disp >= len(data):
             continue
         # Find jmp [reg*4 + disp32] within 25 bytes
@@ -310,7 +368,8 @@ def detect_remap(data, after_movzx):
             if data[k] == 0xFF and data[k + 1] == 0x24:
                 sib = data[k + 2]
                 if (sib >> 6) == 2 and (sib & 7) == 5:  # scale=4, base=disp32
-                    jt = struct.unpack_from('<I', data, k + 3)[0]
+                    raw_jt = struct.unpack_from('<I', data, k + 3)[0]
+                    jt = (raw_jt - runtime_base) & 0xFFFFFFFF
                     return (disp, jt, shift, max_type)
     return None
 
@@ -678,6 +737,10 @@ def _handle_cmp(types, queue, imm, jk, tgt, after, acc, data, pos):
 
 def analyze_module(data, verbose=False):
     """Analyze unpacked module image. Returns (types: set, strategy: str, details: str)."""
+    runtime_base = detect_runtime_base(data)
+    if verbose and runtime_base:
+        print(f"  Runtime base: 0x{runtime_base:08X} (inmemory, relocations adjusted)")
+
     sites = find_xor_movzx_sites(data)
     if verbose:
         print(f"  XOR+MOVZX sites: {len(sites)}")
@@ -689,7 +752,7 @@ def analyze_module(data, verbose=False):
 
     for xor_off, movzx_off, after_movzx in sites:
         # Try remap detection first
-        r = detect_remap(data, after_movzx)
+        r = detect_remap(data, after_movzx, runtime_base)
         if r:
             remaps.append(r)
             if verbose:
@@ -747,7 +810,7 @@ def analyze_module(data, verbose=False):
             # Single remap supplement
             if len(result) < 9 and len(remaps) >= 1:
                 for roff, jtoff, sh, mx in remaps:
-                    fixed_mx = _fix_max_type_capstone(data, roff, jtoff, sh, mx)
+                    fixed_mx = _fix_max_type_capstone(data, roff, jtoff, sh, mx, runtime_base)
                     remap_all = extract_remap_all(data, roff, fixed_mx, sh, jtable_off=jtoff)
                     if 9 <= len(remap_all) <= 12:
                         result = remap_all
@@ -768,7 +831,7 @@ def analyze_module(data, verbose=False):
         best_types, best_strategy = None, None
         for roff, jtoff, sh, mx in remaps:
             # Fix max_type using capstone if still 0xFF
-            fixed_mx = _fix_max_type_capstone(data, roff, jtoff, sh, mx)
+            fixed_mx = _fix_max_type_capstone(data, roff, jtoff, sh, mx, runtime_base)
             types = extract_remap_all(data, roff, fixed_mx, sh, jtable_off=jtoff)
             if verbose and fixed_mx != mx:
                 print(f"    Remap @0x{roff:04X}: max_type fixed 0x{mx:02X}->0x{fixed_mx:02X}, "
@@ -799,7 +862,7 @@ def analyze_module(data, verbose=False):
     return set(), "NONE", f"{chain_count}d+{len(remaps)}r"
 
 
-def _fix_max_type_capstone(data, remap_off, jtable_off, shift, max_type):
+def _fix_max_type_capstone(data, remap_off, jtable_off, shift, max_type, runtime_base=0):
     """Fix max_type using capstone disassembly when byte-level detection missed it."""
     if max_type != 0xFF:
         return max_type  # already detected
@@ -812,7 +875,8 @@ def _fix_max_type_capstone(data, remap_off, jtable_off, shift, max_type):
 
     # Step 1: Find the code that references the remap table.
     # Look for: movzx reg, byte ptr [reg + remap_off] encoded as 0F B6 [80-BF] [LE32 remap_off]
-    remap_le = struct.pack('<I', remap_off)
+    # In inmemory images, the disp32 in the instruction is (runtime_base + remap_off).
+    remap_le = struct.pack('<I', remap_off + runtime_base)
     code_addr = None
     for i in range(len(data) - 7):
         if (data[i] == 0x0F and data[i + 1] == 0xB6
@@ -888,7 +952,7 @@ def main():
     hashes = set()
     for f in DUMP_DIR.iterdir():
         name = f.name
-        if name.startswith('warden_') and (name.endswith('_decompressed.bin') or name.endswith('_decrypted.bin')):
+        if name.startswith('warden_') and (name.endswith('_decompressed.bin') or name.endswith('_decrypted.bin') or name.endswith('_inmemory.bin')):
             h = name.split('_')[1]
             if len(h) == 32:
                 hashes.add(h)
@@ -906,22 +970,30 @@ def main():
     results = []
     for h in hashes:
         short = h[:8]
-        data = load_module(h)
+        data, needs_unpack = load_module(h)
         if data is None:
             print(f"  {short}: LOAD FAILED")
             results.append((h, set(), "load_fail", ""))
             continue
 
-        try:
-            unpacked = unpack_rle(data)
-        except Exception as e:
-            print(f"  {short}: UNPACK FAILED ({e})")
-            results.append((h, set(), "unpack_fail", ""))
-            continue
+        if needs_unpack:
+            try:
+                unpacked = unpack_rle(data)
+            except Exception as e:
+                print(f"  {short}: UNPACK FAILED ({e})")
+                results.append((h, set(), "unpack_fail", ""))
+                continue
+            source = "decompressed"
+        else:
+            unpacked = data
+            source = "inmemory"
 
         if args.verbose:
-            print(f"Module {short} ({h})")
-            print(f"  Decompressed: {len(data)} bytes, Unpacked: {len(unpacked)} bytes")
+            print(f"Module {short} ({h}) [{source}]")
+            if needs_unpack:
+                print(f"  Decompressed: {len(data)} bytes, Unpacked: {len(unpacked)} bytes")
+            else:
+                print(f"  Runtime image: {len(data)} bytes")
 
         types, strategy, details = analyze_module(unpacked, verbose=args.verbose)
 

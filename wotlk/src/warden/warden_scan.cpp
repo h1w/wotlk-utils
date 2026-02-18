@@ -2129,12 +2129,40 @@ bool ScanModuleInMemory()
               << std::setw(8) << g_moduleRuntimeBase
               << " (" << std::dec << g_moduleRuntimeSize << " bytes)...";
 
-    std::vector<uint8_t> buf(g_moduleRuntimeSize);
-    if (!SafeMemcpy(buf.data(), reinterpret_cast<const void*>(g_moduleRuntimeBase),
-                    g_moduleRuntimeSize)) {
-        LOG(WARNING) << "[WARDEN_SCAN] Failed to read in-memory module at 0x"
-                     << std::hex << g_moduleRuntimeBase;
-        return false;
+    // Read region-by-region: first page(s) of the allocation may have
+    // PAGE_NOACCESS or be uncommitted (Warden module header area).
+    std::vector<uint8_t> buf(g_moduleRuntimeSize, 0);
+    {
+        uintptr_t current = g_moduleRuntimeBase;
+        uintptr_t end = g_moduleRuntimeBase + g_moduleRuntimeSize;
+        size_t bytesRead = 0;
+        MEMORY_BASIC_INFORMATION mbi2;
+        while (current < end &&
+               VirtualQuery(reinterpret_cast<LPCVOID>(current), &mbi2, sizeof(mbi2)) == sizeof(mbi2))
+        {
+            uintptr_t regionStart = reinterpret_cast<uintptr_t>(mbi2.BaseAddress);
+            uintptr_t regionEnd = regionStart + mbi2.RegionSize;
+            if (regionEnd > end) regionEnd = end;
+            if (current < regionStart) current = regionStart;
+            size_t chunkSize = static_cast<size_t>(regionEnd - current);
+
+            if ((mbi2.State == MEM_COMMIT) &&
+                !(mbi2.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+            {
+                size_t offset = static_cast<size_t>(current - g_moduleRuntimeBase);
+                if (SafeMemcpy(buf.data() + offset, reinterpret_cast<const void*>(current), chunkSize))
+                    bytesRead += chunkSize;
+            }
+            current = regionEnd;
+        }
+        if (bytesRead == 0) {
+            LOG(WARNING) << "[WARDEN_SCAN] No readable regions in module at 0x"
+                         << std::hex << g_moduleRuntimeBase;
+            return false;
+        }
+        LOG(INFO) << "[WARDEN_SCAN] Read 0x" << std::hex << bytesRead
+                  << " of 0x" << g_moduleRuntimeSize << " bytes from module at 0x"
+                  << g_moduleRuntimeBase;
     }
 
     // Set base address so displacement-based offsets (remap tables, jtables)
@@ -2242,7 +2270,22 @@ uintptr_t FindModuleInMemory(const uint8_t* moduleBinary, size_t moduleSize)
                                   << " allocBase=0x" << std::setw(8) << allocBase
                                   << " regionSize=0x" << std::setw(6) << mbi.RegionSize;
                         g_moduleRuntimeBase = allocBase;
-                        g_moduleRuntimeSize = mbi.RegionSize;
+                        // Compute full allocation size by walking all regions
+                        // that belong to the same VirtualAlloc (same AllocationBase).
+                        {
+                            MEMORY_BASIC_INFORMATION mbi2;
+                            size_t totalSize = 0;
+                            uintptr_t scan2 = allocBase;
+                            while (VirtualQuery(reinterpret_cast<LPCVOID>(scan2), &mbi2, sizeof(mbi2)) == sizeof(mbi2) &&
+                                   reinterpret_cast<uintptr_t>(mbi2.AllocationBase) == allocBase) {
+                                totalSize += mbi2.RegionSize;
+                                scan2 += mbi2.RegionSize;
+                            }
+                            g_moduleRuntimeSize = totalSize;
+                        }
+                        LOG(INFO) << "[WARDEN_SCAN] Full allocation size: 0x"
+                                  << std::hex << std::setfill('0') << std::setw(6)
+                                  << g_moduleRuntimeSize << " bytes";
                         return allocBase;
                     }
                 }

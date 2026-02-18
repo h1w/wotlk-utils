@@ -322,12 +322,39 @@ static std::vector<uintptr_t> ScanRuntimeForAllRC4(uintptr_t base, size_t size)
         return result;
     }
 
-    // Read entire module memory
-    std::vector<uint8_t> buf(size);
-    if (!SafeReadBytes(reinterpret_cast<const void*>(base), buf.data(), size)) {
-        LOG(WARNING) << "[RC4_HOOK] Failed to read module memory at 0x"
-                     << std::hex << base;
-        return result;
+    // Read module memory region-by-region (the first page(s) of the allocation
+    // may have PAGE_NOACCESS or be uncommitted, so a single memcpy would fail).
+    std::vector<uint8_t> buf(size, 0);
+    {
+        uintptr_t current = base;
+        uintptr_t end = base + size;
+        size_t bytesRead = 0;
+        MEMORY_BASIC_INFORMATION mbi;
+        while (current < end &&
+               VirtualQuery(reinterpret_cast<LPCVOID>(current), &mbi, sizeof(mbi)) == sizeof(mbi))
+        {
+            uintptr_t regionStart = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+            uintptr_t regionEnd = regionStart + mbi.RegionSize;
+            if (regionEnd > end) regionEnd = end;
+            if (current < regionStart) current = regionStart;
+            size_t chunkSize = static_cast<size_t>(regionEnd - current);
+
+            if ((mbi.State == MEM_COMMIT) &&
+                !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+            {
+                size_t offset = static_cast<size_t>(current - base);
+                if (SafeReadBytes(reinterpret_cast<const void*>(current), buf.data() + offset, chunkSize))
+                    bytesRead += chunkSize;
+            }
+            current = regionEnd;
+        }
+        if (bytesRead == 0) {
+            LOG(WARNING) << "[RC4_HOOK] No readable regions in module at 0x"
+                         << std::hex << base << " (size=0x" << size << ")";
+            return result;
+        }
+        LOG(INFO) << "[RC4_HOOK] Read 0x" << std::hex << bytesRead
+                  << " of 0x" << size << " bytes from module at 0x" << base;
     }
 
     // Scan for instructions referencing 0x100/0x101
@@ -406,6 +433,20 @@ static std::vector<uintptr_t> ScanRuntimeForAllRC4(uintptr_t base, size_t size)
         // Find function prologue
         size_t funcOffset = FindFunctionPrologue(buf.data(), size, clusterStart);
         uintptr_t absoluteAddr = base + funcOffset;
+
+        // Validate prologue: must start with push ebp; mov ebp, esp (55 8B EC).
+        // Without this check, FindFunctionPrologue may resolve to mid-function
+        // code (e.g., SBB EAX, imm32) causing MH_ERROR_UNSUPPORTED_FUNCTION.
+        if (funcOffset + 2 < size &&
+            !(buf[funcOffset] == 0x55 && buf[funcOffset + 1] == 0x8B && buf[funcOffset + 2] == 0xEC))
+        {
+            LOG(INFO) << "[RC4_HOOK]   -> skipped (prologue at module+0x"
+                      << std::hex << funcOffset << " is not 'push ebp; mov ebp, esp': ["
+                      << BytesToHex(buf.data() + funcOffset,
+                                    (size - funcOffset < 8) ? (size - funcOffset) : 8)
+                      << "])";
+            continue;
+        }
 
         // Check for duplicates (different clusters might resolve to same function)
         bool duplicate = false;

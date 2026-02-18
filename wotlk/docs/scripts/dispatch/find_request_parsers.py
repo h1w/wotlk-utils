@@ -54,6 +54,10 @@ def load_module(hash_str, dirs):
         if os.path.exists(path):
             with open(path, 'rb') as f:
                 return decompress_module(f.read())
+        path = os.path.join(d, f"warden_{hash_str}_inmemory.bin")
+        if os.path.exists(path):
+            with open(path, 'rb') as f:
+                return f.read()
     return None
 
 def raw_scan_xor_byte_reg4(data):
@@ -356,7 +360,7 @@ def main():
         if not os.path.exists(d):
             continue
         for f in os.listdir(d):
-            if f.startswith('warden_') and ('_decompressed' in f or '_decrypted' in f):
+            if f.startswith('warden_') and ('_decompressed' in f or '_decrypted' in f or '_inmemory' in f):
                 parts = f.split('_')
                 if len(parts) >= 3 and len(parts[1]) == 32:
                     hashes.add(parts[1])

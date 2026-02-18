@@ -23,6 +23,18 @@ static bool g_capturing = false;
 
 static std::vector<uint8_t> g_decompressedModule;
 
+static std::string g_outputDir;  // e.g. "Z:\Games\wow\wotlk\warden_dumps"
+
+void SetOutputDir(const std::string& dir)
+{
+    g_outputDir = dir;
+    // Ensure trailing backslash
+    if (!g_outputDir.empty() && g_outputDir.back() != '\\' && g_outputDir.back() != '/')
+        g_outputDir += '\\';
+    CreateDirectoryA(g_outputDir.c_str(), nullptr);
+    LOG(INFO) << "[WARDEN] Dump output dir: " << g_outputDir;
+}
+
 static std::string HexStr(const uint8_t* data, size_t len)
 {
     std::ostringstream oss;
@@ -170,13 +182,11 @@ void OnModuleInitialize(const uint8_t* data, size_t len)
     LOG(INFO) << "[WARDEN] Module capture complete: "
               << g_buffer.size() << "/" << g_expectedSize << " bytes";
 
-    CreateDirectoryA("warden_dumps", nullptr);
-
     std::string hashStr = HexStr(g_hash, 16);
 
     // 1. Write raw (encrypted + compressed) data
     {
-        std::string path = "warden_dumps\\warden_" + hashStr + "_encrypted.bin";
+        std::string path = g_outputDir + "warden_" + hashStr + "_encrypted.bin";
         std::ofstream f(path, std::ios::binary);
         if (f) {
             f.write(reinterpret_cast<const char*>(g_buffer.data()), g_buffer.size());
@@ -191,7 +201,7 @@ void OnModuleInitialize(const uint8_t* data, size_t len)
     RC4Transform(decrypted.data(), decrypted.size(), g_key, 16);
 
     {
-        std::string path = "warden_dumps\\warden_" + hashStr + "_decrypted.bin";
+        std::string path = g_outputDir + "warden_" + hashStr + "_decrypted.bin";
         std::ofstream f(path, std::ios::binary);
         if (f) {
             f.write(reinterpret_cast<const char*>(decrypted.data()), decrypted.size());
@@ -203,7 +213,7 @@ void OnModuleInitialize(const uint8_t* data, size_t len)
 
     // 3. Decompress with zlib and write
     if (DecompressModule(decrypted.data(), decrypted.size())) {
-        std::string path = "warden_dumps\\warden_" + hashStr + "_decompressed.bin";
+        std::string path = g_outputDir + "warden_" + hashStr + "_decompressed.bin";
         std::ofstream f(path, std::ios::binary);
         if (f) {
             f.write(reinterpret_cast<const char*>(g_decompressedModule.data()),
@@ -217,7 +227,7 @@ void OnModuleInitialize(const uint8_t* data, size_t len)
 
     // 4. Write metadata + MODULE_INITIALIZE payload
     {
-        std::string path = "warden_dumps\\warden_" + hashStr + "_meta.txt";
+        std::string path = g_outputDir + "warden_" + hashStr + "_meta.txt";
         std::ofstream f(path);
         if (f) {
             f << "Warden Module Dump\n"
@@ -237,59 +247,71 @@ void OnModuleInitialize(const uint8_t* data, size_t len)
     g_buffer.shrink_to_fit();
 }
 
+// Helper: try to load a decompressed module from a specific path.
+// Returns true if g_decompressedModule is populated.
+static bool TryLoadDecompressed(const std::string& path)
+{
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f) return false;
+    auto fileSize = f.tellg();
+    if (fileSize <= 0 || fileSize >= 4 * 1024 * 1024) return false;
+    g_decompressedModule.resize(static_cast<size_t>(fileSize));
+    f.seekg(0);
+    f.read(reinterpret_cast<char*>(g_decompressedModule.data()),
+           g_decompressedModule.size());
+    if (!f) { g_decompressedModule.clear(); return false; }
+    LOG(INFO) << "[WARDEN] Loaded cached decompressed module: " << path
+              << " (" << g_decompressedModule.size() << " bytes)";
+    return true;
+}
+
+// Helper: try to load a decrypted module from a specific path, decompress it.
+// Returns true if g_decompressedModule is populated.
+static bool TryLoadDecrypted(const std::string& path)
+{
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f) return false;
+    auto fileSize = f.tellg();
+    if (fileSize <= 4 || fileSize >= 4 * 1024 * 1024) return false;
+    std::vector<uint8_t> decrypted(static_cast<size_t>(fileSize));
+    f.seekg(0);
+    f.read(reinterpret_cast<char*>(decrypted.data()), decrypted.size());
+    if (!f) return false;
+    if (!DecompressModule(decrypted.data(), decrypted.size())) return false;
+    LOG(INFO) << "[WARDEN] Loaded cached decrypted module and decompressed: " << path;
+    return true;
+}
+
 bool TryLoadFromCache(const uint8_t* hash16)
 {
     std::string hashStr = HexStr(hash16, 16);
 
-    // Try decompressed file first (fastest)
-    {
-        std::string path = "warden_dumps\\warden_" + hashStr + "_decompressed.bin";
-        std::ifstream f(path, std::ios::binary | std::ios::ate);
-        if (f) {
-            auto fileSize = f.tellg();
-            if (fileSize > 0 && fileSize < 4 * 1024 * 1024) {
-                g_decompressedModule.resize(static_cast<size_t>(fileSize));
-                f.seekg(0);
-                f.read(reinterpret_cast<char*>(g_decompressedModule.data()),
-                       g_decompressedModule.size());
-                if (f) {
-                    LOG(INFO) << "[WARDEN] Loaded cached decompressed module: " << path
-                              << " (" << g_decompressedModule.size() << " bytes)";
-                    return true;
-                }
-                g_decompressedModule.clear();
-            }
-        }
-    }
+    // Search paths: new location first, then legacy relative path (migration)
+    std::string prefixes[] = {
+        g_outputDir,
+        "warden_dumps\\",
+    };
 
-    // Fallback: try decrypted file (need to decompress)
-    {
-        std::string path = "warden_dumps\\warden_" + hashStr + "_decrypted.bin";
-        std::ifstream f(path, std::ios::binary | std::ios::ate);
-        if (f) {
-            auto fileSize = f.tellg();
-            if (fileSize > 4 && fileSize < 4 * 1024 * 1024) {
-                std::vector<uint8_t> decrypted(static_cast<size_t>(fileSize));
-                f.seekg(0);
-                f.read(reinterpret_cast<char*>(decrypted.data()), decrypted.size());
-                if (f && DecompressModule(decrypted.data(), decrypted.size())) {
-                    LOG(INFO) << "[WARDEN] Loaded cached decrypted module and decompressed: "
-                              << path;
-                    // Save decompressed for next time
-                    CreateDirectoryA("warden_dumps", nullptr);
-                    std::string decompPath = "warden_dumps\\warden_" + hashStr
-                                           + "_decompressed.bin";
-                    std::ofstream out(decompPath, std::ios::binary);
-                    if (out) {
-                        out.write(reinterpret_cast<const char*>(g_decompressedModule.data()),
-                                  g_decompressedModule.size());
-                        LOG(INFO) << "[WARDEN] Written: " << decompPath
-                                  << " (" << g_decompressedModule.size() << " bytes)";
-                    }
-                    return true;
-                }
+    for (const auto& prefix : prefixes) {
+        if (TryLoadDecompressed(prefix + "warden_" + hashStr + "_decompressed.bin"))
+            return true;
+        if (TryLoadDecrypted(prefix + "warden_" + hashStr + "_decrypted.bin")) {
+            // Save decompressed to new location for future use
+            std::string decompPath = g_outputDir + "warden_" + hashStr
+                                   + "_decompressed.bin";
+            std::ofstream out(decompPath, std::ios::binary);
+            if (out) {
+                out.write(reinterpret_cast<const char*>(g_decompressedModule.data()),
+                          g_decompressedModule.size());
+                LOG(INFO) << "[WARDEN] Written: " << decompPath
+                          << " (" << g_decompressedModule.size() << " bytes)";
             }
+            return true;
         }
+        // Fallback: runtime image saved from process memory (cached modules
+        // where server didn't send MODULE_CACHE packets)
+        if (TryLoadDecompressed(prefix + "warden_" + hashStr + "_inmemory.bin"))
+            return true;
     }
 
     LOG(INFO) << "[WARDEN] No cached module found for hash=" << hashStr;
@@ -309,6 +331,121 @@ const uint8_t* GetDecompressedModule(size_t& outLen)
     }
     outLen = g_decompressedModule.size();
     return g_decompressedModule.data();
+}
+
+// SEH-safe memory read (separate function — no C++ objects allowed with __try)
+static bool __cdecl SafeReadMemory(void* dst, const void* src, size_t len)
+{
+    __try {
+        const uint8_t* s = static_cast<const uint8_t*>(src);
+        uint8_t* d = static_cast<uint8_t*>(dst);
+        for (size_t i = 0; i < len; ++i)
+            d[i] = s[i];
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Read a memory allocation that may span multiple regions with different protections.
+// Zero-fills non-readable regions. Returns total bytes successfully read.
+static size_t ReadAllocationRegions(uint8_t* dst, uintptr_t base, size_t size)
+{
+    std::memset(dst, 0, size);
+    uintptr_t end = base + size;
+    uintptr_t current = base;
+    size_t bytesRead = 0;
+
+    MEMORY_BASIC_INFORMATION mbi;
+    while (current < end &&
+           VirtualQuery(reinterpret_cast<LPCVOID>(current), &mbi, sizeof(mbi)) == sizeof(mbi))
+    {
+        uintptr_t regionStart = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+        uintptr_t regionEnd = regionStart + mbi.RegionSize;
+        if (regionEnd > end) regionEnd = end;
+        if (current < regionStart) current = regionStart;
+        size_t chunkSize = static_cast<size_t>(regionEnd - current);
+
+        if ((mbi.State == MEM_COMMIT) &&
+            !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+        {
+            size_t offset = static_cast<size_t>(current - base);
+            if (SafeReadMemory(dst + offset, reinterpret_cast<const void*>(current), chunkSize))
+                bytesRead += chunkSize;
+        }
+
+        current = regionEnd;
+    }
+    return bytesRead;
+}
+
+void SaveFromMemory(uintptr_t base, size_t size)
+{
+    if (base == 0 || size == 0 || size > 4 * 1024 * 1024) {
+        LOG(WARNING) << "[WARDEN] SaveFromMemory: invalid params (base=0x"
+                     << std::hex << base << " size=" << std::dec << size << ")";
+        return;
+    }
+
+    // Validate g_hash is non-zero (MODULE_USE must have been processed first)
+    bool hashValid = false;
+    for (int i = 0; i < 16; ++i) {
+        if (g_hash[i] != 0) { hashValid = true; break; }
+    }
+    if (!hashValid) {
+        LOG(ERROR) << "[WARDEN] SaveFromMemory: g_hash is zeroed (MODULE_USE not processed?)";
+        return;
+    }
+
+    std::string hashStr = HexStr(g_hash, 16);
+
+    // Read module memory into local buffer (region-by-region to handle
+    // non-readable pages at the start of the allocation)
+    std::vector<uint8_t> buf(size);
+    size_t bytesRead = ReadAllocationRegions(buf.data(), base, size);
+    if (bytesRead == 0) {
+        LOG(ERROR) << "[WARDEN] SaveFromMemory: no readable regions at 0x"
+                   << std::hex << base << " (size=0x" << size << ")";
+        return;
+    }
+    LOG(INFO) << "[WARDEN] SaveFromMemory: read 0x" << std::hex << bytesRead
+              << " of 0x" << size << " bytes from allocation at 0x" << base;
+
+    // Save the runtime image to disk
+    {
+        std::string path = g_outputDir + "warden_" + hashStr + "_inmemory.bin";
+        std::ofstream f(path, std::ios::binary);
+        if (f) {
+            f.write(reinterpret_cast<const char*>(buf.data()), buf.size());
+            LOG(INFO) << "[WARDEN] Written: " << path
+                      << " (" << std::dec << buf.size() << " bytes)";
+        } else {
+            LOG(ERROR) << "[WARDEN] Failed to write: " << path;
+        }
+    }
+
+    // Write metadata
+    {
+        std::string path = g_outputDir + "warden_" + hashStr + "_meta.txt";
+        std::ofstream f(path);
+        if (f) {
+            f << "Warden Module Dump (from memory)\n"
+              << "MD5 hash: " << hashStr << "\n"
+              << "RC4 key:  " << HexStr(g_key, 16) << "\n"
+              << "Expected: " << g_expectedSize << " bytes (encrypted+compressed)\n"
+              << "Runtime:  " << size << " bytes (in-memory image)\n"
+              << "Readable: " << bytesRead << " bytes\n";
+            LOG(INFO) << "[WARDEN] Written: " << path;
+        }
+    }
+
+    // Populate g_decompressedModule so type scanning can use it
+    if (g_decompressedModule.empty()) {
+        g_decompressedModule = std::move(buf);
+        LOG(INFO) << "[WARDEN] In-memory module loaded as decompressed ("
+                  << std::dec << g_decompressedModule.size() << " bytes)";
+    }
 }
 
 } // namespace module_dump

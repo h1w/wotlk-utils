@@ -1,5 +1,7 @@
 #include "mpq_cache.h"
 
+#define NOMINMAX
+#include <Windows.h>
 #include <glog/logging.h>
 
 #include <array>
@@ -127,31 +129,23 @@ static void LoadFromFile()
 // Public API
 // ---------------------------------------------------------------------------
 
-bool Initialize(HMODULE hModule)
+bool Initialize(const std::string& dir)
 {
     if (!g_lockInit) {
         InitializeCriticalSection(&g_lock);
         g_lockInit = true;
     }
 
-    // Get DLL directory
-    wchar_t pathW[MAX_PATH] = {};
-    DWORD len = GetModuleFileNameW(hModule, pathW, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH) {
-        LOG(ERROR) << "[MPQ_CACHE] GetModuleFileNameW failed";
+    if (dir.empty()) {
+        LOG(ERROR) << "[MPQ_CACHE] Empty directory path";
         return false;
     }
 
-    // Convert to narrow string and strip filename
-    char pathA[MAX_PATH] = {};
-    WideCharToMultiByte(CP_UTF8, 0, pathW, -1, pathA, MAX_PATH, nullptr, nullptr);
+    std::string d = dir;
+    if (d.back() != '\\' && d.back() != '/')
+        d += '\\';
 
-    std::string dir(pathA);
-    size_t lastSlash = dir.find_last_of("\\/");
-    if (lastSlash != std::string::npos)
-        dir = dir.substr(0, lastSlash + 1);
-
-    g_filePath = dir + "mpq_hashes.txt";
+    g_filePath = d + "mpq_hashes.txt";
     LoadFromFile();
     g_initialized = true;
     return true;
@@ -162,9 +156,10 @@ void Shutdown()
     if (!g_initialized)
         return;
 
+    // Final save (SaveToFile acquires g_lock internally)
+    SaveToFile();
+
     EnterCriticalSection(&g_lock);
-    if (g_dirty)
-        SaveToFile();
     g_cache.clear();
     g_initialized = false;
     LeaveCriticalSection(&g_lock);
@@ -205,14 +200,28 @@ void CaptureHash(const std::string& filename, const uint8_t* sha1)
     g_dirty = true;
     LeaveCriticalSection(&g_lock);
 
+    // Persist immediately so hashes survive crashes / ungraceful exits.
+    // File I/O outside lock — doesn't block concurrent LookupHash() calls.
+    SaveToFile();
+
     LOG(INFO) << "[MPQ_CACHE] Captured hash for \"" << filename
               << "\": " << BytesToHex(sha1, 20);
 }
 
 void SaveToFile()
 {
-    if (g_filePath.empty())
+    if (g_filePath.empty() || !g_initialized)
         return;
+
+    // Snapshot cache under lock (fast memory copy), then write outside lock
+    EnterCriticalSection(&g_lock);
+    if (!g_dirty) {
+        LeaveCriticalSection(&g_lock);
+        return;
+    }
+    std::unordered_map<std::string, Hash20> snapshot = g_cache;
+    g_dirty = false;
+    LeaveCriticalSection(&g_lock);
 
     std::ofstream file(g_filePath, std::ios::trunc);
     if (!file.is_open()) {
@@ -221,14 +230,11 @@ void SaveToFile()
     }
 
     file << "# Warden MPQ hash cache (auto-generated)\n";
-    for (const auto& kv : g_cache) {
-        // Write original-cased key would be nice, but we only have lowered keys.
-        // MPQ paths are case-insensitive so this is fine.
+    for (const auto& kv : snapshot) {
         file << kv.first << "=" << BytesToHex(kv.second.data(), 20) << "\n";
     }
 
-    g_dirty = false;
-    LOG(INFO) << "[MPQ_CACHE] Saved " << g_cache.size() << " hash(es) to " << g_filePath;
+    LOG(INFO) << "[MPQ_CACHE] Saved " << snapshot.size() << " hash(es) to " << g_filePath;
 }
 
 } // namespace mpq_cache

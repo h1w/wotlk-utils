@@ -471,6 +471,8 @@ wotlk/docs/
 - **`src/warden/warden_type_extraction.cpp`** — основная логика извлечения
 - **`src/warden/warden_module.cpp`** — загрузка и кеширование модулей
 - **`src/warden/warden_scan.cpp`** — поиск модуля в памяти
+- **`docs/scripts/validate_all_modules.py`** — supports `_inmemory.bin` with automatic runtime_base detection for relocated addresses
+- **`docs/scripts/module_format/unpack_rle.py`** — RLE unpacker for decompressed modules
 
 ---
 
@@ -480,12 +482,13 @@ wotlk/docs/
 
 ### Ключевые достижения:
 - Найдены универсальные паттерны (XOR-anchored), работающие на всех модулях
-- Разработаны несколько стратегий с покрытием 37/37 модулей (100%)
+- Разработаны несколько стратегий с покрытием 38/38 модулей (100%)
 - Полностью автоматизированный процесс в DLL с приоритетным in-memory сканированием
 - Chain intersection убирает фантомные BST pivots в модулях с несколькими dispatch chains
 - Handler filtering + FixMaxType + best remap selection обеспечивают 100% на remap-only модулях
 - Blind memory scan корректно обрабатывает uncached модули с абсолютными displacement'ами
-- 37 модулей захвачено и валидировано
+- Python скрипты поддерживают `_inmemory.bin` дампы (runtime image из памяти процесса) — автодетекция runtime base через scan absolute address references в code section
+- 38 модулей захвачено и валидировано
 
 ### Для разработчиков:
 Если вы хотите понять, как работает Warden:

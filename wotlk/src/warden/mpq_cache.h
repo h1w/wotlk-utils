@@ -2,14 +2,11 @@
 #include <cstdint>
 #include <string>
 
-#define NOMINMAX
-#include <Windows.h>
-
 namespace mpq_cache {
 
-// Load hash file from DLL directory. Must be called before PEB unlinking
-// (uses GetModuleFileNameW internally).
-bool Initialize(HMODULE hModule);
+// Load hash file from the given directory (e.g. "Z:\Games\wow\wotlk\").
+// Creates mpq_hashes.txt there on first capture.
+bool Initialize(const std::string& dir);
 
 // Save captured hashes to disk and release resources.
 void Shutdown();
