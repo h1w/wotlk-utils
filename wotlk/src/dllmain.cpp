@@ -9,6 +9,7 @@
 #include "warden/module_dump.h"
 #include "warden/peb_unlink.h"
 #include "game/game.h"
+#include "overlay/overlay.h"
 #include <glog/logging.h>
 
 #include <cstdio>
@@ -102,6 +103,12 @@ DWORD WINAPI MainThread(LPVOID lpParam)
     // Must be AFTER all init that uses GetModuleHandle/GetModuleFileName.
     peb_unlink::UnlinkAll(hModule);
 
+    if (overlay::Initialize()) {
+        LOG(INFO) << "Overlay initialized";
+    } else {
+        LOG(WARNING) << "Overlay initialization failed (non-fatal)";
+    }
+
     // Ожидание сигнала выгрузки
     HANDLE hEvent = CreateEventA(nullptr, TRUE, FALSE, kUnloadEventName);
     if (hEvent)
@@ -116,6 +123,7 @@ DWORD WINAPI MainThread(LPVOID lpParam)
     // Restore PEB entries before unload — LdrUnloadDll needs them to find the module.
     peb_unlink::RelinkAll();
 
+    overlay::Shutdown();
     game::Shutdown();
 
     // Даём время завершиться вызовам хуков, которые могут быть in-flight

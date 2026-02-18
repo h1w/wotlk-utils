@@ -61,11 +61,13 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
     <Import Project="..\shared\glog-common.props" />
     <Import Project="..\shared\minhook-static.props" />
+    <Import Project="..\shared\imgui-dx9.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
     <Import Project="..\shared\glog-common.props" />
     <Import Project="..\shared\minhook-static.props" />
+    <Import Project="..\shared\imgui-dx9.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -148,6 +150,7 @@
     <ClInclude Include="src\game\types.h" />
     <ClInclude Include="src\game\unit.h" />
     <ClInclude Include="src\game\world.h" />
+    <ClInclude Include="src\overlay\overlay.h" />
     <ClInclude Include="src\offsets\offsets.h" />
     <ClInclude Include="src\offsets\functions.h" />
     <ClInclude Include="src\hooks\hooks.h" />
@@ -181,6 +184,7 @@
     <ClCompile Include="src\game\spell.cpp" />
     <ClCompile Include="src\game\unit.cpp" />
     <ClCompile Include="src\game\world.cpp" />
+    <ClCompile Include="src\overlay\overlay.cpp" />
     <ClCompile Include="src\dllmain.cpp" />
     <ClCompile Include="src\hooks\hooks.cpp" />
     <ClCompile Include="src\warden\mpq_cache.cpp" />
