@@ -457,6 +457,49 @@ MinHook = статическая линковка (нет DLL). miniz = комп
 
 ---
 
+### 17. Game SDK (чтение данных + действия)
+
+**Описание**: SDK-слой для взаимодействия с игрой — чтение состояния персонажа/мира и выполнение действий. Hybrid-подход: C++ для чтения памяти, Lua (через FrameScript_Execute) для действий.
+
+**Архитектура (12 модулей в `src/game/`):**
+
+| Модуль | Что делает |
+|--------|-----------|
+| `types.h` | Базовые типы: `GUID`, `Vec3`, `ObjectType`, `PowerType`, `UnitReaction`, `UnitFlags/DynFlags` |
+| `mem.h/.cpp` | SEH-безопасное чтение памяти: `ReadU32`, `ReadU64`, `ReadFloat`, `ReadPointer`, `ReadCString`, `ReadDescU32/U64/Float` |
+| `object_manager.h/.cpp` | ObjectManager traversal: `GetManagerBase()`, `IsInGame()`, `GetLocalPlayerPtr()`, `GetObjectPtr(guid)`, `EnumObjects(callback)` |
+| `lua_bridge.h/.cpp` | Lua мост через trampoline FrameScript_Execute: `Execute()`, `Executef()`, `GetValue()`, `GetInt/Float/Bool()` |
+| `game_object.h/.cpp` | `WowObject`: GUID, тип, Entry, Scale, позиция/facing/имя через vtable, дескрипторы |
+| `unit.h/.cpp` | `Unit` (наследует WowObject): HP/мана/power%, уровень, таргет, faction, ауры, каст, реакция, UnitName |
+| `local_player.h/.cpp` | `LocalPlayer` (наследует Unit): XP, золото, статы (Str/Agi/Sta/Int/Spi), комбо-поинты, HasSpell |
+| `spell.h/.cpp` | `HasSpell()` (C++ вызов @ 0x53C5B0), `IsOnCooldown()` (Lua), `CastById/CastByName/StopCasting()` (Lua) |
+| `movement.h/.cpp` | `ClickToMove()` (__thiscall @ 0x727400), `SetFacing()`, `FacePosition()`, `Jump()`, `StopMoving()` |
+| `world.h/.cpp` | Зона/карта/реалм, `IsInGame()`, `IsLoading()`, `HasLineOfSight()` (TraceLine @ 0x7A3B70), `GetCameraPosition()` |
+| `game.h/.cpp` | Фасад: `Initialize()/Shutdown()`, `GetLocalPlayer()`, `GetTarget()`, `GetMouseOver()`, `GetAllUnits/InRange()`, `SelectTarget()` |
+
+**Ключевые паттерны:**
+- **SEH isolation**: все `__try/__except` в отдельных `__cdecl` helper-функциях (MSVC не позволяет `__try` с C++ деструкторами)
+- **VTable вызовы**: `GetPosition()` (vtable[12]), `GetFacing()` (vtable[14]), `GetName()` (vtable[54])
+- **Descriptor access**: `descriptor_base + field_index * 4` (поля из `offsets::fields`)
+- **ObjectManager linked list**: `FirstObject → NextObject` с safety limit 10000
+- **Lua value extraction**: `_wt=tostring(expr)` → `FrameScript_GetText("_wt")` @ 0x819D40
+- **Trampoline**: lua_bridge использует `hooks::GetOriginalFrameScriptExecute()` — вызов оригинальной функции мимо нашего logging hook
+
+**Оффсеты**: реорганизованы в nested namespaces в `offsets/functions.h`:
+- `offsets::fn` — адреса функций (FrameScript_Execute, ClickToMove, TraceLine, UnitReaction, ...)
+- `offsets::globals` — глобальные переменные (PlayerName, TargetGUID, ZoneText, ComboPoints, ...)
+- `offsets::objmgr` — ObjectManager (CurMgrPointer, ObjMgrOffset, FirstObject, NextObject, ...)
+- `offsets::fields` — дескрипторные поля (UNIT_HEALTH=0x18, PLAYER_COINAGE=0x492, ...)
+- `offsets::vtable` — VTable индексы (GetPosition=12, GetFacing=14, GetName=54)
+- `offsets::unit` — структура Unit (CastingSpellId=0xC08, NameOffset1=0x964, ...)
+- `offsets::ctm` — ClickToMove actions (Move=0x04, Attack=0x0A, Stop=0x0D, ...)
+
+**Интеграция**: `game::Initialize()` вызывается после `hooks::Initialize()` в dllmain.cpp, `game::Shutdown()` — перед `hooks::Shutdown()`.
+
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ (лог "[GAME] SDK initialized" при инжекции)
+
+---
+
 ## Архитектура файлов
 
 ```
@@ -464,11 +507,26 @@ wotlk/
   src/
     dllmain.cpp                          — точка входа, MainThread, init/shutdown sequence
     hooks/
-      hooks.h                            — API: Initialize() / Shutdown()
+      hooks.h                            — API: Initialize() / Shutdown() + GetOriginalFrameScriptExecute()
       hooks.cpp                          — MinHook + FrameScript/Warden/SendPacket/ARC4 detours
                                            + CHEAT_CHECKS_REQUEST parser + CMSG parser
                                            + deferred RC4 install (HASH_REQUEST PostHandler)
                                            + HASH_RESULT diagnostics
+    offsets/
+      offsets.h                          — Общий include
+      functions.h                        — Все оффсеты: fn::, globals::, objmgr::, fields::, vtable::, unit::, ctm::
+    game/
+      game.h / .cpp                      — Фасад SDK: Initialize/Shutdown, GetLocalPlayer/Target/AllUnits
+      types.h                            — GUID, Vec3, ObjectType, PowerType, UnitReaction, UnitFlags
+      mem.h / .cpp                       — SEH-безопасное чтение памяти
+      object_manager.h / .cpp            — ObjectManager traversal: GetObjectPtr, EnumObjects
+      lua_bridge.h / .cpp                — Lua мост: Execute, GetValue, GetInt/Float/Bool
+      game_object.h / .cpp               — WowObject: GUID, тип, позиция, facing, дескрипторы
+      unit.h / .cpp                      — Unit: HP/мана, уровень, ауры, реакция, каст
+      local_player.h / .cpp              — LocalPlayer: XP, золото, статы, комбо-поинты
+      spell.h / .cpp                     — Спеллы: HasSpell, CastById, CastByName, кулдаун
+      movement.h / .cpp                  — Движение: ClickToMove, SetFacing, Jump
+      world.h / .cpp                     — Мир: зона, карта, реалм, LOS, камера
     warden/
       warden_types.h                     — CheckCategory enum, PendingCheck struct, CMSG/SMSG opcodes
       warden_scan.h / .cpp               — type extraction (dispatch chain, remap, dynamic discovery)
@@ -511,6 +569,8 @@ wotlk/
 - ~~DRIVER_CHECK spoofing~~ — force 0xE9 (driver not found)
 - ~~PROC_CHECK spoofing~~ — force 0xE9 (HMAC match)
 - ~~MPQ_CHECK spoofing~~ — SHA1 подмена через mpq_cache
+- ~~Game SDK~~ — 12 модулей (ObjectManager, Unit, LocalPlayer, Spell, Movement, World, Lua bridge)
+- ~~Оффсеты реорганизованы~~ — nested namespaces (offsets::fn, offsets::globals, offsets::objmgr, offsets::fields, ...)
 
 ### Ближайшее
 
@@ -556,7 +616,7 @@ wotlk/
 
 ## Заключение
 
-Проект находится на стадии **активного bypass**. Все основные типы проверок Warden, нацеленные на detection нашей DLL, перехвачены и спуфятся:
+Проект находится на стадии **активного bypass + Game SDK**. Все основные типы проверок Warden перехвачены и спуфятся. Поверх Warden-слоя реализован Game SDK для взаимодействия с игрой:
 
 **Что мы умеем**:
 - Перехватывать и парсить все типы Warden пакетов (SMSG и CMSG)
@@ -573,6 +633,10 @@ wotlk/
 - Находить адреса наших хуков в запросах Warden (ScanForHookAddresses)
 - Читать оригинальные байты .text секции (Shadow Copy)
 - Обрабатывать новые (uncached) модули через blind memory scan + bounded dynamic type discovery + two-tier matching
+- **Читать данные персонажа** (HP, мана, уровень, позиция, ауры, статы, золото) через Game SDK
+- **Перечислять юнитов** вокруг (ObjectManager traversal), проверять реакцию/расстояние
+- **Выполнять действия** (ClickToMove, SetFacing, CastSpell, SelectTarget) через C++ вызовы и Lua bridge
+- **Получать информацию о мире** (зона, карта, реалм, LinOfSight, камера)
 
 **Ключевые компоненты**:
 - `src/warden/warden_spoof.cpp` — core spoofing logic + FIFO queue

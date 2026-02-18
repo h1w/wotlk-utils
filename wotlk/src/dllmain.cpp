@@ -8,6 +8,7 @@
 #include "warden/mpq_cache.h"
 #include "warden/module_dump.h"
 #include "warden/peb_unlink.h"
+#include "game/game.h"
 #include <glog/logging.h>
 
 #include <cstdio>
@@ -93,6 +94,10 @@ DWORD WINAPI MainThread(LPVOID lpParam)
         LOG(ERROR) << "Failed to initialize hooks";
     }
 
+    if (game::Initialize()) {
+        LOG(INFO) << "Game SDK initialized";
+    }
+
     // Hide our DLL + dependencies from PEB.Ldr (prevents Warden MODULE_CHECK detection).
     // Must be AFTER all init that uses GetModuleHandle/GetModuleFileName.
     peb_unlink::UnlinkAll(hModule);
@@ -110,6 +115,8 @@ DWORD WINAPI MainThread(LPVOID lpParam)
 
     // Restore PEB entries before unload — LdrUnloadDll needs them to find the module.
     peb_unlink::RelinkAll();
+
+    game::Shutdown();
 
     // Даём время завершиться вызовам хуков, которые могут быть in-flight
     // в основном потоке игры (FrameScript_Execute вызывается из main thread)

@@ -6,7 +6,8 @@
 
 - **wotlk.dll** — это файл, который мы "впихиваем" (инжектируем) в процесс игры Wow.exe
 - Эта DLL перехватывает важные функции внутри игры и смотрит, что там происходит
-- Главная цель — понять, как работает **Warden** (система античита в WoW)
+- Главная цель — понять, как работает **Warden** (система античита в WoW) и взаимодействовать с игрой
+- Поверх Warden-слоя работает **Game SDK** — набор C++ модулей для чтения данных персонажа/мира и выполнения действий (каст, движение, таргетирование)
 - Всё что происходит — записывается в логи, чтобы потом можно было изучить
 
 **Injector** — это отдельная программа, которая засовывает нашу DLL в игру и потом может её выгрузить.
@@ -32,6 +33,23 @@ wotlk-utils/
 │   │   │   ├── warden_handler.cpp       # Хук обработчика пакетов Warden
 │   │   │   ├── send_packet.cpp          # Хук отправки пакетов на сервер
 │   │   │   └── arc4_process.cpp         # Хук RC4 шифрования заголовков
+│   │   │
+│   │   ├── offsets/         # Адреса и оффсеты для build 12340
+│   │   │   ├── offsets.h               # Общий include
+│   │   │   └── functions.h             # Все оффсеты: fn::, globals::, objmgr::, fields::, vtable:: и т.д.
+│   │   │
+│   │   ├── game/           # Game SDK — чтение данных и действия
+│   │   │   ├── game.h / .cpp           # Фасад: Initialize/Shutdown, GetLocalPlayer, GetTarget, GetAllUnits
+│   │   │   ├── types.h                 # GUID, Vec3, ObjectType, PowerType, UnitReaction, UnitFlags
+│   │   │   ├── mem.h / .cpp            # SEH-безопасное чтение памяти
+│   │   │   ├── object_manager.h / .cpp # ObjectManager: обход linked list, GetObjectPtr
+│   │   │   ├── lua_bridge.h / .cpp     # Lua мост: Execute, GetValue, GetInt/Float/Bool
+│   │   │   ├── game_object.h / .cpp    # WowObject: GUID, тип, позиция, facing, дескрипторы
+│   │   │   ├── unit.h / .cpp           # Unit: HP/мана, уровень, ауры, реакция, каст
+│   │   │   ├── local_player.h / .cpp   # LocalPlayer: XP, золото, статы, комбо-поинты
+│   │   │   ├── spell.h / .cpp          # Спеллы: HasSpell, CastById, CastByName, кулдаун
+│   │   │   ├── movement.h / .cpp       # Движение: ClickToMove, SetFacing, Jump
+│   │   │   └── world.h / .cpp          # Мир: зона, карта, реалм, LOS, камера
 │   │   │
 │   │   ├── warden/         # Анализ и обход системы Warden
 │   │   │   ├── warden_scan.cpp          # Сканирование модулей (in-memory + RLE unpack + dispatch chain)
@@ -67,6 +85,7 @@ wotlk-utils/
 | **warden-protocol.md** | Протокол Warden: какие пакеты бывают (SMSG/CMSG), что в них лежит, как их читать |
 | **warden-modules.md** | Формат модулей Warden (не PE!), как извлекать типы проверок из кода модуля |
 | **rc4-decryption.md** | Как работает RC4 шифрование в Warden, как мы ищем S-box в памяти и расшифровываем CMSG |
+| **game-sdk.md** | Game SDK: архитектура модулей для чтения данных и взаимодействия с игрой |
 | **status.md** | Что уже работает, что НЕ работает, что планируется сделать |
 
 ### Справочные материалы
@@ -148,7 +167,8 @@ injector.exe --eject
 4. **warden-protocol.md** — что такое Warden и какие пакеты он посылает
 5. **warden-modules.md** — что внутри модулей Warden и как извлекать информацию
 6. **rc4-decryption.md** — как расшифровать зашифрованные пакеты
-7. **status.md** — где мы сейчас и что дальше
+7. **game-sdk.md** — Game SDK: чтение данных персонажа/мира + управление
+8. **status.md** — где мы сейчас и что дальше
 
 После этого можно копаться в коде, скриптах, дампах — ты уже будешь понимать, зачем всё это нужно.
 

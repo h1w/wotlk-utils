@@ -70,6 +70,8 @@ void __cdecl FrameScript_Execute(const char* code, const char* filename, int unu
 
 **Полезность:** Можно отследить какие аддоны и макросы выполняются, найти вредоносный код.
 
+**Game SDK интеграция:** `hooks.h` экспортирует `GetOriginalFrameScriptExecute()` — возвращает trampoline на оригинальную функцию (мимо нашего logging hook). Используется модулем `lua_bridge.cpp` для выполнения Lua кода без загрязнения лога.
+
 ---
 
 ### 2.2. SMSG_WARDEN_DATA Handler (0x007DA850)

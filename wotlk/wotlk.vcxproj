@@ -137,6 +137,19 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\game\game.h" />
+    <ClInclude Include="src\game\game_object.h" />
+<ClInclude Include="src\game\local_player.h" />
+    <ClInclude Include="src\game\lua_bridge.h" />
+    <ClInclude Include="src\game\mem.h" />
+    <ClInclude Include="src\game\movement.h" />
+    <ClInclude Include="src\game\object_manager.h" />
+    <ClInclude Include="src\game\spell.h" />
+    <ClInclude Include="src\game\types.h" />
+    <ClInclude Include="src\game\unit.h" />
+    <ClInclude Include="src\game\world.h" />
+    <ClInclude Include="src\offsets\offsets.h" />
+    <ClInclude Include="src\offsets\functions.h" />
     <ClInclude Include="src\hooks\hooks.h" />
     <ClInclude Include="src\warden\mpq_cache.h" />
     <ClInclude Include="src\warden\module_dump.h" />
@@ -158,6 +171,16 @@
     <ClInclude Include="src\third_party\miniz_zip.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\game\game.cpp" />
+    <ClCompile Include="src\game\game_object.cpp" />
+    <ClCompile Include="src\game\local_player.cpp" />
+    <ClCompile Include="src\game\lua_bridge.cpp" />
+    <ClCompile Include="src\game\mem.cpp" />
+    <ClCompile Include="src\game\movement.cpp" />
+    <ClCompile Include="src\game\object_manager.cpp" />
+    <ClCompile Include="src\game\spell.cpp" />
+    <ClCompile Include="src\game\unit.cpp" />
+    <ClCompile Include="src\game\world.cpp" />
     <ClCompile Include="src\dllmain.cpp" />
     <ClCompile Include="src\hooks\hooks.cpp" />
     <ClCompile Include="src\warden\mpq_cache.cpp" />

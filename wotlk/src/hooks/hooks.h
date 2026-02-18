@@ -17,4 +17,9 @@ void Shutdown();
 // stores the seed, but the CDataStore has already been decrypted in-place.
 bool TryExtractHashSeedFromCurrentPacket(uint8_t outSeed[16]);
 
+// Access the original (unhooked) FrameScript_Execute trampoline.
+// Used by lua_bridge to execute Lua without triggering our logging hook.
+using FrameScriptExecuteFn = void(__cdecl*)(const char*, const char*, int);
+FrameScriptExecuteFn GetOriginalFrameScriptExecute();
+
 } // namespace hooks

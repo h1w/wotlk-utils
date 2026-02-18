@@ -423,7 +423,7 @@ FreeLibraryAndExitThread(hModule, 0);
 **Что делает:**
 - Определяет `DllMain` — функцию, которую Windows вызывает при загрузке/выгрузке DLL
 - Создает `MainThread` при `DLL_PROCESS_ATTACH`
-- `MainThread` выполняет всю инициализацию и ожидает выгрузки
+- `MainThread` выполняет всю инициализацию (hooks, shadow copy, game SDK) и ожидает выгрузки
 
 **Аналогия**: это "main()" для DLL.
 
@@ -607,6 +607,47 @@ FreeLibraryAndExitThread(hModule, 0);
 
 ---
 
+### **src/game/** — Game SDK (чтение данных + действия)
+
+**Что делает:**
+SDK-слой для взаимодействия с игрой. Использует hybrid-подход: C++ для чтения памяти (ObjectManager, дескрипторы, vtable вызовы) и Lua (через FrameScript_Execute) для игровых действий (каст, лут, движение).
+
+**Модули (12 файлов):**
+
+| Файл | Описание |
+|------|----------|
+| `game.h/.cpp` | Фасад: `Initialize()/Shutdown()`, `GetLocalPlayer()`, `GetTarget()`, `GetAllUnits()`, `SelectTarget()` |
+| `types.h` | Базовые типы: `GUID`, `Vec3`, `ObjectType`, `PowerType`, `UnitReaction`, `UnitFlags/DynFlags` |
+| `mem.h/.cpp` | SEH-безопасное чтение памяти: `ReadU32`, `ReadPointer`, `ReadCString`, `ReadDescU32/Float` |
+| `object_manager.h/.cpp` | Обход ObjectManager: `GetLocalPlayerPtr()`, `GetObjectPtr(guid)`, `EnumObjects(callback)` |
+| `lua_bridge.h/.cpp` | Lua мост: `Execute(code)`, `GetValue(expr)`, `GetInt/Float/Bool()`. Использует trampoline оригинального FrameScript_Execute (мимо logging hook) |
+| `game_object.h/.cpp` | Базовый `WowObject`: GUID, тип, позиция (vtable), facing (vtable), имя (vtable), дескрипторы |
+| `unit.h/.cpp` | `Unit` (наследует WowObject): HP/мана, уровень, таргет, ауры, реакция, каст, UnitName |
+| `local_player.h/.cpp` | `LocalPlayer` (наследует Unit): XP, золото, статы, комбо-поинты, HasSpell |
+| `spell.h/.cpp` | Спеллы: `HasSpell()` (C++), `IsOnCooldown()` (Lua), `CastById/CastByName()` (Lua) |
+| `movement.h/.cpp` | Движение: `ClickToMove()` (__thiscall C++), `SetFacing()`, `FacePosition()`, `Jump()` (Lua) |
+| `world.h/.cpp` | Мир: зона, карта, реалм, `IsInGame()`, `HasLineOfSight()` (TraceLine), камера |
+
+**Ключевые паттерны:**
+- **SEH isolation**: все `__try/__except` блоки в отдельных `__cdecl` helper-функциях без C++ объектов на стеке (ограничение MSVC — `__try` несовместим с деструкторами)
+- **VTable вызовы**: `GetPosition()`, `GetFacing()`, `GetName()` через vtable индексы (12, 14, 54)
+- **Дескрипторы**: поля юнита/игрока через `descriptor_base + field_index * 4`
+- **ObjectManager traversal**: linked list `FirstObject → NextObject` с лимитом 10000 итераций
+- **Lua bridge**: `_wt=tostring(expr)` + `FrameScript_GetText("_wt")` для получения значений
+
+**Оффсеты**: все в `src/offsets/functions.h`, организованы по namespace:
+- `offsets::fn` — адреса функций
+- `offsets::globals` — глобальные переменные
+- `offsets::objmgr` — ObjectManager оффсеты
+- `offsets::fields` — дескрипторные поля
+- `offsets::vtable` — VTable индексы
+- `offsets::unit` — структура Unit
+- `offsets::ctm` — ClickToMove actions
+
+**Потокобезопасность**: все вызовы Game SDK должны выполняться на **main thread** (поток UI WoW). Внутренние функции игры не thread-safe.
+
+---
+
 ### **injector/src/main.cpp** — инжекция/выгрузка DLL
 
 **Что делает:**
@@ -772,3 +813,4 @@ FreeLibraryAndExitThread(hModule, 0);
 5. **Кеширование**: модули сохраняются на диск, чтобы избежать повторной загрузки.
 6. **Internal RC4 hook**: перехват RC4 PRGA внутри модуля — захват plaintext + точка для spoofing.
 7. **Shadow Copy**: маппинг Wow.exe с диска — источник оригинальных (unhooked) байт для spoofing.
+8. **Game SDK**: C++ модули для чтения данных персонажа/мира (ObjectManager, дескрипторы, vtable) + Lua bridge для действий (каст, движение). SEH-изолированные helper-функции, main thread only.

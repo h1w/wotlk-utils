@@ -25,8 +25,44 @@
     <Filter Include="third_party">
       <UniqueIdentifier>{D4E5F6A7-8B9C-0D1E-2F3A-4B5C6D7E8F9A}</UniqueIdentifier>
     </Filter>
+    <Filter Include="game">
+      <UniqueIdentifier>{F1A2B3C4-D5E6-7F8A-9B0C-1D2E3F4A5B6C}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\game\game.h">
+      <Filter>game</Filter>
+    </ClInclude>
+    <ClInclude Include="src\game\game_object.h">
+      <Filter>game</Filter>
+    </ClInclude>
+<ClInclude Include="src\game\local_player.h">
+      <Filter>game</Filter>
+    </ClInclude>
+    <ClInclude Include="src\game\lua_bridge.h">
+      <Filter>game</Filter>
+    </ClInclude>
+    <ClInclude Include="src\game\mem.h">
+      <Filter>game</Filter>
+    </ClInclude>
+    <ClInclude Include="src\game\movement.h">
+      <Filter>game</Filter>
+    </ClInclude>
+    <ClInclude Include="src\game\object_manager.h">
+      <Filter>game</Filter>
+    </ClInclude>
+    <ClInclude Include="src\game\spell.h">
+      <Filter>game</Filter>
+    </ClInclude>
+    <ClInclude Include="src\game\types.h">
+      <Filter>game</Filter>
+    </ClInclude>
+    <ClInclude Include="src\game\unit.h">
+      <Filter>game</Filter>
+    </ClInclude>
+    <ClInclude Include="src\game\world.h">
+      <Filter>game</Filter>
+    </ClInclude>
     <ClInclude Include="src\hooks\hooks.h">
       <Filter>hooks</Filter>
     </ClInclude>
@@ -80,6 +116,36 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\game\game.cpp">
+      <Filter>game</Filter>
+    </ClCompile>
+    <ClCompile Include="src\game\game_object.cpp">
+      <Filter>game</Filter>
+    </ClCompile>
+    <ClCompile Include="src\game\local_player.cpp">
+      <Filter>game</Filter>
+    </ClCompile>
+    <ClCompile Include="src\game\lua_bridge.cpp">
+      <Filter>game</Filter>
+    </ClCompile>
+    <ClCompile Include="src\game\mem.cpp">
+      <Filter>game</Filter>
+    </ClCompile>
+    <ClCompile Include="src\game\movement.cpp">
+      <Filter>game</Filter>
+    </ClCompile>
+    <ClCompile Include="src\game\object_manager.cpp">
+      <Filter>game</Filter>
+    </ClCompile>
+    <ClCompile Include="src\game\spell.cpp">
+      <Filter>game</Filter>
+    </ClCompile>
+    <ClCompile Include="src\game\unit.cpp">
+      <Filter>game</Filter>
+    </ClCompile>
+    <ClCompile Include="src\game\world.cpp">
+      <Filter>game</Filter>
+    </ClCompile>
     <ClCompile Include="src\dllmain.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

@@ -37,10 +37,10 @@ static constexpr struct {
     uintptr_t   addr;
     const char* name;
 } kHookTargets[] = {
-    { offsets::FrameScript_Execute, "FrameScript_Execute" },
-    { offsets::WardenHandler,       "WardenHandler" },
-    { offsets::SendPacket,          "SendPacket" },
-    { offsets::ARC4_Process,        "ARC4::Process" },
+    { offsets::fn::FrameScript_Execute, "FrameScript_Execute" },
+    { offsets::fn::WardenHandler,       "WardenHandler" },
+    { offsets::fn::SendPacket,          "SendPacket" },
+    { offsets::fn::ARC4_Process,        "ARC4::Process" },
 };
 static constexpr size_t kNumTargets = sizeof(kHookTargets) / sizeof(kHookTargets[0]);
 

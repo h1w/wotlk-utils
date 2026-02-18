@@ -236,7 +236,7 @@ static void EnumReadableRegions(Fn callback, size_t minSize,
         }
 
         // Exclude WoW .text section
-        if (base >= offsets::TextStart && base < offsets::TextEnd) {
+        if (base >= offsets::pe::TextStart && base < offsets::pe::TextEnd) {
             addr = regionEnd;
             continue;
         }
