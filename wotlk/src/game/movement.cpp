@@ -56,6 +56,11 @@ bool ClickToMoveInteract(GUID targetGuid, const Vec3& pos)
     return CallCTM(offsets::ctm::Interact, targetGuid, pos);
 }
 
+bool ClickToMoveLoot(GUID targetGuid, const Vec3& pos)
+{
+    return CallCTM(offsets::ctm::Loot, targetGuid, pos);
+}
+
 bool StopCTM()
 {
     Vec3 dummy;

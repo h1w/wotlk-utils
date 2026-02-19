@@ -12,6 +12,7 @@ namespace game::movement {
 bool ClickToMove(const Vec3& pos);
 bool ClickToMoveAttack(GUID targetGuid, const Vec3& pos);
 bool ClickToMoveInteract(GUID targetGuid, const Vec3& pos);
+bool ClickToMoveLoot(GUID targetGuid, const Vec3& pos);
 bool StopCTM();
 
 // --- Facing (C++) ---

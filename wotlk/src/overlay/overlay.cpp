@@ -13,7 +13,16 @@
 
 #include "../game/game.h"
 #include "../game/world.h"
+#include "../game/spell.h"
 #include "../game/player_stats.h"
+#include "../bot/action_queue.h"
+#include "../bot/tools/wait.h"
+#include "../bot/tools/move_to.h"
+#include "../bot/tools/attack.h"
+#include "../bot/tools/use_spell.h"
+#include "../bot/tools/sequence.h"
+#include "../bot/tools/loot.h"
+#include "../bot/tools/interact.h"
 
 // Forward declaration from imgui_impl_win32.cpp
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -208,6 +217,263 @@ static void RenderPlayerInfoWidget()
     ImGui::End();
 }
 
+// ---- Bot Action Queue widget ----
+
+static void RenderToolsTab()
+{
+    auto& queue = bot::ActionQueue::Instance();
+
+    if (ImGui::BeginTabBar("ToolTabs")) {
+
+        // ---- Wait ----
+        if (ImGui::BeginTabItem("Wait")) {
+            static int waitMs = 3000;
+            ImGui::SliderInt("Duration (ms)", &waitMs, 500, 15000);
+            if (ImGui::Button("PushBack"))
+                queue.PushBack(std::make_unique<bot::WaitTool>(static_cast<uint32_t>(waitMs)));
+            ImGui::SameLine();
+            if (ImGui::Button("Interrupt"))
+                queue.Interrupt(std::make_unique<bot::WaitTool>(static_cast<uint32_t>(waitMs)));
+            ImGui::EndTabItem();
+        }
+
+        // ---- MoveTo ----
+        if (ImGui::BeginTabItem("MoveTo")) {
+            static float pos[3] = { 0, 0, 0 };
+            static float arrivalDist = 3.0f;
+
+            if (ImGui::Button("Use Current Pos")) {
+                auto player = game::GetLocalPlayer();
+                if (player) {
+                    auto p = player->GetPosition();
+                    pos[0] = p.x; pos[1] = p.y; pos[2] = p.z;
+                }
+            }
+            ImGui::InputFloat3("Target (x,y,z)", pos);
+            ImGui::SliderFloat("Arrival dist", &arrivalDist, 0.5f, 10.0f);
+
+            if (ImGui::Button("PushBack"))
+                queue.PushBack(std::make_unique<bot::MoveToTool>(
+                    game::Vec3{pos[0], pos[1], pos[2]}, arrivalDist));
+            ImGui::SameLine();
+            if (ImGui::Button("Interrupt"))
+                queue.Interrupt(std::make_unique<bot::MoveToTool>(
+                    game::Vec3{pos[0], pos[1], pos[2]}, arrivalDist));
+
+            // Show current distance if MoveTo is running
+            auto* cur = queue.GetCurrent();
+            if (cur && cur->GetType() == bot::ToolType::MoveTo) {
+                auto* mt = static_cast<bot::MoveToTool*>(cur);
+                ImGui::Text("Distance: %.1f yd", mt->GetDistanceRemaining());
+            }
+            ImGui::EndTabItem();
+        }
+
+        // ---- Attack ----
+        if (ImGui::BeginTabItem("Attack")) {
+            ImGui::TextWrapped("Attacks the current target (select a target in game first).");
+
+            auto target = game::GetTarget();
+            if (target) {
+                ImGui::Text("Target: %s (HP: %.0f%%)",
+                    target->GetUnitName().c_str(), target->GetHealthPercent());
+
+                game::GUID guid = target->GetGUID();
+                if (ImGui::Button("PushBack"))
+                    queue.PushBack(std::make_unique<bot::AttackTool>(guid));
+                ImGui::SameLine();
+                if (ImGui::Button("Interrupt"))
+                    queue.Interrupt(std::make_unique<bot::AttackTool>(guid));
+            } else {
+                ImGui::TextDisabled("No target selected");
+            }
+            ImGui::EndTabItem();
+        }
+
+        // ---- UseSpell ----
+        if (ImGui::BeginTabItem("UseSpell")) {
+            static int spellId = 0;
+            ImGui::InputInt("Spell ID", &spellId);
+
+            bool known = (spellId > 0) && game::spell::HasSpell(static_cast<uint32_t>(spellId));
+            if (spellId > 0) {
+                if (known)
+                    ImGui::TextColored(ImVec4(0.2f, 1.f, 0.2f, 1.f), "Spell known");
+                else
+                    ImGui::TextColored(ImVec4(1.f, 0.3f, 0.3f, 1.f), "Spell NOT known");
+            }
+
+            if (known) {
+                bool onCD = game::spell::IsOnCooldown(static_cast<uint32_t>(spellId));
+                if (onCD)
+                    ImGui::TextColored(ImVec4(1.f, 1.f, 0.2f, 1.f), "On cooldown");
+
+                if (ImGui::Button("PushBack"))
+                    queue.PushBack(std::make_unique<bot::UseSpellTool>(
+                        static_cast<uint32_t>(spellId)));
+                ImGui::SameLine();
+                if (ImGui::Button("Interrupt"))
+                    queue.Interrupt(std::make_unique<bot::UseSpellTool>(
+                        static_cast<uint32_t>(spellId)));
+            }
+            ImGui::EndTabItem();
+        }
+
+        // ---- Loot ----
+        if (ImGui::BeginTabItem("Loot")) {
+            ImGui::TextWrapped("Loot the current target (must be dead).");
+
+            auto target = game::GetTarget();
+            if (target && target->IsDead()) {
+                ImGui::Text("Target: %s (dead)", target->GetUnitName().c_str());
+                game::GUID guid = target->GetGUID();
+                if (ImGui::Button("PushBack"))
+                    queue.PushBack(std::make_unique<bot::LootTool>(guid));
+                ImGui::SameLine();
+                if (ImGui::Button("Interrupt"))
+                    queue.Interrupt(std::make_unique<bot::LootTool>(guid));
+            } else if (target) {
+                ImGui::TextDisabled("Target is alive — kill it first");
+            } else {
+                ImGui::TextDisabled("No target selected");
+            }
+            ImGui::EndTabItem();
+        }
+
+        // ---- Interact ----
+        if (ImGui::BeginTabItem("Interact")) {
+            ImGui::TextWrapped("Walk to and interact with current target/object.");
+
+            auto target = game::GetTarget();
+            if (target) {
+                ImGui::Text("Target: %s", target->GetUnitName().c_str());
+                game::GUID guid = target->GetGUID();
+                if (ImGui::Button("PushBack"))
+                    queue.PushBack(std::make_unique<bot::InteractTool>(guid));
+                ImGui::SameLine();
+                if (ImGui::Button("Interrupt"))
+                    queue.Interrupt(std::make_unique<bot::InteractTool>(guid));
+            } else {
+                ImGui::TextDisabled("No target selected");
+            }
+            ImGui::EndTabItem();
+        }
+
+        // ---- Sequence ----
+        if (ImGui::BeginTabItem("Kill & Loot")) {
+            ImGui::TextWrapped("Combo: attack target until dead, then loot the corpse.");
+
+            auto target = game::GetTarget();
+            if (target && !target->IsDead()) {
+                ImGui::Text("Target: %s (HP: %.0f%%)",
+                    target->GetUnitName().c_str(), target->GetHealthPercent());
+
+                game::GUID guid = target->GetGUID();
+                game::Vec3 tpos = target->GetPosition();
+
+                if (ImGui::Button("Kill & Loot")) {
+                    std::vector<bot::ToolPtr> steps;
+                    steps.push_back(std::make_unique<bot::AttackTool>(guid));
+                    steps.push_back(std::make_unique<bot::LootTool>(guid));
+                    queue.PushBack(std::make_unique<bot::SequenceTool>(std::move(steps)));
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("MoveTo + Kill + Loot")) {
+                    std::vector<bot::ToolPtr> steps;
+                    steps.push_back(std::make_unique<bot::MoveToTool>(tpos, 5.0f));
+                    steps.push_back(std::make_unique<bot::AttackTool>(guid));
+                    steps.push_back(std::make_unique<bot::LootTool>(guid));
+                    queue.PushBack(std::make_unique<bot::SequenceTool>(std::move(steps)));
+                }
+            } else if (target && target->IsDead()) {
+                ImGui::TextDisabled("Target is already dead");
+            } else {
+                ImGui::TextDisabled("No target selected");
+            }
+            ImGui::EndTabItem();
+        }
+
+        ImGui::EndTabBar();
+    }
+}
+
+static void RenderQueueList()
+{
+    auto& queue = bot::ActionQueue::Instance();
+
+    if (ImGui::Button("Clear All"))
+        queue.Clear();
+
+    ImGui::Separator();
+
+    if (queue.IsEmpty()) {
+        ImGui::TextDisabled("Queue is empty");
+        return;
+    }
+
+    ImGui::Text("Queue: %zu tool(s)", queue.Size());
+    ImGui::Separator();
+
+    int removeIdx = -1;
+    const auto& all = queue.GetAll();
+
+    for (size_t i = 0; i < all.size(); ++i) {
+        const auto* tool = all[i].get();
+        auto status = tool->GetStatus();
+
+        ImGui::PushID(static_cast<int>(i));
+
+        // Status indicator
+        if (i == 0 && status == bot::ToolStatus::Running)
+            ImGui::TextColored(ImVec4(0.2f, 1.f, 0.2f, 1.f), ">>>");
+        else
+            ImGui::TextDisabled("   ");
+        ImGui::SameLine();
+
+        // Tool description
+        ImGui::Text("[%zu] %s", i, tool->Describe().c_str());
+
+        // Progress bar for WaitTool
+        if (tool->GetType() == bot::ToolType::Wait && status == bot::ToolStatus::Running) {
+            auto* wait = static_cast<const bot::WaitTool*>(tool);
+            char lbl[64];
+            snprintf(lbl, sizeof(lbl), "%llu / %u ms", wait->GetElapsedMs(), wait->GetDurationMs());
+            ImGui::ProgressBar(wait->GetProgress(), ImVec2(-1, 0), lbl);
+        }
+
+        // Distance for MoveToTool
+        if (tool->GetType() == bot::ToolType::MoveTo && status == bot::ToolStatus::Running) {
+            auto* mt = static_cast<const bot::MoveToTool*>(tool);
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.f), "(%.0f yd)", mt->GetDistanceRemaining());
+        }
+
+        // Remove button
+        ImGui::SameLine();
+        if (ImGui::SmallButton("X"))
+            removeIdx = static_cast<int>(i);
+
+        ImGui::PopID();
+    }
+
+    if (removeIdx >= 0)
+        queue.Remove(static_cast<size_t>(removeIdx));
+}
+
+static void RenderToolsWidget()
+{
+    ImGui::Begin("Tools");
+    RenderToolsTab();
+    ImGui::End();
+}
+
+static void RenderQueueWidget()
+{
+    ImGui::Begin("Queue");
+    RenderQueueList();
+    ImGui::End();
+}
+
 namespace overlay {
 
 // EndScene: index 42 in IDirect3DDevice9 vtable
@@ -293,6 +559,11 @@ static HRESULT WINAPI HookedEndScene(IDirect3DDevice9* pDevice)
     ImGui::NewFrame();
 
     RenderPlayerInfoWidget();
+
+    // Bot: tick the action queue + render widgets
+    bot::ActionQueue::Instance().Tick();
+    RenderToolsWidget();
+    RenderQueueWidget();
 
     ImGui::EndFrame();
     ImGui::Render();
