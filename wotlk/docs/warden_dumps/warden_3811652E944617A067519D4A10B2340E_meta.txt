@@ -1,0 +1,6 @@
+Warden Module Dump (from memory)
+MD5 hash: 3811652E944617A067519D4A10B2340E
+RC4 key:  E7E78D93E4FE227EBCDEBB58B03A2789
+Expected: 18082 bytes (encrypted+compressed)
+Runtime:  45056 bytes (in-memory image)
+Readable: 40960 bytes

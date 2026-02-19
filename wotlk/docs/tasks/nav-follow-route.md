@@ -1,6 +1,6 @@
 # Task: FollowRoute Tool
 
-> **Status**: TODO
+> **Status**: DONE
 > **Created**: 2026-02-19
 > **Phase**: 7b (Navigation)
 > **Depends on**: nav-detour-integration (для валидации waypoints, опционально)
@@ -135,9 +135,9 @@ wotlk/src/bot/tools/
 
 ## Критерии готовности
 
-- [ ] FollowRouteTool проходит массив waypoints через CTM
-- [ ] Stuck detection работает (прыжок + retry при застревании)
-- [ ] Loop mode — зацикленный маршрут
-- [ ] ImGui: запись waypoints кнопкой "Add Current Position"
-- [ ] Queue показывает прогресс [N/M] и дистанцию
-- [ ] Таймаут 5 минут → Failed
+- [x] FollowRouteTool проходит массив waypoints через CTM
+- [x] Stuck detection работает (прыжок + retry при застревании)
+- [x] Loop mode — зацикленный маршрут
+- [x] ImGui: вкладка Follow Route с записью waypoints
+- [x] Queue показывает прогресс [N/M] и дистанцию
+- [x] Таймаут 5 минут → Failed

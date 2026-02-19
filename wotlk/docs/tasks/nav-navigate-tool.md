@@ -1,7 +1,8 @@
-# Task: Navigate Tool (Auto-Pathfinding)
+# Task: Navmesh Pathfinding for All Tools
 
-> **Status**: TODO
+> **Status**: DONE
 > **Created**: 2026-02-19
+> **Completed**: 2026-02-19
 > **Phase**: 7c (Navigation)
 > **Depends on**: nav-detour-integration, nav-follow-route
 > **Blocks**: nav-hostile-avoidance, nav-humanization
@@ -10,7 +11,7 @@
 
 ## Цель
 
-Реализовать `NavigateTool` — ITool который принимает целевую точку (x, y, z), автоматически строит путь через Detour навмеш, и проходит его. Это "умная" навигация поверх FollowRouteTool.
+Интегрировать навмеш-навигацию во все инструменты движения (MoveToTool, AttackTool, LootTool, InteractTool) через переиспользуемый класс `NavHelper`.
 
 ---
 
@@ -18,160 +19,90 @@
 
 - `Pathfinder::FindPath()` из nav-detour-integration возвращает массив waypoints
 - `FollowRouteTool` уже умеет ходить по массиву waypoints
-- NavigateTool = Pathfinder + FollowRoute + динамический пересчёт пути
+
+## Решение (вместо отдельного NavigateTool)
+
+Вместо отдельного `NavigateTool` реализован **NavHelper** — переиспользуемый класс, который инкапсулирует логику pathfinding + следование по waypoints. Каждый инструмент встраивает NavHelper и делегирует ему навигацию. При недоступности навмеша инструменты fallback на прямой CTM (текущее поведение).
+
+Это проще и естественнее: каждый инструмент сам управляет переключением между nav-подходом и прямым CTM в зависимости от расстояния до цели.
 
 ---
 
-## Что нужно сделать
+## Реализация
 
-### 1. NavigateTool
+### NavHelper (`wotlk/src/bot/nav_helper.h` + `.cpp`)
 
-Добавить `ToolType::Navigate` в `tool.h`.
+Переиспользуемый класс, инкапсулирующий pathfinding + waypoint following:
 
 ```cpp
-// wotlk/src/bot/tools/navigate.h
-
-namespace bot {
-
-class NavigateTool : public ITool {
+class NavHelper {
 public:
-    explicit NavigateTool(game::Vec3 destination);
+    enum class Status : uint8_t { Idle, Moving, Arrived, Failed };
 
-    ToolType    GetType() const override   { return ToolType::Navigate; }
-    const char* GetName() const override   { return "Navigate"; }
-    ToolStatus  GetStatus() const override { return m_status; }
+    bool StartNavTo(const game::Vec3& target);  // FindPath + start following
+    Status Tick();                                // tick waypoint following
+    void Stop();                                  // stop + StopCTM
 
-    void Start() override;
-    void Tick() override;
-    void Abort() override;
-
-    std::string Describe() const override;
-
-    // Публичные геттеры для Radar
-    const game::Vec3& GetDestination() const;
-    const std::vector<game::Vec3>& GetPath() const;
-    size_t GetCurrentWaypointIndex() const;
-
-private:
-    game::Vec3 m_destination;
-    ToolStatus m_status = ToolStatus::Pending;
-
-    // Внутренний маршрут (результат findPath)
-    std::vector<game::Vec3> m_path;
-    size_t   m_currentIndex = 0;
-    float    m_arrivalThreshold = 2.5f;
-
-    // Пересчёт пути
-    uint64_t m_lastRecalcTick = 0;
-    static constexpr uint32_t kRecalcIntervalMs = 5000; // пересчёт каждые 5с (если надо)
-    static constexpr float    kRecalcDistThresh = 10.0f; // пересчитать если отклонились >10yd
-
-    // Stuck detection (аналогично FollowRoute)
-    game::Vec3 m_lastPosition;
-    uint64_t   m_lastStuckCheckTick = 0;
-    uint32_t   m_stuckCount = 0;
-    static constexpr float    kStuckThreshold  = 1.0f;
-    static constexpr uint32_t kStuckCheckMs    = 3000;
-    static constexpr uint32_t kMaxStuckRetries = 5;
-
-    // Таймаут
-    uint64_t m_startTick = 0;
-    static constexpr uint32_t kTimeoutMs = 600000; // 10 минут
-
-    bool CalculatePath();
-    void IssueCTMToCurrentWP();
-    void AdvanceWaypoint();
-    bool ShouldRecalcPath();
+    Status GetStatus() const;
+    bool   IsActive() const;  // Status == Moving
 };
-
-} // namespace bot
 ```
 
-### 2. Логика
+- Stuck detection: 1yd threshold, 3s check interval, jump + re-CTM on stuck, 5 max retries
+- On Arrived: does NOT call StopCTM (lets calling tool issue its own CTM)
+- Skips first waypoint if player is already close to it
 
-```
-Start():
-    1. Проверить что NavMesh загружен и готов
-    2. Вызвать Pathfinder::FindPath(playerPos, destination)
-    3. Если путь не найден → Failed
-    4. Если путь partial → предупреждение в лог, идём сколько можем
-    5. CTM к первому waypoint
+### Интеграция в инструменты
 
-Tick():
-    1. Таймаут → Failed
-    2. Проверить расстояние до destination (а не до waypoint):
-       - Если dist < arrivalThreshold → Completed
-    3. Проверить расстояние до текущего waypoint:
-       - Если dist < threshold → AdvanceWaypoint()
-    4. Периодический пересчёт пути (каждые 5с):
-       - Если отклонились от пути > kRecalcDistThresh → пересчитать
-       - Это нужно если игрока сдвинули (knockback, агро, и т.д.)
-    5. Stuck detection → прыжок + пересчёт пути
-
-ShouldRecalcPath():
-    - Прошло > 5с с последнего расчёта
-    - Расстояние от текущей позиции до ближайшей точки на пути > 10yd
-    - Текущий mapId изменился (телепорт)
-```
-
-### 3. Взаимодействие с NavMesh
-
-```cpp
-bool NavigateTool::CalculatePath() {
-    auto player = game::GetLocalPlayer();
-    if (!player) return false;
-
-    game::Vec3 startPos = player->GetPosition();
-    nav::PathResult result = nav::Pathfinder::Instance().FindPath(startPos, m_destination);
-
-    if (!result.success && result.waypoints.empty())
-        return false;
-
-    m_path = std::move(result.waypoints);
-    m_currentIndex = 0;
-    return true;
-}
-```
-
-### 4. ImGui вкладка "Navigate"
-
-В окне Tools добавить вкладку:
-- 3 float-поля (X, Y, Z) для целевой точки
-- Кнопка **"Use Target Position"** — координаты текущей цели
-- Кнопка **"Use Current Position"** — текущие координаты игрока (для тестов)
-- Текст: расстояние до цели
-- Текст: статус NavMesh (загружен / не загружен / сколько тайлов)
-- Кнопки: PushBack, Interrupt
-
-### 5. Отличие от FollowRoute
-
-| | FollowRoute | Navigate |
+| Инструмент | kNavSwitchRange | Поведение |
 |---|---|---|
-| Вход | Массив Vec3 (готовый) | Одна точка-цель |
-| Путь | Задан заранее | Строится через Detour |
-| Пересчёт | Нет | Да, каждые 5с при отклонении |
-| Зависит от NavMesh | Нет | Да |
-| Использование | Записанные маршруты, тесты | Основная навигация |
+| **MoveToTool** | — (навигация до цели) | Nav → Completed. Fallback: direct CTM |
+| **AttackTool** | 15yd | Nav approach → switch to ClickToMoveAttack |
+| **LootTool** | 10yd | Nav approach → switch to ClickToMoveInteract |
+| **InteractTool** | 10yd | Nav approach → switch to ClickToMoveInteract |
+
+Каждый инструмент:
+1. В `Start()`: пробует `m_nav.StartNavTo()`. Если false → fallback на прямой CTM
+2. В `Tick()`: если nav mode → тикает NavHelper, проверяет расстояние для switch/arrived/failed
+3. В `Abort()`: вызывает `m_nav.Stop()` если активен
+
+### AttackTool — рефакторинг устойчивости
+
+Помимо навигации, AttackTool был переработан для устойчивости к:
+- **Ручной деселекции цели** (LMB по пустому месту) — re-select каждый тик
+- **Отмена CTM поворотом камеры** (RMB) — progress check каждую 1с детектит остановку
+
+Два режима прямой атаки:
+- **В ближнем бою** (≤8yd): только Lua `AttackTarget()` (не зависит от CTM)
+- **Вне ближнего боя**: progress check + periodic CTM refresh
+
+### ImGui
+
+- Вкладка "MoveTo" удалена — заменена вкладкой "Navigate" (навигация через навмеш)
+- Кнопка "MoveTo + Kill + Loot" обновлена: `MoveToTool(pos)` без параметра `arrivalDist`
 
 ---
 
 ## Файловая структура
 
 ```
-wotlk/src/bot/tools/
-├── navigate.h
-└── navigate.cpp
+wotlk/src/bot/
+├── nav_helper.h / .cpp     // NavHelper — pathfinding + waypoint following
+├── tools/
+│   ├── move_to.h / .cpp    // + NavHelper, убран arrivalDist
+│   ├── attack.h / .cpp     // + NavHelper + resilience rework
+│   ├── loot.h / .cpp       // + NavHelper
+│   └── interact.h / .cpp   // + NavHelper
 ```
-
-Модификация: `tool.h` (добавить ToolType::Navigate), `overlay.cpp` (новая вкладка).
 
 ---
 
 ## Критерии готовности
 
-- [ ] NavigateTool строит путь через Detour и проходит его
-- [ ] Пересчёт пути при отклонении > 10yd
-- [ ] Stuck detection + прыжок + пересчёт
-- [ ] Partial path: идём сколько можем, потом Failed
-- [ ] ImGui вкладка с вводом координат
-- [ ] Queue показывает дистанцию до цели и прогресс пути
+- [x] NavHelper строит путь через Detour и проходит его с stuck detection
+- [x] MoveToTool использует NavHelper, fallback на прямой CTM
+- [x] AttackTool: nav approach + switch на прямую атаку при ≤15yd
+- [x] LootTool: nav approach + switch на interact при ≤10yd
+- [x] InteractTool: nav approach + switch на interact при ≤10yd
+- [x] AttackTool устойчив к деселекции цели и отмене CTM
+- [x] ImGui: вкладка Navigate, удалена вкладка MoveTo

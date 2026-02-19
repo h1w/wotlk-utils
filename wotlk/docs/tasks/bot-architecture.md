@@ -1,6 +1,6 @@
 # Bot Architecture — Tool System & Action Queue
 
-> **Status**: Implementation in progress (Phases 1–4 done)
+> **Status**: Implementation in progress (Phases 1–4 done, Phase 7a-7c done)
 > **Created**: 2026-02-19
 > **Last updated**: 2026-02-19
 > **Scope**: DLL-side bot framework — инструменты, очередь действий, IPC с внешним контроллером
@@ -115,16 +115,21 @@ public:
 
 #### MoveTo
 - **Параметры**: `Vec3 target`
-- **Start()**: вызывает `game::movement::ClickToMove(target)`
-- **Tick()**: проверяет `player.GetPosition().DistanceTo(target) < threshold` → Completed. Если застрял — повторный ClickToMove или Failed по таймауту.
-- **Abort()**: `game::movement::StopCTM()` + `game::movement::StopMoving()`
-- **ImGui RenderParams()**: 3 float-поля (x, y, z) + кнопка "Use current pos" (заполняет текущими координатами игрока)
+- **Start()**: пробует NavHelper для навмеш-навигации, fallback на прямой `ClickToMove(target)`
+- **Tick()**: если nav → тикает NavHelper (Arrived→Completed, Failed→fallback CTM). Если прямой CTM → stuck detection (1yd/3s/5 retries).
+- **Abort()**: `m_nav.Stop()` или `StopCTM()` + `StopMoving()`
+- **Arrival distance**: 3.0 yd (static constexpr, не параметр)
 
 #### Attack
-- **Параметры**: `GUID targetGuid` ИЛИ режим `NearestHostile`
-- **Start()**: `game::SelectTarget(guid)` + `game::movement::ClickToMoveAttack(guid, targetPos)`
-- **Tick()**: проверяет что цель выбрана и персонаж в бою. Если цель мертва → Completed. Если цель потеряна → Failed.
-- **Abort()**: `game::movement::StopCTM()`
+- **Параметры**: `GUID targetGuid`
+- **Start()**: если dist>15yd → NavHelper для подхода, иначе → прямой `ClickToMoveAttack` + `AttackTarget()` Lua
+- **Tick()** (nav mode): тикает NavHelper, при dist≤15yd переключается на прямую атаку
+- **Tick()** (direct mode):
+  - Всегда проверяет/восстанавливает target selection
+  - В ближнем бою (≤8yd): только Lua `AttackTarget()` каждые 1.5с (иммунно к RMB отмене CTM)
+  - Вне ближнего боя: progress check каждую 1с (детект остановки → re-issue CTM) + periodic refresh каждые 3с
+- **Abort()**: `m_nav.Stop()` или `StopCTM()`
+- **Устойчивость**: к деселекции цели (LMB), отмене CTM (RMB), движению цели
 
 #### CombatRotation
 - **Параметры**: ротация (приоритетный список спеллов с условиями) — загружается из внешней базы знаний / конфига
@@ -148,15 +153,15 @@ public:
 
 #### Interact
 - **Параметры**: `GUID objectGuid`
-- **Start()**: `game::movement::ClickToMoveInteract(guid, objectPos)`
-- **Tick()**: проверяет дистанцию, завершает после взаимодействия
-- **Abort()**: `StopCTM()`
+- **Start()**: если dist>10yd → NavHelper для подхода, иначе → прямой `ClickToMoveInteract`
+- **Tick()**: nav mode → switch на прямой interact при dist≤10yd. Завершает после взаимодействия
+- **Abort()**: `m_nav.Stop()` или `StopCTM()`
 
 #### Loot
-- **Параметры**: нет (лутает текущую цель)
-- **Start()**: `game::movement::ClickToMoveInteract(targetGuid, targetPos)`
-- **Tick()**: ждёт лут-окно, завершает
-- **Abort()**: `StopCTM()`
+- **Параметры**: `GUID corpseGuid`
+- **Start()**: если dist>10yd → NavHelper для подхода, иначе → прямой `ClickToMoveInteract`
+- **Tick()**: nav mode → switch на прямой interact при dist≤10yd. Ждёт лут-окно → лутает все слоты
+- **Abort()**: `m_nav.Stop()` или `StopCTM()`
 
 #### UseSpell
 - **Параметры**: `uint32_t spellId` + опционально `GUID targetGuid`
@@ -399,7 +404,7 @@ Sequence {
 
 ### 7.1 Tool Panel (окно "Tools") ✅
 
-- **TabBar** с вкладками: Wait, MoveTo, Attack, UseSpell, Loot, Interact, Kill & Loot
+- **TabBar** с вкладками: Wait, Navigate, Attack, UseSpell, Loot, Interact, Follow Route, Kill & Loot
 - Каждая вкладка: поля ввода параметров + кнопки PushBack / Interrupt
 - "Kill & Loot" — создаёт SequenceTool {Attack, Loot}
 - Реализовано полностью в `overlay.cpp` → `RenderToolsWidget()`
@@ -427,16 +432,17 @@ wotlk/src/bot/
 ├── action_queue.h             // ✅ ActionQueue (singleton, deque)
 ├── action_queue.cpp           // ✅
 │
+├── nav_helper.h / .cpp        // ✅ NavHelper — navmesh pathfinding + waypoint following
 ├── tools/
 │   ├── wait.h / .cpp          // ✅ WaitTool — GetProgress(), GetElapsedMs()
-│   ├── move_to.h / .cpp       // ✅ MoveToTool — CTM + stuck detection
-│   ├── attack.h / .cpp        // ✅ AttackTool — CTM Attack + re-attack
+│   ├── move_to.h / .cpp       // ✅ MoveToTool — NavHelper + CTM fallback
+│   ├── attack.h / .cpp        // ✅ AttackTool — NavHelper + resilient direct attack
 │   ├── use_spell.h / .cpp     // ✅ UseSpellTool — CD wait + cast
-│   ├── loot.h / .cpp          // ✅ LootTool — CTM + Lua InteractUnit
-│   ├── interact.h / .cpp      // ✅ InteractTool — CTM Interact + Lua
+│   ├── loot.h / .cpp          // ✅ LootTool — NavHelper + CTM + Lua InteractUnit
+│   ├── interact.h / .cpp      // ✅ InteractTool — NavHelper + CTM Interact + Lua
 │   ├── sequence.h / .cpp      // ✅ SequenceTool — sub-tool vector
-│   ├── combat_rotation.h / .cpp  // ❌ не реализовано
-│   └── follow_route.h / .cpp    // ❌ не реализовано
+│   ├── follow_route.h / .cpp  // ✅ FollowRouteTool — waypoint follower with stuck detection
+│   └── combat_rotation.h / .cpp  // ❌ не реализовано
 │
 ├── ipc/                       // ❌ не реализовано
 │   ├── pipe_server.h / .cpp
@@ -524,19 +530,19 @@ bot::PipeServer::Shutdown();
 - Thread-safe command_queue (CRITICAL_SECTION)
 - Pipe thread ↔ EndScene main thread синхронизация
 
-### ❌ Фаза 7 — Navigation System (TODO — разбита на подзадачи)
+### ✅ Фаза 7a-7c — Navigation System (Phases a-c DONE)
 
-Полноценная система навигации с Detour навмешем, обходом враждебных NPC и гуманизацией движения.
+Навигация через Detour навмеш интегрирована во все инструменты движения через NavHelper.
 Каждая подзадача задокументирована отдельно:
 
-| Подфаза | Задача | Файл | Зависит от |
-|---------|--------|------|------------|
-| **7a** | Detour + mmtile loader | [`nav-detour-integration.md`](nav-detour-integration.md) | — |
-| **7b** | FollowRouteTool (массив waypoints) | [`nav-follow-route.md`](nav-follow-route.md) | 7a (опц.) |
-| **7c** | NavigateTool (авто-путь через Detour) | [`nav-navigate-tool.md`](nav-navigate-tool.md) | 7a, 7b |
-| **7d** | Radar ImGui widget | [`radar-widget.md`](radar-widget.md) | — |
-| **7e** | Hostile NPC avoidance + forced combat | [`nav-hostile-avoidance.md`](nav-hostile-avoidance.md) | 7c, 7d |
-| **7f** | Movement humanization | [`nav-humanization.md`](nav-humanization.md) | 7c |
-| **7g** | Road-preferring mmaps generator | [`nav-road-mmaps.md`](nav-road-mmaps.md) | 7a, 7c |
+| Подфаза | Задача | Файл | Статус |
+|---------|--------|------|--------|
+| **7a** | Detour + mmtile loader | [`nav-detour-integration.md`](nav-detour-integration.md) | ✅ DONE |
+| **7b** | FollowRouteTool (массив waypoints) | [`nav-follow-route.md`](nav-follow-route.md) | ✅ DONE |
+| **7c** | NavHelper + интеграция во все Tools | [`nav-navigate-tool.md`](nav-navigate-tool.md) | ✅ DONE |
+| **7d** | Radar ImGui widget | [`radar-widget.md`](radar-widget.md) | ❌ TODO |
+| **7e** | Hostile NPC avoidance + forced combat | [`nav-hostile-avoidance.md`](nav-hostile-avoidance.md) | ❌ TODO |
+| **7f** | Movement humanization | [`nav-humanization.md`](nav-humanization.md) | ❌ TODO |
+| **7g** | Road-preferring mmaps generator | [`nav-road-mmaps.md`](nav-road-mmaps.md) | ❌ TODO |
 
 Ресерчи: `docs/reference/researches/` (Recast/Detour, movement packets, server-side detection).

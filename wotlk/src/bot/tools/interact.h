@@ -2,11 +2,13 @@
 // =============================================================================
 // InteractTool — approach a game object/NPC and interact with it.
 //
-// Uses ClickToMoveInteract. Completes when player reaches interaction range.
-// Generic tool for quest NPCs, mailboxes, vendors, etc.
+// Uses navmesh pathfinding when far from the target, switches to direct
+// ClickToMoveInteract when within kNavSwitchRange. Falls back to direct CTM
+// if navmesh is unavailable.
 // =============================================================================
 
 #include "../tool.h"
+#include "../nav_helper.h"
 #include "../../game/types.h"
 
 #include <cstdint>
@@ -30,12 +32,18 @@ public:
 private:
     game::GUID  m_targetGuid;
     std::string m_targetName;
+    game::Vec3  m_targetPos{};
     ToolStatus  m_status = ToolStatus::Pending;
-    uint64_t    m_startTick = 0;
+    bool        m_useNav = false;
     bool        m_interactionIssued = false;
 
-    static constexpr uint32_t kTimeoutMs       = 15000;
-    static constexpr float    kInteractRange   = 5.0f;
+    NavHelper   m_nav;
+
+    uint64_t    m_startTick = 0;
+
+    static constexpr float    kNavSwitchRange = 10.0f;
+    static constexpr uint32_t kTimeoutMs      = 15000;
+    static constexpr float    kInteractRange  = 5.0f;
 };
 
 } // namespace bot

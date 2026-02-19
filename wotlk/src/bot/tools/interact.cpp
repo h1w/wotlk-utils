@@ -9,6 +9,8 @@
 #include <windows.h>
 #include <cstdio>
 
+#include <glog/logging.h>
+
 namespace bot {
 
 InteractTool::InteractTool(game::GUID targetGuid)
@@ -31,14 +33,25 @@ void InteractTool::Start()
 
     game::WowObject obj(ptr);
     m_targetName = obj.GetName();
+    m_targetPos = obj.GetPosition();
 
-    // Select and walk to object
     game::SelectTarget(m_targetGuid);
-    game::Vec3 targetPos = obj.GetPosition();
-    game::movement::ClickToMoveInteract(m_targetGuid, targetPos);
 
     m_startTick = GetTickCount64();
     m_status = ToolStatus::Running;
+    m_useNav = false;
+
+    // If far from target, use navmesh to approach
+    auto player = game::GetLocalPlayer();
+    float dist = player ? player->GetPosition().DistanceTo(m_targetPos) : 0.0f;
+
+    if (dist > kNavSwitchRange && m_nav.StartNavTo(m_targetPos)) {
+        m_useNav = true;
+        LOG(INFO) << "[InteractTool] Using navmesh to approach target (" << dist << " yards)";
+    } else {
+        // Close enough or no navmesh — direct CTM interact
+        game::movement::ClickToMoveInteract(m_targetGuid, m_targetPos);
+    }
 }
 
 void InteractTool::Tick()
@@ -50,6 +63,8 @@ void InteractTool::Tick()
 
     // Timeout
     if (now - m_startTick > kTimeoutMs) {
+        if (m_useNav)
+            m_nav.Stop();
         m_status = ToolStatus::Failed;
         return;
     }
@@ -57,6 +72,8 @@ void InteractTool::Tick()
     // Check if target still exists
     uintptr_t ptr = game::objmgr::GetObjectPtr(m_targetGuid);
     if (ptr == 0) {
+        if (m_useNav)
+            m_nav.Stop();
         // Object despawned — interaction may have consumed it (herb, ore, etc.)
         if (m_interactionIssued)
             m_status = ToolStatus::Completed;
@@ -65,24 +82,47 @@ void InteractTool::Tick()
         return;
     }
 
-    // Check distance
+    game::WowObject obj(ptr);
+    m_targetPos = obj.GetPosition();
+
     auto player = game::GetLocalPlayer();
     if (!player) {
         m_status = ToolStatus::Failed;
         return;
     }
 
-    game::WowObject obj(ptr);
-    float dist = player->GetPosition().DistanceTo(obj.GetPosition());
+    float dist = player->GetPosition().DistanceTo(m_targetPos);
 
+    // Nav approach mode
+    if (m_useNav) {
+        if (dist <= kNavSwitchRange) {
+            // Close enough — stop nav, switch to direct CTM interact
+            m_nav.Stop();
+            m_useNav = false;
+            LOG(INFO) << "[InteractTool] Within " << kNavSwitchRange << "y, switching to direct interact";
+            game::SelectTarget(m_targetGuid);
+            game::movement::ClickToMoveInteract(m_targetGuid, m_targetPos);
+            return;
+        }
+
+        auto navStatus = m_nav.Tick();
+        if (navStatus == NavHelper::Status::Arrived || navStatus == NavHelper::Status::Failed) {
+            m_useNav = false;
+            if (navStatus == NavHelper::Status::Failed)
+                LOG(WARNING) << "[InteractTool] Nav failed, switching to direct interact";
+            game::SelectTarget(m_targetGuid);
+            game::movement::ClickToMoveInteract(m_targetGuid, m_targetPos);
+        }
+        return;
+    }
+
+    // Direct mode — check distance for interaction
     if (dist <= kInteractRange) {
         if (!m_interactionIssued) {
-            // In range — use Lua InteractUnit for reliable interaction
             game::SelectTarget(m_targetGuid);
             game::lua::Execute("InteractUnit(\"target\")");
             m_interactionIssued = true;
         } else {
-            // Already interacted and still in range — done
             m_status = ToolStatus::Completed;
         }
     }
@@ -91,7 +131,10 @@ void InteractTool::Tick()
 void InteractTool::Abort()
 {
     if (m_status == ToolStatus::Running || m_status == ToolStatus::Pending) {
-        game::movement::StopCTM();
+        if (m_useNav)
+            m_nav.Stop();
+        else
+            game::movement::StopCTM();
         m_status = ToolStatus::Cancelled;
     }
 }
@@ -99,9 +142,10 @@ void InteractTool::Abort()
 std::string InteractTool::Describe() const
 {
     if (m_targetName.empty())
-        return "Interact";
+        return m_useNav ? "Interact [nav]" : "Interact";
     char buf[128];
-    snprintf(buf, sizeof(buf), "Interact \"%s\"", m_targetName.c_str());
+    snprintf(buf, sizeof(buf), "Interact \"%s\"%s",
+             m_targetName.c_str(), m_useNav ? " [nav]" : "");
     return buf;
 }
 

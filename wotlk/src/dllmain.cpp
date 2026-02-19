@@ -9,6 +9,7 @@
 #include "warden/module_dump.h"
 #include "warden/peb_unlink.h"
 #include "game/game.h"
+#include "navigation/nav_mesh.h"
 #include "overlay/overlay.h"
 #include <glog/logging.h>
 
@@ -99,6 +100,13 @@ DWORD WINAPI MainThread(LPVOID lpParam)
         LOG(INFO) << "Game SDK initialized";
     }
 
+    // NavMesh: mmaps live next to logs/warden_dumps in the output directory
+    if (nav::NavMesh::Instance().Initialize((outputDir + "mmaps").c_str())) {
+        LOG(INFO) << "NavMesh initialized (mmaps dir: " << outputDir << "mmaps)";
+    } else {
+        LOG(WARNING) << "NavMesh initialization failed (non-fatal)";
+    }
+
     // Hide our DLL + dependencies from PEB.Ldr (prevents Warden MODULE_CHECK detection).
     // Must be AFTER all init that uses GetModuleHandle/GetModuleFileName.
     peb_unlink::UnlinkAll(hModule);
@@ -124,6 +132,7 @@ DWORD WINAPI MainThread(LPVOID lpParam)
     peb_unlink::RelinkAll();
 
     overlay::Shutdown();
+    nav::NavMesh::Instance().Shutdown();
     game::Shutdown();
 
     // Даём время завершиться вызовам хуков, которые могут быть in-flight

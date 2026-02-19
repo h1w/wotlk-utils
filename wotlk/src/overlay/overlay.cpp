@@ -15,6 +15,7 @@
 #include "../game/world.h"
 #include "../game/spell.h"
 #include "../game/player_stats.h"
+#include "../offsets/offsets.h"
 #include "../bot/action_queue.h"
 #include "../bot/tools/wait.h"
 #include "../bot/tools/move_to.h"
@@ -23,6 +24,9 @@
 #include "../bot/tools/sequence.h"
 #include "../bot/tools/loot.h"
 #include "../bot/tools/interact.h"
+#include "../navigation/nav_mesh.h"
+#include "../navigation/pathfinder.h"
+#include "../bot/tools/follow_route.h"
 
 // Forward declaration from imgui_impl_win32.cpp
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -237,38 +241,6 @@ static void RenderToolsTab()
             ImGui::EndTabItem();
         }
 
-        // ---- MoveTo ----
-        if (ImGui::BeginTabItem("MoveTo")) {
-            static float pos[3] = { 0, 0, 0 };
-            static float arrivalDist = 3.0f;
-
-            if (ImGui::Button("Use Current Pos")) {
-                auto player = game::GetLocalPlayer();
-                if (player) {
-                    auto p = player->GetPosition();
-                    pos[0] = p.x; pos[1] = p.y; pos[2] = p.z;
-                }
-            }
-            ImGui::InputFloat3("Target (x,y,z)", pos);
-            ImGui::SliderFloat("Arrival dist", &arrivalDist, 0.5f, 10.0f);
-
-            if (ImGui::Button("PushBack"))
-                queue.PushBack(std::make_unique<bot::MoveToTool>(
-                    game::Vec3{pos[0], pos[1], pos[2]}, arrivalDist));
-            ImGui::SameLine();
-            if (ImGui::Button("Interrupt"))
-                queue.Interrupt(std::make_unique<bot::MoveToTool>(
-                    game::Vec3{pos[0], pos[1], pos[2]}, arrivalDist));
-
-            // Show current distance if MoveTo is running
-            auto* cur = queue.GetCurrent();
-            if (cur && cur->GetType() == bot::ToolType::MoveTo) {
-                auto* mt = static_cast<bot::MoveToTool*>(cur);
-                ImGui::Text("Distance: %.1f yd", mt->GetDistanceRemaining());
-            }
-            ImGui::EndTabItem();
-        }
-
         // ---- Attack ----
         if (ImGui::BeginTabItem("Attack")) {
             ImGui::TextWrapped("Attacks the current target (select a target in game first).");
@@ -359,6 +331,96 @@ static void RenderToolsTab()
             ImGui::EndTabItem();
         }
 
+        // ---- Navigate ----
+        if (ImGui::BeginTabItem("Navigate")) {
+            auto& navMesh = nav::NavMesh::Instance();
+
+            // NavMesh status
+            if (navMesh.IsReady()) {
+                ImGui::TextColored(ImVec4(0.2f, 1.f, 0.2f, 1.f), "NavMesh: ready (%d tiles)",
+                                   navMesh.GetLoadedTileCount());
+            } else {
+                ImGui::TextColored(ImVec4(1.f, 0.3f, 0.3f, 1.f), "NavMesh: not loaded");
+                ImGui::TextWrapped("Place mmaps in the mmaps/ folder next to the DLL.");
+            }
+
+            static float destPos[3] = { 0, 0, 0 };
+
+            if (ImGui::Button("Use Target Pos")) {
+                auto target = game::GetTarget();
+                if (target) {
+                    auto p = target->GetPosition();
+                    destPos[0] = p.x; destPos[1] = p.y; destPos[2] = p.z;
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Use Current Pos")) {
+                auto player = game::GetLocalPlayer();
+                if (player) {
+                    auto p = player->GetPosition();
+                    destPos[0] = p.x; destPos[1] = p.y; destPos[2] = p.z;
+                }
+            }
+            ImGui::InputFloat3("Destination", destPos);
+
+            // Show distance
+            auto player = game::GetLocalPlayer();
+            if (player) {
+                game::Vec3 dest{destPos[0], destPos[1], destPos[2]};
+                float dist = player->GetPosition().DistanceTo(dest);
+                ImGui::Text("Distance: %.0f yd", dist);
+            }
+
+            if (navMesh.IsReady()) {
+                if (ImGui::Button("Find Path & Go")) {
+                    auto p = game::GetLocalPlayer();
+                    if (p) {
+                        game::Vec3 start = p->GetPosition();
+                        game::Vec3 end{destPos[0], destPos[1], destPos[2]};
+                        auto result = nav::Pathfinder::Instance().FindPath(start, end);
+                        if (result.success && !result.waypoints.empty()) {
+                            queue.PushBack(std::make_unique<bot::FollowRouteTool>(
+                                std::move(result.waypoints)));
+                        }
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Interrupt & Go")) {
+                    auto p = game::GetLocalPlayer();
+                    if (p) {
+                        game::Vec3 start = p->GetPosition();
+                        game::Vec3 end{destPos[0], destPos[1], destPos[2]};
+                        auto result = nav::Pathfinder::Instance().FindPath(start, end);
+                        if (result.success && !result.waypoints.empty()) {
+                            queue.Interrupt(std::make_unique<bot::FollowRouteTool>(
+                                std::move(result.waypoints)));
+                        }
+                    }
+                }
+
+                // Test: find path only (show info)
+                if (ImGui::Button("Test Path (log only)")) {
+                    auto p = game::GetLocalPlayer();
+                    if (p) {
+                        game::Vec3 start = p->GetPosition();
+                        game::Vec3 end{destPos[0], destPos[1], destPos[2]};
+                        auto result = nav::Pathfinder::Instance().FindPath(start, end);
+                        if (result.success) {
+                            float totalDist = 0.f;
+                            for (size_t i = 1; i < result.waypoints.size(); ++i)
+                                totalDist += result.waypoints[i-1].DistanceTo(result.waypoints[i]);
+                            LOG(INFO) << "[Nav] Test: " << result.waypoints.size()
+                                      << " waypoints, total distance: " << totalDist << " yd"
+                                      << (result.partial ? " (PARTIAL)" : "");
+                        } else {
+                            LOG(WARNING) << "[Nav] Test: no path found";
+                        }
+                    }
+                }
+            }
+            ImGui::EndTabItem();
+        }
+
         // ---- Sequence ----
         if (ImGui::BeginTabItem("Kill & Loot")) {
             ImGui::TextWrapped("Combo: attack target until dead, then loot the corpse.");
@@ -380,7 +442,7 @@ static void RenderToolsTab()
                 ImGui::SameLine();
                 if (ImGui::Button("MoveTo + Kill + Loot")) {
                     std::vector<bot::ToolPtr> steps;
-                    steps.push_back(std::make_unique<bot::MoveToTool>(tpos, 5.0f));
+                    steps.push_back(std::make_unique<bot::MoveToTool>(tpos));
                     steps.push_back(std::make_unique<bot::AttackTool>(guid));
                     steps.push_back(std::make_unique<bot::LootTool>(guid));
                     queue.PushBack(std::make_unique<bot::SequenceTool>(std::move(steps)));
@@ -559,6 +621,29 @@ static HRESULT WINAPI HookedEndScene(IDirect3DDevice9* pDevice)
     ImGui::NewFrame();
 
     RenderPlayerInfoWidget();
+
+    // NavMesh: tile streaming (~once per second)
+    // Initialization is done in dllmain.cpp (outputDir + "mmaps")
+    {
+        auto& navMesh = nav::NavMesh::Instance();
+        static uint64_t lastTileUpdateTick = 0;
+
+        if (game::world::IsInGame()) {
+            uint64_t now = GetTickCount64();
+            if (now - lastTileUpdateTick > 1000) {
+                lastTileUpdateTick = now;
+
+                uint32_t mapId = *reinterpret_cast<uint32_t*>(offsets::globals::MapId);
+                navMesh.LoadMap(mapId);
+
+                auto player = game::GetLocalPlayer();
+                if (player && navMesh.IsReady()) {
+                    auto pos = player->GetPosition();
+                    navMesh.UpdateLoadedTiles(pos.x, pos.y);
+                }
+            }
+        }
+    }
 
     // Bot: tick the action queue + render widgets
     bot::ActionQueue::Instance().Tick();

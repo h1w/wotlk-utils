@@ -1,6 +1,6 @@
 # Task: Detour Integration + MmTile Loader
 
-> **Status**: TODO
+> **Status**: DONE
 > **Created**: 2026-02-19
 > **Phase**: 7a (Navigation)
 > **Depends on**: nothing (foundational task)
@@ -185,8 +185,8 @@ wotlk/src/navigation/
 
 ## Критерии готовности
 
-- [ ] Detour подключен и компилируется (x86 static)
-- [ ] .mmap хедер читается, dtNavMesh создаётся
-- [ ] .mmtile тайлы загружаются / выгружаются при движении игрока
-- [ ] `Pathfinder::FindPath(A, B)` возвращает валидный массив Vec3 waypoints
-- [ ] Тест: в ImGui кнопка "Find Path" → лог с количеством waypoints и общей длиной пути
+- [x] Detour подключен и компилируется (x86 static) — vcpkg `recastnavigation:x86-windows-static-md`, props `shared/detour-static.props`
+- [x] .mmap хедер читается, dtNavMesh создаётся — с кастомными maxTiles=64, maxPolys=65536 (32-bit poly refs)
+- [x] .mmtile тайлы загружаются / выгружаются при движении игрока — 3x3 стриминг
+- [x] `Pathfinder::FindPath(A, B)` возвращает валидный массив Vec3 waypoints
+- [x] Тест: в ImGui вкладка "Navigate" с вводом координат, кнопки "Use Target Pos" / "Use Player Pos"

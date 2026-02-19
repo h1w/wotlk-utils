@@ -62,12 +62,14 @@
     <Import Project="..\shared\glog-common.props" />
     <Import Project="..\shared\minhook-static.props" />
     <Import Project="..\shared\imgui-dx9.props" />
+    <Import Project="..\shared\detour-static.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
     <Import Project="..\shared\glog-common.props" />
     <Import Project="..\shared\minhook-static.props" />
     <Import Project="..\shared\imgui-dx9.props" />
+    <Import Project="..\shared\detour-static.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -167,6 +169,7 @@
     <ClInclude Include="src\warden\peb_unlink.h" />
     <ClInclude Include="src\bot\tool.h" />
     <ClInclude Include="src\bot\action_queue.h" />
+    <ClInclude Include="src\bot\nav_helper.h" />
     <ClInclude Include="src\bot\tools\wait.h" />
     <ClInclude Include="src\bot\tools\move_to.h" />
     <ClInclude Include="src\bot\tools\attack.h" />
@@ -174,6 +177,9 @@
     <ClInclude Include="src\bot\tools\sequence.h" />
     <ClInclude Include="src\bot\tools\loot.h" />
     <ClInclude Include="src\bot\tools\interact.h" />
+    <ClInclude Include="src\bot\tools\follow_route.h" />
+    <ClInclude Include="src\navigation\nav_mesh.h" />
+    <ClInclude Include="src\navigation\pathfinder.h" />
     <ClInclude Include="src\logging\glog_custom_formatter.hpp" />
     <ClInclude Include="src\logging\logger_setup.hpp" />
     <ClInclude Include="src\third_party\miniz.h" />
@@ -208,6 +214,7 @@
     <ClCompile Include="src\warden\warden_spoof.cpp" />
     <ClCompile Include="src\warden\peb_unlink.cpp" />
     <ClCompile Include="src\bot\action_queue.cpp" />
+    <ClCompile Include="src\bot\nav_helper.cpp" />
     <ClCompile Include="src\bot\tools\wait.cpp" />
     <ClCompile Include="src\bot\tools\move_to.cpp" />
     <ClCompile Include="src\bot\tools\attack.cpp" />
@@ -215,6 +222,9 @@
     <ClCompile Include="src\bot\tools\sequence.cpp" />
     <ClCompile Include="src\bot\tools\loot.cpp" />
     <ClCompile Include="src\bot\tools\interact.cpp" />
+    <ClCompile Include="src\bot\tools\follow_route.cpp" />
+    <ClCompile Include="src\navigation\nav_mesh.cpp" />
+    <ClCompile Include="src\navigation\pathfinder.cpp" />
     <ClCompile Include="src\logging\glog_custom_formatter.cpp" />
     <ClCompile Include="src\logging\logger_setup.cpp" />
     <ClCompile Include="src\third_party\miniz.c" />
