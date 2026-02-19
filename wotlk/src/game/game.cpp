@@ -80,6 +80,19 @@ std::vector<Unit> GetUnitsInRange(float maxDist)
     return units;
 }
 
+std::vector<WowObject> GetAllGameObjects()
+{
+    std::vector<WowObject> objects;
+    objmgr::EnumObjects([&](uintptr_t objPtr) -> bool {
+        ObjectType type = static_cast<ObjectType>(
+            mem::ReadU32(objPtr + offsets::objmgr::ObjectType));
+        if (type == ObjectType::GameObject)
+            objects.emplace_back(objPtr);
+        return true;
+    });
+    return objects;
+}
+
 bool SelectTarget(GUID guid)
 {
     if (guid == GUID_NONE) return false;

@@ -2,7 +2,7 @@
 
 Этот документ показывает текущее состояние проекта: что уже работает, что не работает, и к чему мы стремимся.
 
-Последнее обновление: 2026-02-18.
+Последнее обновление: 2026-02-19.
 
 ---
 
@@ -500,6 +500,37 @@ MinHook = статическая линковка (нет DLL). miniz = комп
 
 ---
 
+### 18. Radar Widget (ImGui)
+
+**Описание**: top-down 2D радар-виджет для визуальной отладки навигации и мониторинга окружения.
+
+**Компоненты**:
+- `bot/aggro.h` — shared `CalcAggroRadius()` formula (inline, reusable для nav-avoidance)
+- `bot/radar.h/.cpp` — `RadarData` + `RadarEntry` — сбор данных из ObjectManager каждые 200мс
+- `overlay.cpp` — `RenderRadarWidget()` — ImGui рендеринг радара
+
+**Что отображает**:
+- Игрок (белый треугольник-стрелка в центре)
+- Враждебные NPC (красные точки + aggro-зоны alpha=0.15)
+- Нейтральные NPC (жёлтые точки), дружественные (зелёные)
+- Другие игроки (синие ромбы)
+- Мёртвые NPC (серые outlines)
+- GameObjects (оранжевые квадраты)
+- Путь навигации (зелёная полилиния) — интеграция с MoveTo/FollowRoute/Sequence
+- Текущий waypoint (зелёный круг) + целевая точка (золотой X)
+- Концентрические круги расстояний
+
+**Контролы**:
+- Slider: Visible Range (10-200 yd)
+- Toggle: North-Up / Player-Facing-Up
+- Checkboxes: фильтры по типам объектов, путь, aggro-зоны, мёртвые
+
+**Координатная система**: WoW facing 0 = юг, X+ = юг, Y+ = запад. North-Up: `screenX = center - dy*scale`, `screenY = center + dx*scale`.
+
+**Статус**: ПОЛНОСТЬЮ РАБОТАЕТ
+
+---
+
 ## Архитектура файлов
 
 ```
@@ -538,6 +569,26 @@ wotlk/
       module_dump.h / .cpp               — module capture + disk cache
       peb_unlink.h / .cpp                — PEB.Ldr unlinking for MODULE_CHECK evasion
       mpq_cache.h / .cpp                 — кеш clean SHA1 хешей для MPQ_CHECK spoofing
+    bot/
+      tool.h                             — ITool interface, ToolType, ToolStatus
+      action_queue.h / .cpp              — ActionQueue (singleton FIFO for tools)
+      nav_helper.h / .cpp                — NavHelper (navmesh pathfinding + waypoint follower)
+      aggro.h                            — CalcAggroRadius() (shared formula)
+      radar.h / .cpp                     — RadarData + RadarEntry (data collection every 200ms)
+      tools/
+        move_to.h / .cpp                 — MoveToTool (navmesh path + CTM fallback)
+        follow_route.h / .cpp            — FollowRouteTool (multi-waypoint route)
+        attack.h / .cpp                  — AttackTool
+        use_spell.h / .cpp               — UseSpellTool
+        wait.h / .cpp                    — WaitTool
+        sequence.h / .cpp                — SequenceTool (composite)
+        loot.h / .cpp                    — LootTool
+        interact.h / .cpp                — InteractTool
+    navigation/
+      nav_mesh.h / .cpp                  — NavMesh (Detour navmesh loading from .mmap/.mmtile)
+      pathfinder.h / .cpp                — Pathfinder (A* path queries)
+    overlay/
+      overlay.h / .cpp                   — ImGui overlay (EndScene hook, Tools/Queue/Stats/Radar widgets)
     logging/
       glog_custom_formatter.hpp / .cpp   — custom glog sink с цветным выводом
       logger_setup.hpp / .cpp            — glog initialization
@@ -571,6 +622,9 @@ wotlk/
 - ~~MPQ_CHECK spoofing~~ — SHA1 подмена через mpq_cache
 - ~~Game SDK~~ — 12 модулей (ObjectManager, Unit, LocalPlayer, Spell, Movement, World, Lua bridge)
 - ~~Оффсеты реорганизованы~~ — nested namespaces (offsets::fn, offsets::globals, offsets::objmgr, offsets::fields, ...)
+- ~~Bot Framework~~ — ActionQueue, ITool, NavHelper, MoveToTool, FollowRouteTool, AttackTool, и др.
+- ~~Navigation~~ — Detour navmesh loading (.mmap/.mmtile), Pathfinder (FindPath)
+- ~~Radar Widget~~ — ImGui top-down 2D радар (игрок, NPC, aggro-зоны, навигационный путь, GameObjects, тултипы)
 
 ### Ближайшее
 
@@ -616,7 +670,7 @@ wotlk/
 
 ## Заключение
 
-Проект находится на стадии **активного bypass + Game SDK**. Все основные типы проверок Warden перехвачены и спуфятся. Поверх Warden-слоя реализован Game SDK для взаимодействия с игрой:
+Проект находится на стадии **активного bypass + Game SDK + Bot Framework + Radar**. Все основные типы проверок Warden перехвачены и спуфятся. Поверх Warden-слоя реализованы Game SDK, Bot Framework с навигацией (Detour navmesh), и ImGui Radar Widget для визуальной отладки:
 
 **Что мы умеем**:
 - Перехватывать и парсить все типы Warden пакетов (SMSG и CMSG)
@@ -636,7 +690,10 @@ wotlk/
 - **Читать данные персонажа** (HP, мана, уровень, позиция, ауры, статы, золото) через Game SDK
 - **Перечислять юнитов** вокруг (ObjectManager traversal), проверять реакцию/расстояние
 - **Выполнять действия** (ClickToMove, SetFacing, CastSpell, SelectTarget) через C++ вызовы и Lua bridge
-- **Получать информацию о мире** (зона, карта, реалм, LinOfSight, камера)
+- **Получать информацию о мире** (зона, карта, реалм, LineOfSight, камера)
+- **Навигация по navmesh** (Detour, загрузка .mmap/.mmtile, FindPath, waypoint following)
+- **Bot Framework** (ActionQueue, ITool, MoveToTool, FollowRouteTool, AttackTool, SequenceTool и др.)
+- **Radar Widget** (ImGui 2D top-down радар: игрок, NPC, aggro-зоны, путь, GameObjects, тултипы)
 
 **Ключевые компоненты**:
 - `src/warden/warden_spoof.cpp` — core spoofing logic + FIFO queue

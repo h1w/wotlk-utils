@@ -35,9 +35,10 @@ public:
     Status GetStatus() const { return m_status; }
     bool   IsActive() const  { return m_status == Status::Moving; }
 
-    // Current waypoint info (for debug/UI)
+    // Current waypoint info (for debug/UI/Radar)
     size_t GetCurrentWaypointIndex() const { return m_currentIndex; }
     size_t GetTotalWaypoints() const       { return m_waypoints.size(); }
+    const std::vector<game::Vec3>& GetWaypoints() const { return m_waypoints; }
 
 private:
     std::vector<game::Vec3> m_waypoints;

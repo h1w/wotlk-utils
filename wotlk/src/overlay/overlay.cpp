@@ -27,6 +27,10 @@
 #include "../navigation/nav_mesh.h"
 #include "../navigation/pathfinder.h"
 #include "../bot/tools/follow_route.h"
+#include "../bot/radar.h"
+#include "../bot/aggro.h"
+
+#include <cmath>
 
 // Forward declaration from imgui_impl_win32.cpp
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -536,6 +540,350 @@ static void RenderQueueWidget()
     ImGui::End();
 }
 
+// ---- Radar widget ----
+
+static ImVec2 WorldToRadar(const game::Vec3& worldPos, const game::Vec3& playerPos,
+                           float playerFacing, ImVec2 center, float scale, bool facingUp)
+{
+    // WoW: X+ = south, Y+ = west.  Facing = atan2(dy,dx): 0=south, pi/2=west, pi=north.
+    // Radar north-up: screenX = center - dy*scale (west=left), screenY = center + dx*scale (south=down)
+    float dx = worldPos.x - playerPos.x;  // positive = south
+    float dy = worldPos.y - playerPos.y;  // positive = west
+
+    if (facingUp) {
+        // Rotate by (pi - facing) so facing direction points up on screen
+        float cosF = cosf(playerFacing);
+        float sinF = sinf(playerFacing);
+        float rx = -dx * cosF - dy * sinF;
+        float ry =  dx * sinF - dy * cosF;
+        dx = rx;
+        dy = ry;
+    }
+
+    return ImVec2(center.x - dy * scale, center.y + dx * scale);
+}
+
+static void DrawPlayerArrow(ImDrawList* dl, ImVec2 center, float facing, bool facingUp)
+{
+    // Triangle pointing in facing direction
+    // WoW facing: 0=south, pi/2=west, pi=north.  Screen: 0=right, pi/2=down.
+    // North-up: screenAngle = facing + pi/2.  FacingUp: always points up (-pi/2).
+    float angle = facingUp ? (-3.14159265f / 2.0f) : (facing + 3.14159265f / 2.0f);
+
+    const float sz = 8.0f;
+    ImVec2 tip(center.x + cosf(angle) * sz, center.y + sinf(angle) * sz);
+    ImVec2 l(center.x + cosf(angle + 2.5f) * sz * 0.7f, center.y + sinf(angle + 2.5f) * sz * 0.7f);
+    ImVec2 r(center.x + cosf(angle - 2.5f) * sz * 0.7f, center.y + sinf(angle - 2.5f) * sz * 0.7f);
+
+    dl->AddTriangleFilled(tip, l, r, IM_COL32(255, 255, 255, 230));
+    dl->AddTriangle(tip, l, r, IM_COL32(0, 0, 0, 180), 1.0f);
+}
+
+static void DrawRangeCircles(ImDrawList* dl, ImVec2 center, float scale, float visRange, float clipR)
+{
+    const float ranges[] = { 10.f, 25.f, 50.f, 100.f };
+    for (float r : ranges) {
+        if (r > visRange) break;
+        float px = r * scale;
+        if (px > clipR) continue;
+        dl->AddCircle(center, px, IM_COL32(255, 255, 255, 40), 64);
+        // Label
+        char lbl[16];
+        snprintf(lbl, sizeof(lbl), "%dyd", static_cast<int>(r));
+        dl->AddText(ImVec2(center.x + px + 2, center.y - 8), IM_COL32(255, 255, 255, 60), lbl);
+    }
+}
+
+static ImU32 ReactionColor(const bot::RadarEntry& e, bool fill)
+{
+    uint8_t a = fill ? 200 : 255;
+    if (e.objType == game::ObjectType::GameObject)
+        return IM_COL32(255, 165, 0, a);   // orange
+    if (e.isDead)
+        return IM_COL32(128, 128, 128, a);  // grey
+    if (e.isPlayer)
+        return IM_COL32(80, 140, 255, a);   // blue
+    switch (e.reaction) {
+    case game::UnitReaction::Hostile:
+    case game::UnitReaction::Unfriendly:
+        return IM_COL32(255, 60, 60, a);    // red
+    case game::UnitReaction::Friendly:
+    case game::UnitReaction::Honored:
+        return IM_COL32(60, 255, 60, a);    // green
+    default:
+        return IM_COL32(255, 255, 60, a);   // yellow (neutral)
+    }
+}
+
+static void RenderRadarWidget()
+{
+    if (!game::world::IsInGame()) return;
+    auto player = game::GetLocalPlayer();
+    if (!player) return;
+
+    // Persistent state
+    static bot::RadarData s_radarData;
+    static float  s_visibleRange  = 80.f;
+    static bool   s_facingUp      = false;
+    static bool   s_showHostiles  = true;
+    static bool   s_showFriendlies = true;
+    static bool   s_showNeutrals  = true;
+    static bool   s_showPlayers   = true;
+    static bool   s_showGameObjects = true;
+    static bool   s_showPath      = true;
+    static bool   s_showAggro     = true;
+    static bool   s_showDead      = false;
+
+    s_radarData.Update(*player);
+
+    ImGui::Begin("Radar");
+
+    // Canvas size
+    float canvasSize = ImGui::GetContentRegionAvail().x;
+    if (canvasSize < 100.f) canvasSize = 200.f;
+    if (canvasSize > 600.f) canvasSize = 600.f;
+    float halfCanvas = canvasSize * 0.5f;
+
+    ImVec2 canvasPos = ImGui::GetCursorScreenPos();
+    ImVec2 center(canvasPos.x + halfCanvas, canvasPos.y + halfCanvas);
+
+    // Reserve canvas space
+    ImGui::InvisibleButton("radar_canvas", ImVec2(canvasSize, canvasSize));
+    bool canvasHovered = ImGui::IsItemHovered();
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // Clip to canvas
+    dl->PushClipRect(canvasPos, ImVec2(canvasPos.x + canvasSize, canvasPos.y + canvasSize), true);
+
+    // 1. Background
+    dl->AddRectFilled(canvasPos, ImVec2(canvasPos.x + canvasSize, canvasPos.y + canvasSize),
+                      IM_COL32(20, 20, 25, 220));
+
+    float scale = halfCanvas / s_visibleRange;  // pixels per yard
+
+    game::Vec3 myPos = player->GetPosition();
+    float myFacing = player->GetFacing();
+
+    // 2. Range circles
+    DrawRangeCircles(dl, center, scale, s_visibleRange, halfCanvas);
+
+    const auto& entries = s_radarData.GetEntries();
+
+    // Track hovered entry for tooltip
+    const bot::RadarEntry* hoveredEntry = nullptr;
+    float hoveredDistSq = 64.f; // 8px threshold squared
+
+    // 3. Aggro zones (back layer)
+    if (s_showAggro) {
+        for (const auto& e : entries) {
+            if (e.aggroRadius <= 0.f || e.isDead) continue;
+            if (!s_showHostiles) continue;
+            ImVec2 sp = WorldToRadar(e.position, myPos, myFacing, center, scale, s_facingUp);
+            float rPx = e.aggroRadius * scale;
+            dl->AddCircleFilled(sp, rPx, IM_COL32(255, 40, 40, 25), 32);
+            dl->AddCircle(sp, rPx, IM_COL32(255, 40, 40, 50), 32);
+        }
+    }
+
+    // 4. Nav path
+    if (s_showPath) {
+        auto* current = bot::ActionQueue::Instance().GetCurrent();
+        const std::vector<game::Vec3>* waypoints = nullptr;
+        size_t currentWpIdx = 0;
+        game::Vec3 destination{};
+        bool hasPath = false;
+
+        // Unwrap Sequence to find the active sub-tool
+        const bot::ITool* activeTool = current;
+        if (activeTool && activeTool->GetType() == bot::ToolType::Sequence) {
+            auto* seq = static_cast<const bot::SequenceTool*>(activeTool);
+            activeTool = seq->GetCurrentStep();
+        }
+
+        if (activeTool) {
+            if (activeTool->GetType() == bot::ToolType::FollowRoute) {
+                auto* fr = static_cast<const bot::FollowRouteTool*>(activeTool);
+                waypoints = &fr->GetWaypoints();
+                currentWpIdx = fr->GetCurrentWaypointIndex();
+                if (!waypoints->empty()) {
+                    destination = waypoints->back();
+                    hasPath = true;
+                }
+            } else if (activeTool->GetType() == bot::ToolType::MoveTo) {
+                auto* mt = static_cast<const bot::MoveToTool*>(activeTool);
+                waypoints = &mt->GetNavWaypoints();
+                currentWpIdx = mt->GetNavCurrentIndex();
+                destination = mt->GetTarget();
+                hasPath = !waypoints->empty();
+            }
+        }
+
+        if (hasPath && waypoints && waypoints->size() >= 2) {
+            // Draw polyline from current waypoint onward
+            for (size_t i = currentWpIdx; i + 1 < waypoints->size(); ++i) {
+                ImVec2 a = WorldToRadar((*waypoints)[i], myPos, myFacing, center, scale, s_facingUp);
+                ImVec2 b = WorldToRadar((*waypoints)[i + 1], myPos, myFacing, center, scale, s_facingUp);
+                dl->AddLine(a, b, IM_COL32(60, 255, 60, 140), 2.0f);
+            }
+
+            // Current waypoint marker
+            if (currentWpIdx < waypoints->size()) {
+                ImVec2 wp = WorldToRadar((*waypoints)[currentWpIdx], myPos, myFacing, center, scale, s_facingUp);
+                dl->AddCircle(wp, 5.f, IM_COL32(60, 255, 60, 200), 12, 2.0f);
+            }
+
+            // Destination marker (gold X)
+            ImVec2 dp = WorldToRadar(destination, myPos, myFacing, center, scale, s_facingUp);
+            const float xsz = 5.f;
+            dl->AddLine(ImVec2(dp.x - xsz, dp.y - xsz), ImVec2(dp.x + xsz, dp.y + xsz),
+                        IM_COL32(255, 215, 0, 230), 2.0f);
+            dl->AddLine(ImVec2(dp.x + xsz, dp.y - xsz), ImVec2(dp.x - xsz, dp.y + xsz),
+                        IM_COL32(255, 215, 0, 230), 2.0f);
+        }
+    }
+
+    // 5-10. Draw entries (sorted far-to-near so near entries draw on top)
+    ImVec2 mousePos = ImGui::GetMousePos();
+
+    for (const auto& e : entries) {
+        // Filter by show flags
+        if (e.objType == game::ObjectType::GameObject) {
+            if (!s_showGameObjects) continue;
+        } else if (e.isDead) {
+            if (!s_showDead) continue;
+        } else if (e.isPlayer) {
+            if (!s_showPlayers) continue;
+        } else {
+            switch (e.reaction) {
+            case game::UnitReaction::Hostile:
+            case game::UnitReaction::Unfriendly:
+                if (!s_showHostiles) continue;
+                break;
+            case game::UnitReaction::Friendly:
+            case game::UnitReaction::Honored:
+                if (!s_showFriendlies) continue;
+                break;
+            default:
+                if (!s_showNeutrals) continue;
+                break;
+            }
+        }
+
+        ImVec2 sp = WorldToRadar(e.position, myPos, myFacing, center, scale, s_facingUp);
+
+        // Cull entries far outside canvas
+        if (sp.x < canvasPos.x - 20 || sp.x > canvasPos.x + canvasSize + 20 ||
+            sp.y < canvasPos.y - 20 || sp.y > canvasPos.y + canvasSize + 20)
+            continue;
+
+        ImU32 col = ReactionColor(e, true);
+
+        if (e.objType == game::ObjectType::GameObject) {
+            // Orange square
+            const float sz = 3.f;
+            dl->AddRectFilled(ImVec2(sp.x - sz, sp.y - sz), ImVec2(sp.x + sz, sp.y + sz), col);
+        } else if (e.isDead) {
+            // Grey outline circle
+            dl->AddCircle(sp, 3.f, col, 12, 1.0f);
+        } else if (e.isPlayer) {
+            // Blue diamond
+            const float sz = 4.f;
+            ImVec2 pts[4] = {
+                ImVec2(sp.x, sp.y - sz), ImVec2(sp.x + sz, sp.y),
+                ImVec2(sp.x, sp.y + sz), ImVec2(sp.x - sz, sp.y),
+            };
+            dl->AddConvexPolyFilled(pts, 4, col);
+            dl->AddPolyline(pts, 4, IM_COL32(0, 0, 0, 150), ImDrawFlags_Closed, 1.0f);
+        } else {
+            // NPC dot
+            float r = (e.reaction == game::UnitReaction::Hostile ||
+                       e.reaction == game::UnitReaction::Unfriendly) ? 4.f : 3.f;
+            dl->AddCircleFilled(sp, r, col, 12);
+            dl->AddCircle(sp, r, IM_COL32(0, 0, 0, 120), 12, 1.0f);
+        }
+
+        // Hit test for tooltip
+        if (canvasHovered) {
+            float dxM = mousePos.x - sp.x;
+            float dyM = mousePos.y - sp.y;
+            float dSq = dxM * dxM + dyM * dyM;
+            if (dSq < hoveredDistSq) {
+                hoveredDistSq = dSq;
+                hoveredEntry = &e;
+            }
+        }
+    }
+
+    // 13. Player arrow (always on top, at center)
+    DrawPlayerArrow(dl, center, myFacing, s_facingUp);
+
+    // 14. North indicator
+    if (s_facingUp) {
+        // In facing-up mode, north rotates based on facing.
+        // WoW facing 0=south, so north is at angle (facing).
+        // Screen pos: x = center + sin(facing)*R, y = center + cos(facing)*R
+        float nR = halfCanvas - 12.f;
+        ImVec2 nPos(center.x + sinf(myFacing) * nR,
+                    center.y + cosf(myFacing) * nR);
+        dl->AddText(ImVec2(nPos.x - 3, nPos.y - 6), IM_COL32(255, 80, 80, 200), "N");
+    } else {
+        // North-up: N at top center
+        dl->AddText(ImVec2(center.x - 3, canvasPos.y + 2), IM_COL32(255, 80, 80, 200), "N");
+    }
+
+    dl->PopClipRect();
+
+    // Tooltip
+    if (hoveredEntry) {
+        ImGui::BeginTooltip();
+        ImGui::Text("%s", hoveredEntry->name.c_str());
+        if (hoveredEntry->objType != game::ObjectType::GameObject) {
+            ImGui::Text("Level %d  HP: %.0f%%", hoveredEntry->level, hoveredEntry->healthPct);
+            if (hoveredEntry->isDead)
+                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.f), "Dead");
+            if (hoveredEntry->isInCombat)
+                ImGui::TextColored(ImVec4(1.f, 0.3f, 0.3f, 1.f), "In Combat");
+        }
+        ImGui::Text("Distance: %.0f yd", hoveredEntry->distToPlayer);
+        ImGui::EndTooltip();
+    }
+
+    // 15. Stats text
+    ImGui::Text("H:%d  F:%d  N:%d  P:%d  O:%d",
+        s_radarData.hostileCount, s_radarData.friendlyCount,
+        s_radarData.neutralCount, s_radarData.playerCount,
+        s_radarData.objectCount);
+
+    // Controls
+    ImGui::SliderFloat("Range", &s_visibleRange, 10.f, 200.f, "%.0f yd");
+
+    if (s_facingUp) {
+        if (ImGui::Button("Player-Facing-Up")) s_facingUp = false;
+    } else {
+        if (ImGui::Button("North-Up")) s_facingUp = true;
+    }
+
+    if (ImGui::TreeNode("Filters")) {
+        ImGui::Checkbox("Hostiles", &s_showHostiles);
+        ImGui::SameLine();
+        ImGui::Checkbox("Friendly", &s_showFriendlies);
+        ImGui::SameLine();
+        ImGui::Checkbox("Neutral", &s_showNeutrals);
+        ImGui::Checkbox("Players", &s_showPlayers);
+        ImGui::SameLine();
+        ImGui::Checkbox("Objects", &s_showGameObjects);
+        ImGui::SameLine();
+        ImGui::Checkbox("Dead", &s_showDead);
+        ImGui::Checkbox("Aggro", &s_showAggro);
+        ImGui::SameLine();
+        ImGui::Checkbox("Path", &s_showPath);
+        ImGui::TreePop();
+    }
+
+    ImGui::End();
+}
+
 namespace overlay {
 
 // EndScene: index 42 in IDirect3DDevice9 vtable
@@ -649,6 +997,7 @@ static HRESULT WINAPI HookedEndScene(IDirect3DDevice9* pDevice)
     bot::ActionQueue::Instance().Tick();
     RenderToolsWidget();
     RenderQueueWidget();
+    RenderRadarWidget();
 
     ImGui::EndFrame();
     ImGui::Render();

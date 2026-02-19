@@ -271,6 +271,7 @@ namespace game {
 
     std::vector<Unit> GetAllUnits();
     std::vector<Unit> GetUnitsInRange(float maxDist);
+    std::vector<WowObject> GetAllGameObjects();  // ObjectType::GameObject
 
     bool SelectTarget(GUID guid);  // CGGameUI_Target @ 0x524BF0
 }

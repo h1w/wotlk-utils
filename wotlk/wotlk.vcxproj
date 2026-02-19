@@ -177,6 +177,8 @@
     <ClInclude Include="src\bot\tools\sequence.h" />
     <ClInclude Include="src\bot\tools\loot.h" />
     <ClInclude Include="src\bot\tools\interact.h" />
+    <ClInclude Include="src\bot\aggro.h" />
+    <ClInclude Include="src\bot\radar.h" />
     <ClInclude Include="src\bot\tools\follow_route.h" />
     <ClInclude Include="src\navigation\nav_mesh.h" />
     <ClInclude Include="src\navigation\pathfinder.h" />
@@ -222,6 +224,7 @@
     <ClCompile Include="src\bot\tools\sequence.cpp" />
     <ClCompile Include="src\bot\tools\loot.cpp" />
     <ClCompile Include="src\bot\tools\interact.cpp" />
+    <ClCompile Include="src\bot\radar.cpp" />
     <ClCompile Include="src\bot\tools\follow_route.cpp" />
     <ClCompile Include="src\navigation\nav_mesh.cpp" />
     <ClCompile Include="src\navigation\pathfinder.cpp" />

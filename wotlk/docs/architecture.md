@@ -616,7 +616,7 @@ SDK-слой для взаимодействия с игрой. Использу
 
 | Файл | Описание |
 |------|----------|
-| `game.h/.cpp` | Фасад: `Initialize()/Shutdown()`, `GetLocalPlayer()`, `GetTarget()`, `GetAllUnits()`, `SelectTarget()` |
+| `game.h/.cpp` | Фасад: `Initialize()/Shutdown()`, `GetLocalPlayer()`, `GetTarget()`, `GetAllUnits()`, `GetAllGameObjects()`, `SelectTarget()` |
 | `types.h` | Базовые типы: `GUID`, `Vec3`, `ObjectType`, `PowerType`, `UnitReaction`, `UnitFlags/DynFlags` |
 | `mem.h/.cpp` | SEH-безопасное чтение памяти: `ReadU32`, `ReadPointer`, `ReadCString`, `ReadDescU32/Float` |
 | `object_manager.h/.cpp` | Обход ObjectManager: `GetLocalPlayerPtr()`, `GetObjectPtr(guid)`, `EnumObjects(callback)` |
@@ -814,3 +814,5 @@ SDK-слой для взаимодействия с игрой. Использу
 6. **Internal RC4 hook**: перехват RC4 PRGA внутри модуля — захват plaintext + точка для spoofing.
 7. **Shadow Copy**: маппинг Wow.exe с диска — источник оригинальных (unhooked) байт для spoofing.
 8. **Game SDK**: C++ модули для чтения данных персонажа/мира (ObjectManager, дескрипторы, vtable) + Lua bridge для действий (каст, движение). SEH-изолированные helper-функции, main thread only.
+9. **Bot Framework**: ActionQueue (FIFO tool scheduling), NavHelper (navmesh pathfinding + waypoint follower), набор Tools (MoveToTool, FollowRouteTool, AttackTool, UseSpellTool, SequenceTool и др.).
+10. **Radar Widget**: ImGui top-down 2D радар для визуальной отладки. RadarData сканирует ObjectManager каждые 200мс, RenderRadarWidget рисует объекты/путь/aggro-зоны. Поддержка North-Up и Player-Facing-Up ориентации.

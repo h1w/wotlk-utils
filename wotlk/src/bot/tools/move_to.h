@@ -29,6 +29,10 @@ public:
     const game::Vec3& GetTarget() const { return m_target; }
     float GetDistanceRemaining() const;
 
+    // Expose nav path for radar visualization
+    const std::vector<game::Vec3>& GetNavWaypoints() const { return m_nav.GetWaypoints(); }
+    size_t GetNavCurrentIndex() const { return m_nav.GetCurrentWaypointIndex(); }
+
 private:
     game::Vec3 m_target;
     ToolStatus m_status = ToolStatus::Pending;

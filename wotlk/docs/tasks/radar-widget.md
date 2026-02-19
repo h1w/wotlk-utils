@@ -1,7 +1,8 @@
 # Task: Radar ImGui Widget
 
-> **Status**: TODO
+> **Status**: DONE
 > **Created**: 2026-02-19
+> **Completed**: 2026-02-19
 > **Phase**: 7d (Navigation / UI)
 > **Depends on**: nothing (использует только ObjectManager и game SDK)
 > **Blocks**: nothing (но полезен для отладки всех nav-задач)
@@ -197,12 +198,30 @@ wotlk/src/bot/
 
 ## Критерии готовности
 
-- [ ] Отдельное ImGui окно "Radar" с top-down видом
-- [ ] Игрок в центре как треугольник-стрелка
-- [ ] Враждебные NPC — красные точки с aggro-зонами
-- [ ] Дружественные/нейтральные NPC, игроки — цветные точки
-- [ ] Путь навигации — зелёная полилиния (если активен Navigate/FollowRoute)
-- [ ] Масштаб настраивается слайдером
-- [ ] Режимы North-Up / Player-Facing-Up
-- [ ] Тултипы с инфо при наведении
-- [ ] Обновление данных каждые ~200мс (не тормозит рендер)
+- [x] Отдельное ImGui окно "Radar" с top-down видом
+- [x] Игрок в центре как треугольник-стрелка
+- [x] Враждебные NPC — красные точки с aggro-зонами
+- [x] Дружественные/нейтральные NPC, игроки — цветные точки
+- [x] Путь навигации — зелёная полилиния (если активен Navigate/FollowRoute/Sequence)
+- [x] Масштаб настраивается слайдером
+- [x] Режимы North-Up / Player-Facing-Up
+- [x] Тултипы с инфо при наведении
+- [x] Обновление данных каждые ~200мс (не тормозит рендер)
+
+## Реализация
+
+**Файлы созданы:**
+- `src/bot/aggro.h` — `CalcAggroRadius()` (shared, inline)
+- `src/bot/radar.h` — `RadarEntry`, `RadarData`
+- `src/bot/radar.cpp` — `RadarData::Update()` (ObjectManager scan каждые 200мс)
+
+**Файлы изменены:**
+- `src/game/game.h/.cpp` — добавлен `GetAllGameObjects()`
+- `src/bot/nav_helper.h` — добавлен `GetWaypoints()`
+- `src/bot/tools/move_to.h` — добавлены `GetNavWaypoints()`, `GetNavCurrentIndex()`
+- `src/overlay/overlay.cpp` — добавлен `RenderRadarWidget()` + вызов из `HookedEndScene`
+
+**Координатная система** (WoW 3.3.5a):
+- X+ = юг, Y+ = запад, facing 0 = юг (`atan2(dy, dx)`)
+- North-Up: `screenX = center - dy*scale`, `screenY = center + dx*scale`
+- Facing-Up: rotation by `(π - facing)` перед масштабированием
