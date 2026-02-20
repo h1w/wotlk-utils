@@ -39,7 +39,18 @@ public:
 
 private:
     ActionQueue() = default;
+
+    // Apply any pending deferred interrupt (called at start of Tick)
+    void ApplyPendingInterrupt();
+
     std::deque<ToolPtr> m_queue;
+
+    // Deferred interrupt: stored here when a tool calls Interrupt() during its
+    // own Tick(). Applied at the start of the next Tick() to avoid use-after-free
+    // (a tool calling Interrupt destroys itself via pop_front, then the call
+    // stack unwinds through the destroyed object's methods).
+    ToolPtr m_pendingInterrupt;
+    bool    m_insideTick = false;
 };
 
 } // namespace bot

@@ -24,13 +24,17 @@ struct RadarEntry {
     bool             isDead     = false;
     bool             isInCombat = false;
     bool             isPlayer   = false;
-    float            aggroRadius = 0.f; // only for hostile NPCs (includes margin)
-    float            distToPlayer = 0.f;// 2D distance
+    float            aggroRadiusRaw = 0.f;      // raw CalcAggroRadius (base 20, no margin) — display
+    float            aggroRadiusBuffered = 0.f; // with margin (R*1.15+3.0) for display/validation
+    float            aggroRadiusNav = 0.f;      // CalcAggroRadiusNav (base 30) — for pathfinding
+    float            distToPlayer = 0.f;        // 2D distance
     float            facing     = 0.f;  // radians
 };
 
 class RadarData {
 public:
+    static RadarData& Instance();
+
     void Update(const game::LocalPlayer& player);
 
     const std::vector<RadarEntry>& GetEntries() const { return m_entries; }

@@ -625,8 +625,44 @@ SDK-слой для взаимодействия с игрой. Использу
 | `unit.h/.cpp` | `Unit` (наследует WowObject): HP/мана, уровень, таргет, ауры, реакция, каст, UnitName |
 | `local_player.h/.cpp` | `LocalPlayer` (наследует Unit): XP, золото, статы, комбо-поинты, HasSpell |
 | `spell.h/.cpp` | Спеллы: `HasSpell()` (C++), `IsOnCooldown()` (Lua), `CastById/CastByName()` (Lua) |
-| `movement.h/.cpp` | Движение: `ClickToMove()` (__thiscall C++), `SetFacing()`, `FacePosition()`, `Jump()` (Lua) |
+| `movement.h/.cpp` | Движение: `ClickToMove()` (__thiscall C++), `ClickToMoveStop()` (0x0072B3A0, отмена CTM), `SetFacing()`, `FacePosition()`, `Jump()` (Lua) |
 | `world.h/.cpp` | Мир: зона, карта, реалм, `IsInGame()`, `HasLineOfSight()` (TraceLine), камера |
+
+---
+
+### **src/bot/** — Bot Framework (AI инфраструктура)
+
+**Что делает:**
+Framework для автоматизации игровых действий. Основан на системе Tools + ActionQueue + NavHelper.
+
+**Модули:**
+
+| Файл | Описание |
+|------|----------|
+| `action_queue.h/.cpp` | FIFO планировщик: запуск/остановка/переключение Tools, приоритетная очередь |
+| `nav_helper.h/.cpp` | Навигация: pathfinding (Detour) + waypoint follower + tile streaming + danger zones (area cost) |
+| `radar.h/.cpp` | RadarData: сканирование ObjectManager (NPC/игроки/объекты) каждые 200мс, aggro радиусы |
+| `threat_scanner.h/.cpp` | ThreatScanner: обнаружение враждебных NPC + валидация пути на пересечение aggro-зон |
+| `movement_synth.h/.cpp` | MovementSynthesizer: человекоподобное движение (шум, lookahead, микро-паузы) |
+| `tools/move_to.h/.cpp` | MoveToTool: движение к точке через navmesh, обход препятствий |
+| `tools/follow_route.h/.cpp` | FollowRouteTool: следование по маршруту (список точек), цикличность |
+| `tools/strategic_nav.h/.cpp` | StrategicNavTool: multi-segment navigation через world graph (macro-routing) |
+
+---
+
+### **src/navigation/** — Navigation (Detour + WorldGraph)
+
+**Что делает:**
+3-tier архитектура навигации: Strategic (world graph) → Tactical (navmesh) → Movement Synthesizer.
+
+**Модули:**
+
+| Файл | Описание |
+|------|----------|
+| `nav_mesh.h/.cpp` | Detour navmesh загрузка/выгрузка/query. 32-bit poly refs (polyBits=16, tileBits=6, saltBits=10) |
+| `pathfinder.h/.cpp` | A* pathfinding через Detour, динамическая маркировка опасных зон (area 63, cost 50.0) |
+| `world_graph.h/.cpp` | WorldGraph: JSON граф зон (вершины = зоны, рёбра = порталы/пути), A* macro-routing |
+| `corridor_loader.h/.cpp` | CorridorLoader: pre-loading tiles вдоль маршрута (5x5 grid + corridor), tile streaming |
 
 **Ключевые паттерны:**
 - **SEH isolation**: все `__try/__except` блоки в отдельных `__cdecl` helper-функциях без C++ объектов на стеке (ограничение MSVC — `__try` несовместим с деструкторами)
@@ -637,6 +673,7 @@ SDK-слой для взаимодействия с игрой. Использу
 
 **Оффсеты**: все в `src/offsets/functions.h`, организованы по namespace:
 - `offsets::fn` — адреса функций
+  - Movement: `ClickToMoveStop = 0x0072B3A0` (правильный способ остановки CTM, декаплирован от CMovement)
 - `offsets::globals` — глобальные переменные
 - `offsets::objmgr` — ObjectManager оффсеты
 - `offsets::fields` — дескрипторные поля
@@ -814,5 +851,6 @@ SDK-слой для взаимодействия с игрой. Использу
 6. **Internal RC4 hook**: перехват RC4 PRGA внутри модуля — захват plaintext + точка для spoofing.
 7. **Shadow Copy**: маппинг Wow.exe с диска — источник оригинальных (unhooked) байт для spoofing.
 8. **Game SDK**: C++ модули для чтения данных персонажа/мира (ObjectManager, дескрипторы, vtable) + Lua bridge для действий (каст, движение). SEH-изолированные helper-функции, main thread only.
-9. **Bot Framework**: ActionQueue (FIFO tool scheduling), NavHelper (navmesh pathfinding + waypoint follower), набор Tools (MoveToTool, FollowRouteTool, AttackTool, UseSpellTool, SequenceTool и др.).
+9. **Bot Framework**: ActionQueue (FIFO tool scheduling), NavHelper (navmesh pathfinding + waypoint follower), набор Tools (MoveToTool, FollowRouteTool, StrategicNavTool, AttackTool, UseSpellTool, SequenceTool и др.).
 10. **Radar Widget**: ImGui top-down 2D радар для визуальной отладки. RadarData сканирует ObjectManager каждые 200мс, RenderRadarWidget рисует объекты/путь/aggro-зоны. Поддержка North-Up и Player-Facing-Up ориентации.
+11. **3-tier Navigation**: Strategic (WorldGraph JSON + A* macro-routing) → Tactical (Detour navmesh + danger-aware A*) → Movement Synthesizer (human-like noise + lookahead + micro-pauses). NPC avoidance: area cost marking (area 63, cost 50.0). Tile streaming: 5x5 grid + corridor pre-loading. Recovery: wait → evaluate → attack/run-through.

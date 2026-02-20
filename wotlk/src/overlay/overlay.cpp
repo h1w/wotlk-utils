@@ -28,9 +28,13 @@
 #include "../navigation/pathfinder.h"
 #include "../bot/tools/follow_route.h"
 #include "../bot/radar.h"
+#include "../bot/threat_scanner.h"
 #include "../bot/aggro.h"
 
 #include <cmath>
+
+// Shared state: Navigate tab destination (accessible from radar context menu)
+static float s_destPos[3] = { 0, 0, 0 };
 
 // Forward declaration from imgui_impl_win32.cpp
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -348,13 +352,11 @@ static void RenderToolsTab()
                 ImGui::TextWrapped("Place mmaps in the mmaps/ folder next to the DLL.");
             }
 
-            static float destPos[3] = { 0, 0, 0 };
-
             if (ImGui::Button("Use Target Pos")) {
                 auto target = game::GetTarget();
                 if (target) {
                     auto p = target->GetPosition();
-                    destPos[0] = p.x; destPos[1] = p.y; destPos[2] = p.z;
+                    s_destPos[0] = p.x; s_destPos[1] = p.y; s_destPos[2] = p.z;
                 }
             }
             ImGui::SameLine();
@@ -362,26 +364,45 @@ static void RenderToolsTab()
                 auto player = game::GetLocalPlayer();
                 if (player) {
                     auto p = player->GetPosition();
-                    destPos[0] = p.x; destPos[1] = p.y; destPos[2] = p.z;
+                    s_destPos[0] = p.x; s_destPos[1] = p.y; s_destPos[2] = p.z;
                 }
             }
-            ImGui::InputFloat3("Destination", destPos);
+            ImGui::InputFloat3("Destination", s_destPos);
 
             // Show distance
             auto player = game::GetLocalPlayer();
             if (player) {
-                game::Vec3 dest{destPos[0], destPos[1], destPos[2]};
+                game::Vec3 dest{s_destPos[0], s_destPos[1], s_destPos[2]};
                 float dist = player->GetPosition().DistanceTo(dest);
                 ImGui::Text("Distance: %.0f yd", dist);
             }
 
             if (navMesh.IsReady()) {
+                // Helper lambda: collect danger zones from radar for avoidance pathfinding
+                auto collectDangers = []() -> std::vector<nav::DangerZone> {
+                    std::vector<nav::DangerZone> dangers;
+                    auto& radar = bot::RadarData::Instance();
+                    for (const auto& e : radar.GetEntries()) {
+                        if (e.isPlayer || e.isDead || e.isInCombat) continue;
+                        if (e.aggroRadiusNav <= 0.0f) continue;
+                        if (e.distToPlayer > 150.0f) continue;
+                        if (e.reaction != game::UnitReaction::Hostile &&
+                            e.reaction != game::UnitReaction::Unfriendly)
+                            continue;
+                        dangers.push_back({ e.position.x, e.position.y, e.position.z, e.aggroRadiusNav });
+                    }
+                    return dangers;
+                };
+
                 if (ImGui::Button("Find Path & Go")) {
                     auto p = game::GetLocalPlayer();
                     if (p) {
                         game::Vec3 start = p->GetPosition();
-                        game::Vec3 end{destPos[0], destPos[1], destPos[2]};
-                        auto result = nav::Pathfinder::Instance().FindPath(start, end);
+                        game::Vec3 end{s_destPos[0], s_destPos[1], s_destPos[2]};
+                        auto dangers = collectDangers();
+                        auto result = dangers.empty()
+                            ? nav::Pathfinder::Instance().FindPath(start, end)
+                            : nav::Pathfinder::Instance().FindPathAvoiding(start, end, dangers);
                         if (result.success && !result.waypoints.empty()) {
                             queue.PushBack(std::make_unique<bot::FollowRouteTool>(
                                 std::move(result.waypoints)));
@@ -393,8 +414,11 @@ static void RenderToolsTab()
                     auto p = game::GetLocalPlayer();
                     if (p) {
                         game::Vec3 start = p->GetPosition();
-                        game::Vec3 end{destPos[0], destPos[1], destPos[2]};
-                        auto result = nav::Pathfinder::Instance().FindPath(start, end);
+                        game::Vec3 end{s_destPos[0], s_destPos[1], s_destPos[2]};
+                        auto dangers = collectDangers();
+                        auto result = dangers.empty()
+                            ? nav::Pathfinder::Instance().FindPath(start, end)
+                            : nav::Pathfinder::Instance().FindPathAvoiding(start, end, dangers);
                         if (result.success && !result.waypoints.empty()) {
                             queue.Interrupt(std::make_unique<bot::FollowRouteTool>(
                                 std::move(result.waypoints)));
@@ -407,7 +431,7 @@ static void RenderToolsTab()
                     auto p = game::GetLocalPlayer();
                     if (p) {
                         game::Vec3 start = p->GetPosition();
-                        game::Vec3 end{destPos[0], destPos[1], destPos[2]};
+                        game::Vec3 end{s_destPos[0], s_destPos[1], s_destPos[2]};
                         auto result = nav::Pathfinder::Instance().FindPath(start, end);
                         if (result.success) {
                             float totalDist = 0.f;
@@ -551,16 +575,43 @@ static ImVec2 WorldToRadar(const game::Vec3& worldPos, const game::Vec3& playerP
     float dy = worldPos.y - playerPos.y;  // positive = west
 
     if (facingUp) {
-        // Rotate by (pi - facing) so facing direction points up on screen
+        // Rotate by -(pi - facing) to account for WoW's left-handed XY coords
+        // (X+=south, Y+=west → clockwise when viewed from above)
         float cosF = cosf(playerFacing);
         float sinF = sinf(playerFacing);
-        float rx = -dx * cosF - dy * sinF;
-        float ry =  dx * sinF - dy * cosF;
+        float rx = -dx * cosF + dy * sinF;
+        float ry = -dx * sinF - dy * cosF;
         dx = rx;
         dy = ry;
     }
 
     return ImVec2(center.x - dy * scale, center.y + dx * scale);
+}
+
+// Inverse of WorldToRadar: convert screen position back to world coordinates (2D, Z from player)
+static game::Vec3 RadarToWorld(ImVec2 screenPos, const game::Vec3& playerPos,
+                                float playerFacing, ImVec2 center, float scale, bool facingUp)
+{
+    // Invert: screenX = center.x - dy*scale, screenY = center.y + dx*scale
+    float dx = (screenPos.y - center.y) / scale;
+    float dy = (center.x - screenPos.x) / scale;
+
+    if (facingUp) {
+        // Invert rotation: forward is rx=-dx*cosF+dy*sinF, ry=-dx*sinF-dy*cosF
+        // Inverse (det=1): dx=-cosF*rx-sinF*ry, dy=sinF*rx-cosF*ry
+        float cosF = cosf(playerFacing);
+        float sinF = sinf(playerFacing);
+        float origDx = -cosF * dx - sinF * dy;
+        float origDy =  sinF * dx - cosF * dy;
+        dx = origDx;
+        dy = origDy;
+    }
+
+    game::Vec3 result;
+    result.x = playerPos.x + dx;
+    result.y = playerPos.y + dy;
+    result.z = playerPos.z; // Can't determine Z from 2D map
+    return result;
 }
 
 static void DrawPlayerArrow(ImDrawList* dl, ImVec2 center, float facing, bool facingUp)
@@ -622,7 +673,7 @@ static void RenderRadarWidget()
     if (!player) return;
 
     // Persistent state
-    static bot::RadarData s_radarData;
+    auto& s_radarData = bot::RadarData::Instance();
     static float  s_visibleRange  = 80.f;
     static bool   s_facingUp      = false;
     static bool   s_showHostiles  = true;
@@ -648,8 +699,10 @@ static void RenderRadarWidget()
     ImVec2 center(canvasPos.x + halfCanvas, canvasPos.y + halfCanvas);
 
     // Reserve canvas space
-    ImGui::InvisibleButton("radar_canvas", ImVec2(canvasSize, canvasSize));
+    ImGui::InvisibleButton("radar_canvas", ImVec2(canvasSize, canvasSize),
+                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     bool canvasHovered = ImGui::IsItemHovered();
+    bool canvasRightClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
@@ -677,16 +730,19 @@ static void RenderRadarWidget()
     // 3. Aggro zones (back layer)
     if (s_showAggro) {
         for (const auto& e : entries) {
-            if (e.aggroRadius <= 0.f || e.isDead) continue;
+            if (e.aggroRadiusBuffered <= 0.f || e.isDead) continue;
             if (!s_showHostiles) continue;
             ImVec2 sp = WorldToRadar(e.position, myPos, myFacing, center, scale, s_facingUp);
-            float rPx = e.aggroRadius * scale;
+            float rPx = e.aggroRadiusBuffered * scale;
             dl->AddCircleFilled(sp, rPx, IM_COL32(255, 40, 40, 25), 32);
             dl->AddCircle(sp, rPx, IM_COL32(255, 40, 40, 50), 32);
         }
     }
 
-    // 4. Nav path
+    // 4. Nav path + threat visualization
+    const std::vector<game::Vec3>* detourWPs = nullptr;
+    bool isInForcedCombat = false;
+
     if (s_showPath) {
         auto* current = bot::ActionQueue::Instance().GetCurrent();
         const std::vector<game::Vec3>* waypoints = nullptr;
@@ -710,12 +766,16 @@ static void RenderRadarWidget()
                     destination = waypoints->back();
                     hasPath = true;
                 }
+                detourWPs = &fr->GetDetourWaypoints();
+                isInForcedCombat = fr->IsInForcedCombat();
             } else if (activeTool->GetType() == bot::ToolType::MoveTo) {
                 auto* mt = static_cast<const bot::MoveToTool*>(activeTool);
                 waypoints = &mt->GetNavWaypoints();
                 currentWpIdx = mt->GetNavCurrentIndex();
                 destination = mt->GetTarget();
                 hasPath = !waypoints->empty();
+                detourWPs = &mt->GetDetourWaypoints();
+                isInForcedCombat = mt->IsInForcedCombat();
             }
         }
 
@@ -741,6 +801,64 @@ static void RenderRadarWidget()
             dl->AddLine(ImVec2(dp.x + xsz, dp.y - xsz), ImVec2(dp.x - xsz, dp.y + xsz),
                         IM_COL32(255, 215, 0, 230), 2.0f);
         }
+    }
+
+    // 4b. Detour waypoints (yellow dots)
+    if (detourWPs && !detourWPs->empty()) {
+        for (const auto& dwp : *detourWPs) {
+            ImVec2 dp = WorldToRadar(dwp, myPos, myFacing, center, scale, s_facingUp);
+            dl->AddCircleFilled(dp, 4.f, IM_COL32(255, 255, 0, 200), 12);
+            dl->AddCircle(dp, 4.f, IM_COL32(0, 0, 0, 150), 12, 1.0f);
+        }
+    }
+
+    // 4c. Pulsing circles on path-blocking NPCs
+    if (s_showAggro && s_showPath) {
+        // Use time for pulsing alpha (sinusoidal, 2Hz)
+        float pulseT = static_cast<float>(GetTickCount64() % 1000) / 1000.0f;
+        float pulseAlpha = 0.3f + 0.7f * (0.5f + 0.5f * sinf(pulseT * 6.2832f * 2.0f));
+        uint8_t pulseA = static_cast<uint8_t>(pulseAlpha * 180.0f);
+
+        auto* current = bot::ActionQueue::Instance().GetCurrent();
+        const bot::ITool* activeTool = current;
+        if (activeTool && activeTool->GetType() == bot::ToolType::Sequence) {
+            auto* seq = static_cast<const bot::SequenceTool*>(activeTool);
+            activeTool = seq->GetCurrentStep();
+        }
+
+        // Get blocking threats from active MoveToTool's NavHelper
+        const std::vector<bot::BlockingThreat>* blockingThreats = nullptr;
+        if (activeTool && activeTool->GetType() == bot::ToolType::MoveTo) {
+            // We can't access NavHelper's blocking threats directly from const MoveToTool*,
+            // so we scan entries that overlap with detour waypoints for visual indication.
+            // The pulsing effect on any hostile NPC near the path serves the same purpose.
+        }
+
+        // Pulse any hostile NPC that would block a segment of the current path
+        if (detourWPs && !detourWPs->empty()) {
+            for (const auto& e : entries) {
+                if (e.aggroRadiusBuffered <= 0.f || e.isDead || e.isPlayer) continue;
+                // Check if this NPC is near any detour waypoint (it was rerouted around)
+                for (const auto& dwp : *detourWPs) {
+                    if (e.position.Distance2D(dwp) < e.aggroRadiusBuffered + 5.0f) {
+                        ImVec2 sp = WorldToRadar(e.position, myPos, myFacing, center, scale, s_facingUp);
+                        float rPx = e.aggroRadiusBuffered * scale;
+                        dl->AddCircle(sp, rPx, IM_COL32(255, 0, 0, pulseA), 32, 2.5f);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // 4d. "FORCED COMBAT" text overlay
+    if (isInForcedCombat) {
+        const char* combatText = "FORCED COMBAT";
+        ImVec2 textSize = ImGui::CalcTextSize(combatText);
+        float textX = center.x - textSize.x * 0.5f;
+        float textY = canvasPos.y + canvasSize - 20.f;
+        dl->AddText(ImVec2(textX + 1, textY + 1), IM_COL32(0, 0, 0, 200), combatText);
+        dl->AddText(ImVec2(textX, textY), IM_COL32(255, 60, 60, 255), combatText);
     }
 
     // 5-10. Draw entries (sorted far-to-near so near entries draw on top)
@@ -834,8 +952,8 @@ static void RenderRadarWidget()
 
     dl->PopClipRect();
 
-    // Tooltip
-    if (hoveredEntry) {
+    // Tooltip (only when context menu is NOT open)
+    if (hoveredEntry && !ImGui::IsPopupOpen("radar_ctx")) {
         ImGui::BeginTooltip();
         ImGui::Text("%s", hoveredEntry->name.c_str());
         if (hoveredEntry->objType != game::ObjectType::GameObject) {
@@ -847,6 +965,50 @@ static void RenderRadarWidget()
         }
         ImGui::Text("Distance: %.0f yd", hoveredEntry->distToPlayer);
         ImGui::EndTooltip();
+    }
+
+    // Right-click context menu
+    // Store value copy (not pointer) — RadarData::Update() may reallocate the entries vector
+    static bool s_ctxHasEntry = false;
+    static bot::RadarEntry s_ctxEntry;
+    static ImVec2 s_ctxClickPos{};
+
+    if (canvasRightClicked) {
+        if (hoveredEntry) {
+            s_ctxHasEntry = true;
+            s_ctxEntry = *hoveredEntry;
+        } else {
+            s_ctxHasEntry = false;
+        }
+        s_ctxClickPos = ImGui::GetMousePos();
+        ImGui::OpenPopup("radar_ctx");
+    }
+
+    if (ImGui::BeginPopup("radar_ctx")) {
+        if (s_ctxHasEntry) {
+            ImGui::TextDisabled("%s", s_ctxEntry.name.c_str());
+            ImGui::Separator();
+            if (ImGui::MenuItem("Target")) {
+                game::SelectTarget(s_ctxEntry.guid);
+            }
+            if (ImGui::MenuItem("Set Coords")) {
+                s_destPos[0] = s_ctxEntry.position.x;
+                s_destPos[1] = s_ctxEntry.position.y;
+                s_destPos[2] = s_ctxEntry.position.z;
+            }
+        } else {
+            // Clicked on empty space — convert screen pos to world coords
+            game::Vec3 worldClick = RadarToWorld(
+                s_ctxClickPos, myPos, myFacing, center, scale, s_facingUp);
+            ImGui::TextDisabled("(%.0f, %.0f)", worldClick.x, worldClick.y);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Set Coords")) {
+                s_destPos[0] = worldClick.x;
+                s_destPos[1] = worldClick.y;
+                s_destPos[2] = worldClick.z;
+            }
+        }
+        ImGui::EndPopup();
     }
 
     // 15. Stats text

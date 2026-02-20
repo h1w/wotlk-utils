@@ -43,6 +43,7 @@ inline constexpr uintptr_t CGGameUI_Target          = 0x00524BF0;
 
 // Movement
 inline constexpr uintptr_t ClickToMove              = 0x00727400;
+inline constexpr uintptr_t ClickToMoveStop          = 0x0072B3A0;
 inline constexpr uintptr_t SetFacing                = 0x0072EA50;
 inline constexpr uintptr_t MoveForwardStart         = 0x005FC200;
 inline constexpr uintptr_t MoveForwardStop          = 0x005FC240;
@@ -253,11 +254,12 @@ inline constexpr uintptr_t NameOffset2       = 0x05C; // name struct -> const ch
 // =========================================================================
 namespace ctm {
 
+inline constexpr int Stop     = 0x03;
 inline constexpr int Move     = 0x04;
 inline constexpr int Interact = 0x06;
 inline constexpr int Loot     = 0x07;
 inline constexpr int Attack   = 0x0A;
-inline constexpr int Stop     = 0x0D;
+inline constexpr int Idle     = 0x0D;
 
 } // namespace ctm
 

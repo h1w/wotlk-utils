@@ -1,8 +1,8 @@
 # Bot Architecture — Tool System & Action Queue
 
-> **Status**: Implementation in progress (Phases 1–4 done, Phase 7a-7c done)
+> **Status**: Implementation in progress (Phases 1–4 done, Phase 7a-7h done, pending in-game testing)
 > **Created**: 2026-02-19
-> **Last updated**: 2026-02-19
+> **Last updated**: 2026-02-20
 > **Scope**: DLL-side bot framework — инструменты, очередь действий, IPC с внешним контроллером
 
 ---

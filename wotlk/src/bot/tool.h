@@ -22,6 +22,7 @@ enum class ToolType : uint8_t {
     UseSpell,
     Wait,
     Sequence,
+    StrategicNav,
 };
 
 enum class ToolStatus : uint8_t {

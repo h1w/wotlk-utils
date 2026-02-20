@@ -2,7 +2,7 @@
 
 Этот документ показывает текущее состояние проекта: что уже работает, что не работает, и к чему мы стремимся.
 
-Последнее обновление: 2026-02-19.
+Последнее обновление: 2026-02-20.
 
 ---
 
@@ -531,6 +531,56 @@ MinHook = статическая линковка (нет DLL). miniz = комп
 
 ---
 
+### 19. Navigation + Bot Framework
+
+**Описание**: полный навигационный стэк + bot framework для автоматического управления персонажем.
+
+**Bot Framework**:
+- ActionQueue (singleton FIFO) — очередь ITool инструментов, один активен за раз
+- Инструменты: MoveToTool, FollowRouteTool, AttackTool, UseSpellTool, WaitTool, SequenceTool, LootTool, InteractTool
+- NavHelper — переиспользуемый класс для navmesh pathfinding + waypoint following
+- ThreatScanner — сканер враждебных NPC для avoidance
+- ImGui: панель инструментов + панель очереди + Radar widget
+
+**Navigation (3 уровня)**:
+- **Tier 1 — Strategic Planner**: WorldGraph (JSON граф ключевых точек), A* для macro-маршрутов между зонами/континентами. StrategicNavTool для Walk/Flight/Boat/Teleport сегментов
+- **Tier 2 — Tactical Navigation**: Detour navmesh с danger-aware A* (area cost marking, cost=50), post-validation против реальных aggro-зон. 5x5 tile grid + corridor loading для дальних маршрутов
+- **Tier 3 — Movement Synthesizer**: hash-based noise (±0.8yd), lookahead 12yd, micro-pauses, reaction delay для human-like движения
+
+**NPC Avoidance**:
+- `FindPathAvoiding`: single-pass area cost marking (`setPolyArea(ref, 63)` + `setAreaCost(63, 50.0)`)
+- Dual filter: permissive для `findNearestPoly`, danger-aware для `findPath`
+- `closestPointOnPoly` для точной polygon-circle intersection
+- Post-validation: проверка intermediate polys на throughDanger
+- RAII `PolyAreaGuard` для безопасного восстановления poly areas
+- Margin: `R * 1.15 + 3.0` (dual aggro radius: base 20 для display, base 30 для навигации)
+- Hysteresis: новый путь должен быть >15% лучше
+- Rate limiting: max 5 reroutes per 10s, cooldown 5s
+- Event-based rerouting (NPC movement, danger segment reached, stuck, fallback 8s timer)
+
+**Recovery Protocol** (когда нет безопасного пути):
+- Wait (до 10с) → Evaluate (weak vs strong mobs) → Attack/RunThrough/Failed
+- Forced combat counter (max 5 per journey)
+
+**CTM Stop Mechanism**:
+- `CGPlayer_C::ClickToMoveStop` @ 0x0072B3A0 — правильная остановка CTM
+- CTM и CMovement **decoupled** — сброс CTM action не останавливает CMovement
+- ClickToMoveStop: сброс CTM state + очистка FORWARD flag + MSG_MOVE_STOP (0x00B7)
+- Safety-net StopCTM+StopMoving в ActionQueue::Remove/Clear
+
+**Ключевые файлы**:
+| Компонент | Файлы |
+|-----------|-------|
+| Navigation | `navigation/nav_mesh.h/.cpp`, `navigation/pathfinder.h/.cpp`, `navigation/world_graph.h/.cpp`, `navigation/corridor_loader.h/.cpp` |
+| Bot core | `bot/action_queue.h/.cpp`, `bot/tool.h`, `bot/nav_helper.h/.cpp`, `bot/threat_scanner.h/.cpp`, `bot/aggro.h`, `bot/radar.h/.cpp`, `bot/movement_synth.h/.cpp` |
+| Tools | `bot/tools/move_to.h/.cpp`, `bot/tools/follow_route.h/.cpp`, `bot/tools/strategic_nav.h/.cpp`, `bot/tools/attack.h/.cpp`, `bot/tools/sequence.h/.cpp` |
+| Movement SDK | `game/movement.h/.cpp` (ClickToMove, ClickToMoveStop, SetFacing, FacePosition, Jump, StopMoving) |
+| Overlay | `overlay/overlay.cpp` (Radar widget, Tools widget, Queue widget) |
+
+**Статус**: CODE COMPLETE (pending in-game testing)
+
+---
+
 ## Архитектура файлов
 
 ```
@@ -573,11 +623,14 @@ wotlk/
       tool.h                             — ITool interface, ToolType, ToolStatus
       action_queue.h / .cpp              — ActionQueue (singleton FIFO for tools)
       nav_helper.h / .cpp                — NavHelper (navmesh pathfinding + waypoint follower)
+      threat_scanner.h / .cpp            — ThreatScanner (scan hostile NPCs, path validation)
+      movement_synth.h / .cpp            — MovementSynthesizer (noise, lookahead, micro-pauses)
       aggro.h                            — CalcAggroRadius() (shared formula)
       radar.h / .cpp                     — RadarData + RadarEntry (data collection every 200ms)
       tools/
         move_to.h / .cpp                 — MoveToTool (navmesh path + CTM fallback)
         follow_route.h / .cpp            — FollowRouteTool (multi-waypoint route)
+        strategic_nav.h / .cpp           — StrategicNavTool (world graph multi-segment navigation)
         attack.h / .cpp                  — AttackTool
         use_spell.h / .cpp               — UseSpellTool
         wait.h / .cpp                    — WaitTool
@@ -586,7 +639,9 @@ wotlk/
         interact.h / .cpp                — InteractTool
     navigation/
       nav_mesh.h / .cpp                  — NavMesh (Detour navmesh loading from .mmap/.mmtile)
-      pathfinder.h / .cpp                — Pathfinder (A* path queries)
+      pathfinder.h / .cpp                — Pathfinder (A* path queries + danger-aware avoidance)
+      world_graph.h / .cpp               — WorldGraph (JSON graph, A* macro-routing)
+      corridor_loader.h / .cpp           — CorridorLoader (pre-load tiles along long routes)
     overlay/
       overlay.h / .cpp                   — ImGui overlay (EndScene hook, Tools/Queue/Stats/Radar widgets)
     logging/
@@ -622,9 +677,12 @@ wotlk/
 - ~~MPQ_CHECK spoofing~~ — SHA1 подмена через mpq_cache
 - ~~Game SDK~~ — 12 модулей (ObjectManager, Unit, LocalPlayer, Spell, Movement, World, Lua bridge)
 - ~~Оффсеты реорганизованы~~ — nested namespaces (offsets::fn, offsets::globals, offsets::objmgr, offsets::fields, ...)
-- ~~Bot Framework~~ — ActionQueue, ITool, NavHelper, MoveToTool, FollowRouteTool, AttackTool, и др.
-- ~~Navigation~~ — Detour navmesh loading (.mmap/.mmtile), Pathfinder (FindPath)
-- ~~Radar Widget~~ — ImGui top-down 2D радар (игрок, NPC, aggro-зоны, навигационный путь, GameObjects, тултипы)
+- ~~Bot Framework~~ — ActionQueue, ITool, NavHelper, ThreatScanner, MoveToTool, FollowRouteTool, AttackTool, SequenceTool, и др.
+- ~~Navigation (Tier 2)~~ — Detour navmesh, NPC avoidance (area cost marking), tile streaming 5x5, corridor loading
+- ~~Navigation (Tier 1)~~ — WorldGraph JSON, A* планировщик, StrategicNavTool (код готов, данных нет)
+- ~~Navigation (Tier 3)~~ — Movement synthesizer (noise, lookahead, micro-pauses)
+- ~~Radar Widget~~ — ImGui 2D top-down радар (NPC, aggro-зоны, навигационный путь)
+- ~~CTM Stop~~ — ClickToMoveStop @ 0x0072B3A0 (correct teardown of CTM + CMovement)
 
 ### Ближайшее
 
@@ -635,6 +693,10 @@ wotlk/
 #### 2. Статистика проверок (dashboard)
 **Цель**: знать заранее, какие адреса Warden проверяет.
 **Механизм**: собираем частоты MEM_CHECK/PAGE_CHECK адресов, ALERT если hook-адрес проверяется.
+
+#### 3. In-game testing навигации
+**Цель**: верификация NPC avoidance, tile streaming, corridor loading, CTM stop.
+**Критерий**: персонаж строит маршрут в обход враждебных NPC, корректно останавливается при завершении/аборте задач.
 
 ### Среднесрочное
 
@@ -670,7 +732,7 @@ wotlk/
 
 ## Заключение
 
-Проект находится на стадии **активного bypass + Game SDK + Bot Framework + Radar**. Все основные типы проверок Warden перехвачены и спуфятся. Поверх Warden-слоя реализованы Game SDK, Bot Framework с навигацией (Detour navmesh), и ImGui Radar Widget для визуальной отладки:
+Проект находится на стадии **активного bypass + Game SDK + Bot Framework + Navigation**. Все основные типы проверок Warden перехвачены и спуфятся. Поверх Warden-слоя реализованы Game SDK, трёхуровневая навигационная система (strategic planner, tactical navmesh, movement synthesizer) с NPC avoidance, Bot Framework с ActionQueue/ITool, ClickToMoveStop для корректного teardown, и ImGui Radar Widget для визуальной отладки:
 
 **Что мы умеем**:
 - Перехватывать и парсить все типы Warden пакетов (SMSG и CMSG)
@@ -689,10 +751,12 @@ wotlk/
 - Обрабатывать новые (uncached) модули через blind memory scan + bounded dynamic type discovery + two-tier matching
 - **Читать данные персонажа** (HP, мана, уровень, позиция, ауры, статы, золото) через Game SDK
 - **Перечислять юнитов** вокруг (ObjectManager traversal), проверять реакцию/расстояние
-- **Выполнять действия** (ClickToMove, SetFacing, CastSpell, SelectTarget) через C++ вызовы и Lua bridge
+- **Выполнять действия** (ClickToMove, ClickToMoveStop, SetFacing, CastSpell, SelectTarget) через C++ вызовы и Lua bridge
 - **Получать информацию о мире** (зона, карта, реалм, LineOfSight, камера)
-- **Навигация по navmesh** (Detour, загрузка .mmap/.mmtile, FindPath, waypoint following)
-- **Bot Framework** (ActionQueue, ITool, MoveToTool, FollowRouteTool, AttackTool, SequenceTool и др.)
+- **Навигация (3-tier)**: WorldGraph (JSON, A* macro-routing), Detour navmesh (danger-aware pathfinding, NPC avoidance via area cost marking, 5x5 tile streaming, corridor loading), movement synthesizer (hash-based noise, lookahead, micro-pauses)
+- **NPC avoidance**: dual-filter poly selection, polygon-circle intersection, post-validation, RAII area restore, hysteresis, rate limiting, event-based rerouting
+- **Recovery protocol**: wait → evaluate (weak/strong) → attack/run-through/failed
+- **Bot Framework** (ActionQueue FIFO, ITool, NavHelper, ThreatScanner, MoveToTool, FollowRouteTool, StrategicNavTool, AttackTool, SequenceTool и др.)
 - **Radar Widget** (ImGui 2D top-down радар: игрок, NPC, aggro-зоны, путь, GameObjects, тултипы)
 
 **Ключевые компоненты**:
@@ -703,7 +767,7 @@ wotlk/
 - `src/warden/warden_checksum.cpp` — пересчёт checksum после модификации
 - `src/warden/peb_unlink.cpp` — скрытие DLL из PEB.Ldr lists
 
-**Живые тесты** (2026-02-18):
+**Живые тесты** (2026-02-20):
 - 38 модулей захвачено, 38/38 Python validation (100%)
 - Новый модуль 2E9FE85D захвачен из памяти процесса (cached module, без MODULE_CACHE)
 - Chain intersection + FixMaxType fallback → 0 модулей с < 9 типов

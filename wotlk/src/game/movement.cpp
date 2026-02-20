@@ -12,7 +12,7 @@
 namespace game::movement {
 
 // ClickToMove: void __thiscall(Player*, int action, uint64_t* guid, Vec3* pos, float precision)
-static bool CallCTM(int action, GUID guid, const Vec3& pos)
+static bool CallCTM(int action, GUID guid, const Vec3& pos, float prec = 0.5f)
 {
     uintptr_t playerPtr = objmgr::GetLocalPlayerPtr();
     if (playerPtr == 0) return false;
@@ -20,7 +20,7 @@ static bool CallCTM(int action, GUID guid, const Vec3& pos)
     uintptr_t fn = offsets::fn::ClickToMove;
     uint64_t guidVal = guid;
     Vec3 posVal = pos;
-    float precision = 0.5f;
+    float precision = prec;
 
     __try {
         __asm {
@@ -61,10 +61,27 @@ bool ClickToMoveLoot(GUID targetGuid, const Vec3& pos)
     return CallCTM(offsets::ctm::Loot, targetGuid, pos);
 }
 
+// CGPlayer_C::ClickToMoveStop — void __thiscall(Player*)
+// Properly tears down CTM state machine, clears FORWARD movement flag,
+// and sends MSG_MOVE_STOP (0x00B7) to the server.
 bool StopCTM()
 {
-    Vec3 dummy;
-    return CallCTM(offsets::ctm::Stop, GUID_NONE, dummy);
+    uintptr_t playerPtr = objmgr::GetLocalPlayerPtr();
+    if (playerPtr == 0) return false;
+
+    uintptr_t fn = offsets::fn::ClickToMoveStop;
+
+    __try {
+        __asm {
+            mov ecx, playerPtr
+            call fn
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+
+    return true;
 }
 
 // SetFacing: void __thiscall(Unit*, float facing)
@@ -129,7 +146,14 @@ bool Jump()
 
 bool StopMoving()
 {
-    return lua::Execute("MoveAndSteerStop()");
+    // Stop all keyboard-initiated movement (in case any keys are "held")
+    lua::Execute("MoveForwardStop()");
+    lua::Execute("MoveBackwardStop()");
+    lua::Execute("StrafeLeftStop()");
+    lua::Execute("StrafeRightStop()");
+    lua::Execute("TurnLeftStop()");
+    lua::Execute("TurnRightStop()");
+    return true;
 }
 
 } // namespace game::movement

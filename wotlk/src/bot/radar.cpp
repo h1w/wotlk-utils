@@ -9,6 +9,12 @@
 
 namespace bot {
 
+RadarData& RadarData::Instance()
+{
+    static RadarData s_instance;
+    return s_instance;
+}
+
 void RadarData::Update(const game::LocalPlayer& player)
 {
     uint64_t now = GetTickCount64();
@@ -48,7 +54,9 @@ void RadarData::Update(const game::LocalPlayer& player)
             (e.reaction == game::UnitReaction::Hostile ||
              e.reaction == game::UnitReaction::Unfriendly))
         {
-            e.aggroRadius = CalcAggroRadius(e.level, myLevel) + kAggroMargin;
+            e.aggroRadiusRaw = CalcAggroRadius(e.level, myLevel);
+            e.aggroRadiusBuffered = CalcAggroRadiusBuffered(e.level, myLevel);
+            e.aggroRadiusNav = CalcAggroRadiusNav(e.level, myLevel);
         }
 
         e.distToPlayer = myPos.Distance2D(e.position);

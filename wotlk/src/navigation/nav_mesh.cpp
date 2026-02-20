@@ -180,7 +180,7 @@ bool NavMesh::LoadMap(uint32_t mapId) {
         unsigned int origMaxPolys = params.maxPolys;
         unsigned int origMaxTiles = params.maxTiles;
 
-        // Cap maxTiles: we only need ~9 active tiles, 64 slots is generous
+        // Cap maxTiles: 5x5 load + 7x7 hysteresis = 49 tiles max, 64 slots suffices
         if (params.maxTiles > kMaxTilesOverride)
             params.maxTiles = kMaxTilesOverride;
 
@@ -230,7 +230,7 @@ bool NavMesh::LoadMap(uint32_t mapId) {
         return false;
     }
 
-    static constexpr int kMaxNodes = 2048;
+    static constexpr int kMaxNodes = 65535;
     status = m_query->init(m_navMesh, kMaxNodes);
     if (dtStatusFailed(status)) {
         LOG(ERROR) << "[Nav] dtNavMeshQuery::init failed, status=0x" << std::hex << status;
@@ -429,6 +429,19 @@ void NavMesh::UnloadTile(int tileX, int tileY) {
 // Tile streaming
 // ---------------------------------------------------------------------------
 
+int NavMesh::LoadTiles(const std::set<std::pair<int,int>>& tiles) {
+    if (!m_navMesh) return 0;
+
+    int loaded = 0;
+    for (const auto& [tx, ty] : tiles) {
+        if (!m_loadedTiles.count({tx, ty})) {
+            if (LoadTile(tx, ty))
+                ++loaded;
+        }
+    }
+    return loaded;
+}
+
 void NavMesh::WorldToTile(float x, float y, int& tileX, int& tileY) {
     // WoW coordinate system: X grows south, Y grows west
     // TrinityCore tile mapping: tile = 32 - floor(coord / TILE_SIZE)
@@ -450,27 +463,24 @@ void NavMesh::UpdateLoadedTiles(float x, float y) {
     m_lastCenterTileX = centerTileX;
     m_lastCenterTileY = centerTileY;
 
-    // Determine desired tile set
-    std::map<std::pair<int,int>, bool> desired;
-    for (int dx = -kTileLoadRadius; dx <= kTileLoadRadius; ++dx) {
-        for (int dy = -kTileLoadRadius; dy <= kTileLoadRadius; ++dy) {
-            desired[{centerTileX + dx, centerTileY + dy}] = true;
-        }
-    }
-
-    // Unload tiles no longer needed
+    // Unload tiles beyond unload radius (hysteresis: keep 7x7, unload beyond)
     std::vector<std::pair<int,int>> toUnload;
     for (auto& [key, ref] : m_loadedTiles) {
-        if (!desired.count(key))
+        int dx = std::abs(key.first  - centerTileX);
+        int dy = std::abs(key.second - centerTileY);
+        if (dx > kTileUnloadRadius || dy > kTileUnloadRadius)
             toUnload.push_back(key);
     }
     for (auto& key : toUnload)
         UnloadTile(key.first, key.second);
 
-    // Load new tiles
-    for (auto& [key, _] : desired) {
-        if (!m_loadedTiles.count(key))
-            LoadTile(key.first, key.second);
+    // Load tiles in 5x5 grid around player
+    for (int dx = -kTileLoadRadius; dx <= kTileLoadRadius; ++dx) {
+        for (int dy = -kTileLoadRadius; dy <= kTileLoadRadius; ++dy) {
+            auto key = std::make_pair(centerTileX + dx, centerTileY + dy);
+            if (!m_loadedTiles.count(key))
+                LoadTile(key.first, key.second);
+        }
     }
 }
 

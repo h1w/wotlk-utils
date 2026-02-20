@@ -212,7 +212,7 @@ namespace game::movement {
     bool ClickToMove(const Vec3& pos);
     bool ClickToMoveAttack(GUID targetGuid, const Vec3& pos);
     bool ClickToMoveInteract(GUID targetGuid, const Vec3& pos);
-    bool StopCTM();
+    bool StopCTM();  // вызывает ClickToMoveStop (см. ниже)
 
     // C++ SetFacing @ 0x72EA50 (__thiscall: ECX=playerPtr)
     bool SetFacing(float radians);
@@ -231,6 +231,26 @@ namespace game::movement {
 | Interact | 0x06 | Взаимодействие с объектом |
 | Attack | 0x0A | Атака цели |
 | Stop | 0x0D | Остановка |
+
+**Функции движения WoW**:
+| Функция | Адрес | Описание |
+|---------|-------|----------|
+| ClickToMove | 0x00727400 | Запуск CTM (стандартный) |
+| ClickToMoveStop | 0x0072B3A0 | Корректная остановка CTM + CMovement + MSG_MOVE_STOP |
+| SetFacing | 0x0072EA50 | Установка направления взгляда |
+
+**ClickToMoveStop** @ 0x0072B3A0:
+- Сигнатура: `void __thiscall CGPlayer_C::ClickToMoveStop(void* player)` — без параметров (только `this` в ECX)
+- Корректно завершает state machine CTM, очищает флаг FORWARD движения, отправляет MSG_MOVE_STOP (0x00B7)
+- **CRITICAL**: CTM и CMovement — разделены. Установка CTM action в Idle/Stop НЕ останавливает CMovement
+- Вызывается из `StopCTM()` для полной остановки
+
+**Архитектура движения**:
+- **CTM global struct** @ 0x00CA11D8 — состояние ClickToMove (action, target, destination)
+- **CMovementData** @ playerBase+0xD8 — состояние движения (флаги @ +0x40, позиция, скорость)
+- CTM и CMovement — **decoupled** (независимы). CTM управляет логикой (что делать), CMovement — физикой (как двигаться)
+- Установка CTM action=Idle только отменяет задачу CTM, но не останавливает активное движение
+- `ClickToMoveStop` — единственная функция, которая корректно останавливает оба компонента
 
 ---
 

@@ -10,6 +10,7 @@
 #include "warden/peb_unlink.h"
 #include "game/game.h"
 #include "navigation/nav_mesh.h"
+#include "navigation/world_graph.h"
 #include "overlay/overlay.h"
 #include <glog/logging.h>
 
@@ -105,6 +106,15 @@ DWORD WINAPI MainThread(LPVOID lpParam)
         LOG(INFO) << "NavMesh initialized (mmaps dir: " << outputDir << "mmaps)";
     } else {
         LOG(WARNING) << "NavMesh initialization failed (non-fatal)";
+    }
+
+    // WorldGraph: strategic-level route planning (long-distance navigation)
+    std::string graphPath = outputDir + "data\\world_graph.json";
+    if (nav::WorldGraph::Instance().LoadFromFile(graphPath.c_str())) {
+        LOG(INFO) << "WorldGraph loaded (" << nav::WorldGraph::Instance().GetNodeCount()
+                  << " nodes, " << nav::WorldGraph::Instance().GetEdgeCount() << " edges)";
+    } else {
+        LOG(WARNING) << "WorldGraph not loaded (non-fatal, long-distance nav unavailable)";
     }
 
     // Hide our DLL + dependencies from PEB.Ldr (prevents Warden MODULE_CHECK detection).
