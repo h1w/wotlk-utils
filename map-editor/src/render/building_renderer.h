@@ -1,0 +1,109 @@
+#pragma once
+
+#include <d3d11.h>
+#include <cstdint>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <map>
+#include <mutex>
+#include <set>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#include "terrain_pipeline.h"
+#include "../data/building_loader.h"
+#include "../data/vmap_tile_loader.h"
+
+namespace mapedit {
+
+struct Camera3D;
+
+class BuildingRenderer {
+public:
+    bool Initialize(ID3D11Device* device, ID3D11DeviceContext* context);
+    void Shutdown();
+
+    void SetDataPath(const std::string& tcDataPath);
+
+    // Load building geometry for visible tiles based on camera position.
+    void UpdateViewport(uint32_t mapId, float targetX, float targetY,
+                        float cameraDistance);
+
+    // Render all loaded building geometry.
+    void Render(const Camera3D& camera, ID3D11RenderTargetView* rtv,
+                ID3D11DepthStencilView* dsv);
+
+private:
+    struct TileBuildings {
+        ID3D11Buffer* vb = nullptr;
+        ID3D11Buffer* ib = nullptr;
+        UINT indexCount = 0;
+        float minX = 0, minY = 0, minZ = 0;
+        float maxX = 0, maxY = 0, maxZ = 0;
+    };
+
+    using TileKey = std::pair<int, int>;
+
+    // Background loading types
+    struct LoadRequest {
+        uint32_t mapId;
+        int tileX, tileY;
+        std::string dataPath;
+        float cameraDistance;
+    };
+
+    struct LoadResult {
+        uint32_t mapId;
+        int tileX, tileY;
+        std::vector<TerrainVertexGpu> vertices;
+        std::vector<uint32_t> indices;
+        float bounds[6];
+        bool empty;  // true = no vmtile or no geometry
+    };
+
+    bool UploadToGpu(const LoadResult& result);
+    void ReleaseTileGpu(TileBuildings& tile);
+    static bool FrustumIntersectsAABB(const float planes[6][4], const TileBuildings& tile);
+
+    // Worker thread
+    void WorkerLoop();
+    void StartWorker();
+    void StopWorker();
+
+    ID3D11Device*        m_device = nullptr;
+    ID3D11DeviceContext* m_context = nullptr;
+    TerrainPipeline      m_pipeline;
+
+    std::map<TileKey, TileBuildings> m_gpuCache;
+    uint32_t m_currentMapId = UINT32_MAX;
+
+    // Global height range
+    float m_globalMinZ =  1e30f;
+    float m_globalMaxZ = -1e30f;
+
+    // Data path (protected by mutex for worker thread)
+    std::mutex m_pathMutex;
+    std::string m_dataPath;
+
+    // Worker thread
+    std::thread m_worker;
+    std::atomic<bool> m_running{false};
+
+    std::mutex m_reqMutex;
+    std::deque<LoadRequest> m_requests;
+    std::condition_variable m_reqCV;
+
+    std::mutex m_resMutex;
+    std::deque<LoadResult> m_results;
+
+    // Tiles currently queued for loading (main thread only)
+    std::set<TileKey> m_pending;
+
+    static constexpr int kMaxUploadsPerFrame = 2;
+    static constexpr int kMaxCachedTiles = 100;
+};
+
+} // namespace mapedit

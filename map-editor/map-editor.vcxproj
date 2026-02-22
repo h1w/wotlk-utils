@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
+    <RootNamespace>mapeditor</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\shared\glog-common.props" />
+    <Import Project="..\shared\imgui-dx11.props" />
+    <Import Project="..\shared\detour-x64.props" />
+    <Import Project="..\shared\nlohmann-json-x64.props" />
+    <Import Project="..\shared\stormlib-x64.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\shared\glog-common.props" />
+    <Import Project="..\shared\imgui-dx11.props" />
+    <Import Project="..\shared\detour-x64.props" />
+    <Import Project="..\shared\nlohmann-json-x64.props" />
+    <Import Project="..\shared\stormlib-x64.props" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>C:\vcpkg\installed\x64-windows\debug\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>glog.lib;gflags_debug.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command>copy /Y "C:\vcpkg\installed\x64-windows\debug\bin\glog.dll" "$(OutDir)glog.dll"
+copy /Y "C:\vcpkg\installed\x64-windows\debug\bin\gflags_debug.dll" "$(OutDir)gflags_debug.dll"
+copy /Y "C:\vcpkg\installed\x64-windows\debug\bin\StormLib.dll" "$(OutDir)StormLib.dll"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalLibraryDirectories>C:\vcpkg\installed\x64-windows\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>glog.lib;gflags.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command>copy /Y "C:\vcpkg\installed\x64-windows\bin\glog.dll" "$(OutDir)glog.dll"
+copy /Y "C:\vcpkg\installed\x64-windows\bin\gflags.dll" "$(OutDir)gflags.dll"
+copy /Y "C:\vcpkg\installed\x64-windows\bin\StormLib.dll" "$(OutDir)StormLib.dll"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="src\app.h" />
+    <ClInclude Include="src\camera\camera3d.h" />
+    <ClInclude Include="src\canvas\canvas.h" />
+    <ClInclude Include="src\data\map_defs.h" />
+    <ClInclude Include="src\data\tile_index.h" />
+    <ClInclude Include="src\data\world_graph_data.h" />
+    <ClInclude Include="src\data\route_data.h" />
+    <ClInclude Include="src\render\grid_renderer.h" />
+    <ClInclude Include="src\render\navmesh_pipeline.h" />
+    <ClInclude Include="src\render\navmesh_pipeline_3d.h" />
+    <ClInclude Include="src\render\navmesh_renderer.h" />
+    <ClInclude Include="src\render\navmesh_renderer_3d.h" />
+    <ClInclude Include="src\render\primitives_3d.h" />
+    <ClInclude Include="src\render\graph_renderer_3d.h" />
+    <ClInclude Include="src\render\route_renderer_3d.h" />
+    <ClInclude Include="src\render\path_renderer_3d.h" />
+    <ClInclude Include="src\render\grid_renderer_3d.h" />
+    <ClInclude Include="src\render\ground_plane_3d.h" />
+    <ClInclude Include="src\render\graph_renderer.h" />
+    <ClInclude Include="src\render\route_renderer.h" />
+    <ClInclude Include="src\render\path_renderer.h" />
+    <ClInclude Include="src\render\map_background.h" />
+    <ClInclude Include="src\render\minimap_cache.h" />
+    <ClInclude Include="src\navmesh\tile_loader.h" />
+    <ClInclude Include="src\navmesh\tile_cache.h" />
+    <ClInclude Include="src\navmesh\pathfinder.h" />
+    <ClInclude Include="src\editor\selection.h" />
+    <ClInclude Include="src\editor\graph_editor.h" />
+    <ClInclude Include="src\editor\route_editor.h" />
+    <ClInclude Include="src\editor\undo_redo.h" />
+    <ClInclude Include="src\ui\status_bar.h" />
+    <ClInclude Include="src\ui\property_panel.h" />
+    <ClInclude Include="src\ui\layer_panel.h" />
+    <ClInclude Include="src\ui\log_window.h" />
+    <ClInclude Include="src\ui\main_menu.h" />
+    <ClInclude Include="src\ui\compass.h" />
+    <ClInclude Include="src\data\app_settings.h" />
+    <ClInclude Include="src\mpq\dbc_reader.h" />
+    <ClInclude Include="src\mpq\blp_decoder.h" />
+    <ClInclude Include="src\mpq\mpq_archive.h" />
+    <ClInclude Include="src\mpq\world_map_loader.h" />
+    <ClInclude Include="src\simulation\player_marker.h" />
+    <ClInclude Include="src\data\terrain_loader.h" />
+    <ClInclude Include="src\data\terrain_mesh.h" />
+    <ClInclude Include="src\render\terrain_pipeline.h" />
+    <ClInclude Include="src\render\terrain_renderer.h" />
+    <ClInclude Include="src\data\building_loader.h" />
+    <ClInclude Include="src\data\vmap_tile_loader.h" />
+    <ClInclude Include="src\render\building_renderer.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\app.cpp" />
+    <ClCompile Include="src\camera\camera3d.cpp" />
+    <ClCompile Include="src\canvas\canvas.cpp" />
+    <ClCompile Include="src\data\tile_index.cpp" />
+    <ClCompile Include="src\data\world_graph_data.cpp" />
+    <ClCompile Include="src\data\route_data.cpp" />
+    <ClCompile Include="src\render\grid_renderer.cpp" />
+    <ClCompile Include="src\render\navmesh_pipeline.cpp" />
+    <ClCompile Include="src\render\navmesh_pipeline_3d.cpp" />
+    <ClCompile Include="src\render\navmesh_renderer.cpp" />
+    <ClCompile Include="src\render\navmesh_renderer_3d.cpp" />
+    <ClCompile Include="src\render\primitives_3d.cpp" />
+    <ClCompile Include="src\render\graph_renderer_3d.cpp" />
+    <ClCompile Include="src\render\route_renderer_3d.cpp" />
+    <ClCompile Include="src\render\path_renderer_3d.cpp" />
+    <ClCompile Include="src\render\grid_renderer_3d.cpp" />
+    <ClCompile Include="src\render\ground_plane_3d.cpp" />
+    <ClCompile Include="src\render\graph_renderer.cpp" />
+    <ClCompile Include="src\render\route_renderer.cpp" />
+    <ClCompile Include="src\render\path_renderer.cpp" />
+    <ClCompile Include="src\render\map_background.cpp" />
+    <ClCompile Include="src\render\minimap_cache.cpp" />
+    <ClCompile Include="src\navmesh\tile_loader.cpp" />
+    <ClCompile Include="src\navmesh\tile_cache.cpp" />
+    <ClCompile Include="src\navmesh\pathfinder.cpp" />
+    <ClCompile Include="src\editor\selection.cpp" />
+    <ClCompile Include="src\editor\graph_editor.cpp" />
+    <ClCompile Include="src\editor\route_editor.cpp" />
+    <ClCompile Include="src\editor\undo_redo.cpp" />
+    <ClCompile Include="src\ui\status_bar.cpp" />
+    <ClCompile Include="src\ui\property_panel.cpp" />
+    <ClCompile Include="src\ui\layer_panel.cpp" />
+    <ClCompile Include="src\ui\log_window.cpp" />
+    <ClCompile Include="src\ui\main_menu.cpp" />
+    <ClCompile Include="src\ui\compass.cpp" />
+    <ClCompile Include="src\data\app_settings.cpp" />
+    <ClCompile Include="src\mpq\dbc_reader.cpp" />
+    <ClCompile Include="src\mpq\blp_decoder.cpp" />
+    <ClCompile Include="src\mpq\mpq_archive.cpp" />
+    <ClCompile Include="src\mpq\world_map_loader.cpp" />
+    <ClCompile Include="src\simulation\player_marker.cpp" />
+    <ClCompile Include="src\data\terrain_loader.cpp" />
+    <ClCompile Include="src\data\terrain_mesh.cpp" />
+    <ClCompile Include="src\render\terrain_pipeline.cpp" />
+    <ClCompile Include="src\render\terrain_renderer.cpp" />
+    <ClCompile Include="src\data\building_loader.cpp" />
+    <ClCompile Include="src\data\vmap_tile_loader.cpp" />
+    <ClCompile Include="src\render\building_renderer.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
