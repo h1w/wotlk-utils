@@ -13,33 +13,54 @@ namespace mapedit {
 // ---------------------------------------------------------------------------
 
 void Camera3D::ComputeMatrices() {
-    // Eye position = target - spherical offset (camera SOUTH of target at yaw=0)
-    // so the camera looks north (+X), matching the 2D canvas north-up orientation.
-    float cosPitch = cosf(pitch);
-    eyeX = targetX - distance * cosPitch * cosf(yaw);
-    eyeY = targetY + distance * cosPitch * sinf(yaw);
-    eyeZ = targetZ + distance * (-sinf(pitch)); // negative pitch = above target
+    if (cameraMode == CameraMode::Free) {
+        // Free camera: eye IS the position; look direction from yaw/pitch
+        float cosPitch = cosf(pitch);
+        float lookX =  cosPitch * cosf(yaw);   // north at yaw=0
+        float lookY = -cosPitch * sinf(yaw);
+        float lookZ =  sinf(pitch);
 
-    // Build View matrix using DirectXMath LookAtLH
-    // WoW is Z-up. LookAtLH with up=(0,0,1) handles the coordinate mapping.
-    XMVECTOR eye    = XMVectorSet(eyeX, eyeY, eyeZ, 1.0f);
-    XMVECTOR target = XMVectorSet(targetX, targetY, targetZ, 1.0f);
-    XMVECTOR up     = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+        float atX = eyeX + lookX;
+        float atY = eyeY + lookY;
+        float atZ = eyeZ + lookZ;
 
-    XMMATRIX view = XMMatrixLookAtLH(eye, target, up);
+        XMVECTOR eye    = XMVectorSet(eyeX, eyeY, eyeZ, 1.0f);
+        XMVECTOR target = XMVectorSet(atX, atY, atZ, 1.0f);
+        XMVECTOR up     = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
 
-    // Perspective projection
-    float aspect = (vpH > 0.0f) ? (vpW / vpH) : 1.0f;
-    float fovRad = fovY * XM_PI / 180.0f;
-    XMMATRIX proj = XMMatrixPerspectiveFovLH(fovRad, aspect, nearPlane, farPlane);
+        XMMATRIX view = XMMatrixLookAtLH(eye, target, up);
 
-    // VP = View * Proj.
-    // Flip clip-space X so east (-Y) appears screen-right, matching 2D canvas.
-    // (Camera looks north; LookAtLH gives xaxis=+Y=west as screen-right,
-    //  the X-flip corrects this to east=right.)
-    XMMATRIX vp = view * proj * XMMatrixScaling(-1.0f, 1.0f, 1.0f);
-    // Transposed for HLSL column-major upload
-    XMStoreFloat4x4(&viewProj, XMMatrixTranspose(vp));
+        float aspect = (vpH > 0.0f) ? (vpW / vpH) : 1.0f;
+        float fovRad = fovY * XM_PI / 180.0f;
+        XMMATRIX proj = XMMatrixPerspectiveFovLH(fovRad, aspect, nearPlane, farPlane);
+
+        XMMATRIX vp = view * proj * XMMatrixScaling(-1.0f, 1.0f, 1.0f);
+        XMStoreFloat4x4(&viewProj, XMMatrixTranspose(vp));
+
+        // Sync target for consumers (tile loading, LOD, etc.)
+        targetX = eyeX + lookX * distance;
+        targetY = eyeY + lookY * distance;
+        targetZ = eyeZ + lookZ * distance;
+    } else {
+        // Orbit camera: eye orbits around target
+        float cosPitch = cosf(pitch);
+        eyeX = targetX - distance * cosPitch * cosf(yaw);
+        eyeY = targetY + distance * cosPitch * sinf(yaw);
+        eyeZ = targetZ + distance * (-sinf(pitch));
+
+        XMVECTOR eye    = XMVectorSet(eyeX, eyeY, eyeZ, 1.0f);
+        XMVECTOR target = XMVectorSet(targetX, targetY, targetZ, 1.0f);
+        XMVECTOR up     = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+
+        XMMATRIX view = XMMatrixLookAtLH(eye, target, up);
+
+        float aspect = (vpH > 0.0f) ? (vpW / vpH) : 1.0f;
+        float fovRad = fovY * XM_PI / 180.0f;
+        XMMATRIX proj = XMMatrixPerspectiveFovLH(fovRad, aspect, nearPlane, farPlane);
+
+        XMMATRIX vp = view * proj * XMMatrixScaling(-1.0f, 1.0f, 1.0f);
+        XMStoreFloat4x4(&viewProj, XMMatrixTranspose(vp));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -47,9 +68,50 @@ void Camera3D::ComputeMatrices() {
 // ---------------------------------------------------------------------------
 
 void Camera3D::ProcessInput() {
+    if (cameraMode == CameraMode::Free)
+        ProcessInputFree();
+    else
+        ProcessInputOrbit();
+}
+
+// ---------------------------------------------------------------------------
+// SetCameraMode
+// ---------------------------------------------------------------------------
+
+void Camera3D::SetCameraMode(CameraMode mode) {
+    if (mode == cameraMode) return;
+
+    if (mode == CameraMode::Free) {
+        // Orbit → Free: eyeX/Y/Z and yaw/pitch are already valid, nothing to do
+    } else {
+        // Free → Orbit: compute target as point 'distance' ahead of eye
+        float cosPitch = cosf(pitch);
+        float lookX =  cosPitch * cosf(yaw);
+        float lookY = -cosPitch * sinf(yaw);
+        float lookZ =  sinf(pitch);
+        targetX = eyeX + lookX * distance;
+        targetY = eyeY + lookY * distance;
+        targetZ = eyeZ + lookZ * distance;
+
+        // Clamp pitch to orbit range
+        pitch = std::clamp(pitch, kMinPitch, kMaxPitch);
+    }
+
+    // Reset interaction flags
+    m_orbiting = false;
+    m_panning = false;
+    m_freeLooking = false;
+
+    cameraMode = mode;
+}
+
+// ---------------------------------------------------------------------------
+// ProcessInputOrbit
+// ---------------------------------------------------------------------------
+
+void Camera3D::ProcessInputOrbit() {
     auto& io = ImGui::GetIO();
 
-    // Only process input when mouse is inside the 3D viewport
     bool mouseInViewport = (io.MousePos.x >= vpX && io.MousePos.x <= vpX + vpW &&
                             io.MousePos.y >= vpY && io.MousePos.y <= vpY + vpH);
 
@@ -88,8 +150,6 @@ void Camera3D::ProcessInput() {
             float dx = io.MousePos.x - m_panStartMouseX;
             float dy = io.MousePos.y - m_panStartMouseY;
 
-            // Compute camera-relative right and up vectors in world space
-            // Right = cross(forward, worldUp), normalized in XY plane
             float fwdX = targetX - eyeX;
             float fwdY = targetY - eyeY;
             float fwdLen = sqrtf(fwdX * fwdX + fwdY * fwdY);
@@ -97,11 +157,9 @@ void Camera3D::ProcessInput() {
             fwdX /= fwdLen;
             fwdY /= fwdLen;
 
-            // Right = (-fwdY, fwdX) in XY plane (left-handed cross with Z-up)
             float rightX = -fwdY;
             float rightY =  fwdX;
 
-            // Scale by distance for consistent pan speed
             float panScale = distance * 0.002f;
             targetX = m_panStartTargetX + (dx * rightX) * panScale + (dy * fwdX) * panScale;
             targetY = m_panStartTargetY + (dx * rightY) * panScale + (dy * fwdY) * panScale;
@@ -115,6 +173,83 @@ void Camera3D::ProcessInput() {
         float factor = 1.0f - io.MouseWheel * 0.1f;
         distance *= factor;
         distance = std::clamp(distance, kMinDist, kMaxDist);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ProcessInputFree
+// ---------------------------------------------------------------------------
+
+void Camera3D::ProcessInputFree() {
+    auto& io = ImGui::GetIO();
+    float dt = io.DeltaTime;
+
+    bool mouseInViewport = (io.MousePos.x >= vpX && io.MousePos.x <= vpX + vpW &&
+                            io.MousePos.y >= vpY && io.MousePos.y <= vpY + vpH);
+
+    // Mouse look: right-click drag
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && mouseInViewport && !io.WantCaptureMouse) {
+        m_freeLooking = true;
+        m_freeLookStartMouseX = io.MousePos.x;
+        m_freeLookStartMouseY = io.MousePos.y;
+        m_freeLookStartYaw    = yaw;
+        m_freeLookStartPitch  = pitch;
+    }
+    if (m_freeLooking) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+            float dx = io.MousePos.x - m_freeLookStartMouseX;
+            float dy = io.MousePos.y - m_freeLookStartMouseY;
+            float sensitivity = 0.005f;
+            yaw   = m_freeLookStartYaw   + dx * sensitivity;
+            pitch = m_freeLookStartPitch + dy * sensitivity;
+            pitch = std::clamp(pitch, kFreePitchMin, kFreePitchMax);
+        } else {
+            m_freeLooking = false;
+        }
+    }
+
+    // Scroll wheel: adjust move speed
+    if (mouseInViewport && !io.WantCaptureMouse && io.MouseWheel != 0.0f) {
+        float factor = powf(1.15f, io.MouseWheel);
+        moveSpeed *= factor;
+        moveSpeed = std::clamp(moveSpeed, kMinMoveSpeed, kMaxMoveSpeed);
+    }
+
+    // WASD movement (only when not typing in a text field)
+    if (!io.WantTextInput) {
+        // Forward direction in XY plane (north at yaw=0)
+        float fwdX =  cosf(yaw);
+        float fwdY = -sinf(yaw);
+        // Right direction (east = -Y at yaw=0)
+        float rightX = -sinf(yaw);
+        float rightY = -cosf(yaw);
+
+        float moveX = 0.0f, moveY = 0.0f, moveZ = 0.0f;
+
+        if (ImGui::IsKeyDown(ImGuiKey_W)) { moveX += fwdX;   moveY += fwdY; }
+        if (ImGui::IsKeyDown(ImGuiKey_S)) { moveX -= fwdX;   moveY -= fwdY; }
+        if (ImGui::IsKeyDown(ImGuiKey_A)) { moveX -= rightX; moveY -= rightY; }
+        if (ImGui::IsKeyDown(ImGuiKey_D)) { moveX += rightX; moveY += rightY; }
+
+        if (ImGui::IsKeyDown(ImGuiKey_Space) || ImGui::IsKeyDown(ImGuiKey_Q))
+            moveZ += 1.0f;
+        if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_E))
+            moveZ -= 1.0f;
+
+        // Normalize horizontal
+        float hLen = sqrtf(moveX * moveX + moveY * moveY);
+        if (hLen > 1.0f) {
+            moveX /= hLen;
+            moveY /= hLen;
+        }
+
+        float speed = moveSpeed;
+        if (ImGui::IsKeyDown(ImGuiKey_LeftShift))
+            speed *= 3.0f;
+
+        eyeX += moveX * speed * dt;
+        eyeY += moveY * speed * dt;
+        eyeZ += moveZ * speed * dt;
     }
 }
 
@@ -212,6 +347,7 @@ void Camera3D::GetFrustumPlanes(float planes[6][4]) const {
 
 void Camera3D::UpdateFollow(float playerX, float playerY, float playerZ) {
     if (!followMode) return;
+    if (cameraMode == CameraMode::Free) return;
 
     targetX = playerX;
     targetY = playerY;

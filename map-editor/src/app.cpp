@@ -455,6 +455,15 @@ void App::RenderFrame() {
                 m_viewMode = ViewMode::Mode2D;
             if (ImGui::MenuItem("Mode: 3D", "Ctrl+2", m_viewMode == ViewMode::Mode3D))
                 m_viewMode = ViewMode::Mode3D;
+            if (m_viewMode == ViewMode::Mode3D) {
+                ImGui::Separator();
+                if (ImGui::MenuItem("Orbit Camera", "V",
+                    m_camera3d.cameraMode == Camera3D::CameraMode::Orbit))
+                    m_camera3d.SetCameraMode(Camera3D::CameraMode::Orbit);
+                if (ImGui::MenuItem("Free Camera (FPS)", "V",
+                    m_camera3d.cameraMode == Camera3D::CameraMode::Free))
+                    m_camera3d.SetCameraMode(Camera3D::CameraMode::Free);
+            }
             ImGui::Separator();
             ImGui::MenuItem("Grid", nullptr, &m_layers.showGrid);
             ImGui::MenuItem("Navmesh", nullptr, &m_layers.showNavmesh);
@@ -597,7 +606,13 @@ void App::RenderFrame() {
                 m_layers.showNavmesh = !m_layers.showNavmesh;
             if (ImGui::IsKeyPressed(ImGuiKey_C))
                 m_camera3d.followMode = !m_camera3d.followMode;
-            if (ImGui::IsKeyPressed(ImGuiKey_Space) && m_playerMarker.placed) {
+            if (ImGui::IsKeyPressed(ImGuiKey_V)) {
+                auto newMode = (m_camera3d.cameraMode == Camera3D::CameraMode::Orbit)
+                    ? Camera3D::CameraMode::Free : Camera3D::CameraMode::Orbit;
+                m_camera3d.SetCameraMode(newMode);
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Space) && m_playerMarker.placed
+                && m_camera3d.cameraMode == Camera3D::CameraMode::Orbit) {
                 if (m_playerMarker.isMoving)
                     m_playerMarker.Stop();
             }
@@ -1062,6 +1077,26 @@ void App::RenderFrame3D() {
     m_routeEditor.RenderPanel(m_routeData, m_currentMapId, undo);
     m_layerPanel.Render(m_layers, m_bgMode, &m_minimapCache);
     m_logWindow.Render();
+
+    // === Free Camera Panel (3D + Free mode) ===
+    if (m_camera3d.cameraMode == Camera3D::CameraMode::Free) {
+        ImGuiViewport* cvp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(
+            ImVec2(cvp->WorkPos.x + cvp->WorkSize.x - 280,
+                   cvp->WorkPos.y + 36.0f + 180.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(260, 0), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Free Camera", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Eye: %.1f, %.1f, %.1f",
+                        m_camera3d.eyeX, m_camera3d.eyeY, m_camera3d.eyeZ);
+            ImGui::Separator();
+            ImGui::SliderFloat("Speed", &m_camera3d.moveSpeed,
+                               Camera3D::kMinMoveSpeed, Camera3D::kMaxMoveSpeed,
+                               "%.0f", ImGuiSliderFlags_Logarithmic);
+            ImGui::TextDisabled("Scroll wheel or slider to adjust");
+            ImGui::TextDisabled("Shift = 3x boost");
+        }
+        ImGui::End();
+    }
 
     // === Player Control Panel (3D only) ===
     {

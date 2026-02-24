@@ -45,16 +45,29 @@ void StatusBar::Render3D(const Camera3D& camera, uint32_t mapId, const char* map
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-    int tileX = 31 - static_cast<int>(std::floor(camera.targetX / kTileSize));
-    int tileY = 31 - static_cast<int>(std::floor(camera.targetY / kTileSize));
+    if (camera.cameraMode == Camera3D::CameraMode::Free) {
+        int tileX = 31 - static_cast<int>(std::floor(camera.eyeX / kTileSize));
+        int tileY = 31 - static_cast<int>(std::floor(camera.eyeY / kTileSize));
 
-    ImGui::Text("Mode: 3D  |  Map: %s (%u)  |  Target: (%.1f, %.1f, %.1f)  |  Tile: [%d, %d]  |  Dist: %.0f  |  Yaw: %.1f  Pitch: %.1f",
-                mapName ? mapName : "None", mapId,
-                camera.targetX, camera.targetY, camera.targetZ,
-                tileX, tileY,
-                camera.distance,
-                camera.yaw * 180.0f / 3.14159f,
-                camera.pitch * 180.0f / 3.14159f);
+        ImGui::Text("Mode: Free  |  Map: %s (%u)  |  Eye: (%.1f, %.1f, %.1f)  |  Tile: [%d, %d]  |  Speed: %.0f  |  Yaw: %.1f  Pitch: %.1f",
+                    mapName ? mapName : "None", mapId,
+                    camera.eyeX, camera.eyeY, camera.eyeZ,
+                    tileX, tileY,
+                    camera.moveSpeed,
+                    camera.yaw * 180.0f / 3.14159f,
+                    camera.pitch * 180.0f / 3.14159f);
+    } else {
+        int tileX = 31 - static_cast<int>(std::floor(camera.targetX / kTileSize));
+        int tileY = 31 - static_cast<int>(std::floor(camera.targetY / kTileSize));
+
+        ImGui::Text("Mode: 3D  |  Map: %s (%u)  |  Target: (%.1f, %.1f, %.1f)  |  Tile: [%d, %d]  |  Dist: %.0f  |  Yaw: %.1f  Pitch: %.1f",
+                    mapName ? mapName : "None", mapId,
+                    camera.targetX, camera.targetY, camera.targetZ,
+                    tileX, tileY,
+                    camera.distance,
+                    camera.yaw * 180.0f / 3.14159f,
+                    camera.pitch * 180.0f / 3.14159f);
+    }
 
     ImGui::End();
     ImGui::PopStyleVar();

@@ -5,6 +5,8 @@
 namespace mapedit {
 
 struct Camera3D {
+    enum class CameraMode { Orbit, Free };
+
     // Target point the camera orbits around (WoW world coords)
     float targetX = 0.0f;   // WoW X
     float targetY = 0.0f;   // WoW Y
@@ -15,11 +17,19 @@ struct Camera3D {
     float yaw      = 0.0f;   // horizontal rotation (radians, 0 = south/WoW +X)
     float pitch    = -0.6f;  // vertical angle (radians, negative = looking down)
 
+    // Camera mode
+    CameraMode cameraMode = CameraMode::Orbit;
+    float moveSpeed = 200.0f; // Free camera movement speed (yards/sec)
+    static constexpr float kMinMoveSpeed = 10.0f;
+    static constexpr float kMaxMoveSpeed = 2000.0f;
+
     // Limits
     static constexpr float kMinDist  = 10.0f;
     static constexpr float kMaxDist  = 5000.0f;
     static constexpr float kMinPitch = -1.5f;   // nearly straight down
     static constexpr float kMaxPitch = -0.05f;   // nearly horizontal
+    static constexpr float kFreePitchMin = -1.5f; // nearly straight down
+    static constexpr float kFreePitchMax =  1.5f; // nearly straight up
 
     // Viewport (set each frame from ImGui workspace)
     float vpX = 0.0f, vpY = 0.0f;
@@ -42,8 +52,11 @@ struct Camera3D {
     // Stores transposed VP in viewProj for HLSL upload. Updates eyeX/Y/Z.
     void ComputeMatrices();
 
-    // Process input: right-click drag orbit, scroll zoom, middle-click pan
+    // Process input: dispatches to orbit or free camera handler
     void ProcessInput();
+
+    // Switch camera mode with smooth transition
+    void SetCameraMode(CameraMode mode);
 
     // Project world coords to screen coords. Returns false if behind camera.
     bool WorldToScreen(float wx, float wy, float wz,
@@ -66,6 +79,9 @@ struct Camera3D {
                      float& dirX, float& dirY, float& dirZ) const;
 
 private:
+    void ProcessInputOrbit();
+    void ProcessInputFree();
+
     // Pan state
     bool  m_panning = false;
     float m_panStartMouseX = 0.0f, m_panStartMouseY = 0.0f;
@@ -75,6 +91,11 @@ private:
     bool  m_orbiting = false;
     float m_orbitStartMouseX = 0.0f, m_orbitStartMouseY = 0.0f;
     float m_orbitStartYaw = 0.0f, m_orbitStartPitch = 0.0f;
+
+    // Free-look state
+    bool  m_freeLooking = false;
+    float m_freeLookStartMouseX = 0.0f, m_freeLookStartMouseY = 0.0f;
+    float m_freeLookStartYaw = 0.0f, m_freeLookStartPitch = 0.0f;
 };
 
 } // namespace mapedit
