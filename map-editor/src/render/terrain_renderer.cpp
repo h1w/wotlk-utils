@@ -425,6 +425,9 @@ void TerrainRenderer::Render(const Camera3D& camera,
     UINT stride = sizeof(TerrainVertexGpu);
     UINT offset = 0;
 
+    statDrawCalls = 0;
+    statVertices  = 0;
+
     for (const auto& [key, tile] : m_gpuCache) {
         if (!tile.vb || !tile.ib || tile.indexCount == 0) continue;
         if (!FrustumIntersectsAABB(frustum, tile)) continue;
@@ -432,6 +435,8 @@ void TerrainRenderer::Render(const Camera3D& camera,
         ctx->IASetVertexBuffers(0, 1, &tile.vb, &stride, &offset);
         ctx->IASetIndexBuffer(tile.ib, DXGI_FORMAT_R32_UINT, 0);
         ctx->DrawIndexed(tile.indexCount, 0, 0);
+        statDrawCalls++;
+        statVertices += tile.indexCount;
     }
 
     ctx->OMSetRenderTargets(1, &rtv, nullptr);

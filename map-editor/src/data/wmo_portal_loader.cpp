@@ -63,7 +63,7 @@ std::string WmoPortalLoader::ResolveMpqPath(const std::string& vmapName,
                 ch = '\\';
         }
         if (mpq.HasFile(candidate)) {
-            LOG(INFO) << "WmoPortalLoader: resolved '" << vmapName << "' -> '" << candidate << "'";
+            DLOG(INFO) << "WmoPortalLoader: resolved '" << vmapName << "' -> '" << candidate << "'";
             m_pathCache[vmapName] = candidate;
             return candidate;
         }
@@ -76,7 +76,7 @@ std::string WmoPortalLoader::ResolveMpqPath(const std::string& vmapName,
 
     auto idxIt = m_basenameIndex.find(key);
     if (idxIt != m_basenameIndex.end()) {
-        LOG(INFO) << "WmoPortalLoader: resolved '" << vmapName << "' -> '" << idxIt->second << "'";
+        DLOG(INFO) << "WmoPortalLoader: resolved '" << vmapName << "' -> '" << idxIt->second << "'";
         m_pathCache[vmapName] = idxIt->second;
         return idxIt->second;
     }
@@ -94,7 +94,7 @@ bool WmoPortalLoader::ParseWmoRoot(const std::vector<uint8_t>& data, WmoPortalDa
     {
         char tag0[5] = {};
         std::memcpy(tag0, data.data(), 4);
-        LOG(INFO) << "WmoPortalLoader: file size=" << data.size()
+        DLOG(INFO) << "WmoPortalLoader: file size=" << data.size()
                   << ", first 4 bytes='" << tag0 << "'"
                   << " (hex: " << std::hex
                   << (int)data[0] << " " << (int)data[1] << " "
@@ -197,7 +197,7 @@ bool WmoPortalLoader::ParseWmoRoot(const std::vector<uint8_t>& data, WmoPortalDa
 
 const WmoPortalData* WmoPortalLoader::Load(const std::string& vmapModelName,
                                             const MpqArchiveSet& mpq) {
-    LOG(INFO) << "WmoPortalLoader::Load('" << vmapModelName << "')";
+    DLOG(INFO) << "WmoPortalLoader::Load('" << vmapModelName << "')";
 
     auto cacheIt = m_cache.find(vmapModelName);
     if (cacheIt != m_cache.end())
@@ -222,7 +222,7 @@ const WmoPortalData* WmoPortalLoader::Load(const std::string& vmapModelName,
         return nullptr;
     }
 
-    LOG(INFO) << "WmoPortalLoader: loaded " << portalData.portals.size()
+    DLOG(INFO) << "WmoPortalLoader: loaded " << portalData.portals.size()
               << " portals, " << portalData.nGroups << " groups from '" << mpqPath << "'";
 
     auto [it, _] = m_cache.emplace(vmapModelName, std::move(portalData));

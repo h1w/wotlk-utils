@@ -42,6 +42,7 @@
 #include "ui/main_menu.h"
 #include "ui/log_window.h"
 #include "ui/compass.h"
+#include "render/frame_profiler.h"
 #include "mpq/mpq_archive.h"
 #include "mpq/world_map_loader.h"
 #include "camera/camera3d.h"
@@ -138,6 +139,13 @@ private:
     // MPQ / world map background
     MpqArchiveSet  m_mpq;
     WorldMapLoader m_worldMapLoader;
+
+    // Performance diagnostics
+    FrameProfiler m_profiler;
+    bool          m_vsync = false;        // VSync OFF by default for diagnostics
+    bool          m_showProfiler = true;  // Show profiler overlay
+    int           m_fpsLimit = 0;         // 0 = unlimited, >0 = cap FPS
+    LARGE_INTEGER m_frameStartQpc = {};   // For FPS limiter timing
 
     // State
     uint32_t     m_currentMapId = 0;

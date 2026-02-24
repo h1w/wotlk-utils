@@ -28,12 +28,21 @@ struct AppSettings {
     float navmeshMinZoom = 0.15f;
     int   navmeshMaxTiles = 200;
 
-    // 3D terrain settings
+    // 3D settings
+    int  navmeshColorMode = 0;    // NavmeshColorMode: 0=FlatGreen, 1=HeightGradient, 2=SlopeShading, 3=TileColored
+    bool navmeshDrawEdges = true;
+    bool showGroundPlane  = true;
     bool showTerrain      = true;
     int  terrainColorMode = 0;    // 0=solid grey, 1=height gradient, 2=slope
     bool showBuildings    = true;
     bool showBuildingObjects = false;
     bool enablePortalCulling = true;
+
+    // Performance / view
+    int  viewMode      = 0;     // 0=2D, 1=3D
+    bool vsync         = false;
+    int  fpsLimit      = 0;     // 0=unlimited, >0=cap
+    bool showProfiler  = true;
 
     // Window dimensions (0 = default)
     int windowWidth  = 0;

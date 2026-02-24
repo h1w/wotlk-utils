@@ -46,6 +46,12 @@ private:
     static bool FrustumIntersectsAABB(const float planes[6][4],
                                        const TileGpuData3D& tile);
 
+public:
+    // Per-frame stats (updated during Render)
+    mutable int statDrawCalls = 0;
+    mutable int statVertices  = 0;
+
+private:
     ID3D11Device*        m_device  = nullptr;
     ID3D11DeviceContext* m_context = nullptr;
     NavmeshPipeline3D    m_pipeline;

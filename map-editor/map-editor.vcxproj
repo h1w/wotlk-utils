@@ -149,6 +149,7 @@ copy /Y "C:\vcpkg\installed\x64-windows\bin\StormLib.dll" "$(OutDir)StormLib.dll
     <ClInclude Include="src\data\wmo_portal_loader.h" />
     <ClInclude Include="src\data\wmo_visual_loader.h" />
     <ClInclude Include="src\render\building_renderer.h" />
+    <ClInclude Include="src\render\frame_profiler.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\main.cpp" />

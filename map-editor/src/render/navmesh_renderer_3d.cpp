@@ -276,6 +276,10 @@ void NavmeshRenderer3D::Render(const Camera3D& camera, TileCache& cache,
 
     UINT stride = sizeof(NavmeshVertex3D);
     UINT offset = 0;
+
+    statDrawCalls = 0;
+    statVertices  = 0;
+
     for (const auto& [key, tile] : m_gpuCache) {
         if (!FrustumIntersectsAABB(frustum, tile)) continue;
 
@@ -313,6 +317,8 @@ void NavmeshRenderer3D::Render(const Camera3D& camera, TileCache& cache,
 
         ctx->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
         ctx->Draw(vc, 0);
+        statDrawCalls++;
+        statVertices += vc;
     }
 
     // Unbind DSV for subsequent ImGui rendering

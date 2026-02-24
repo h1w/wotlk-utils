@@ -314,7 +314,7 @@ const WmoVisualData* WmoVisualLoader::Load(const std::string& vmapModelName,
     }
 
     result.valid = true;
-    LOG(INFO) << "WmoVisualLoader: loaded '" << mpqPath << "' — "
+    DLOG(INFO) << "WmoVisualLoader: loaded '" << mpqPath << "' — "
               << nGroups << " groups, " << totalVerts << " verts, " << totalTris << " tris";
 
     auto [it, _] = m_cache.emplace(vmapModelName, std::move(result));

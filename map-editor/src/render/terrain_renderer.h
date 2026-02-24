@@ -39,6 +39,10 @@ public:
     // Configuration
     int colorMode = 0;    // 0=solid grey, 1=height gradient, 2=slope
 
+    // Per-frame stats (updated during Render)
+    mutable int statDrawCalls = 0;
+    mutable int statVertices  = 0;
+
 private:
     struct TileGpu {
         ID3D11Buffer* vb = nullptr;

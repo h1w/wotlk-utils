@@ -61,12 +61,21 @@ bool AppSettings::Load() {
         showBackground = layers.value("background", true);
         navmeshMinZoom = layers.value("navmesh_min_zoom", 0.15f);
         navmeshMaxTiles = layers.value("navmesh_max_tiles", 200);
+        navmeshColorMode = layers.value("navmesh_color_mode", 0);
+        navmeshDrawEdges = layers.value("navmesh_draw_edges", true);
+        showGroundPlane = layers.value("ground_plane", true);
         showTerrain = layers.value("terrain", true);
         terrainColorMode = layers.value("terrain_color_mode", 0);
         showBuildings = layers.value("buildings", true);
         showBuildingObjects = layers.value("building_objects", false);
         enablePortalCulling = layers.value("portal_culling", true);
     }
+
+    // Performance / view
+    viewMode     = doc.value("view_mode", 0);
+    vsync        = doc.value("vsync", false);
+    fpsLimit     = doc.value("fps_limit", 0);
+    showProfiler = doc.value("show_profiler", true);
 
     // Window dimensions
     if (doc.contains("window") && doc["window"].is_object()) {
@@ -105,12 +114,20 @@ bool AppSettings::Save() const {
         {"background", showBackground},
         {"navmesh_min_zoom", navmeshMinZoom},
         {"navmesh_max_tiles", navmeshMaxTiles},
+        {"navmesh_color_mode", navmeshColorMode},
+        {"navmesh_draw_edges", navmeshDrawEdges},
+        {"ground_plane", showGroundPlane},
         {"terrain", showTerrain},
         {"terrain_color_mode", terrainColorMode},
         {"buildings", showBuildings},
         {"building_objects", showBuildingObjects},
         {"portal_culling", enablePortalCulling},
     };
+
+    doc["view_mode"]     = viewMode;
+    doc["vsync"]         = vsync;
+    doc["fps_limit"]     = fpsLimit;
+    doc["show_profiler"] = showProfiler;
 
     doc["window"] = {
         {"width",  windowWidth},

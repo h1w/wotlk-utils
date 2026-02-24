@@ -15,6 +15,7 @@
 #include <ShlObj.h>
 #include <commdlg.h>
 #include <algorithm>
+#include <immintrin.h>
 #include <filesystem>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -47,6 +48,8 @@ bool App::Initialize(HINSTANCE hInstance) {
 
     ImGui_ImplWin32_Init(m_hwnd);
     ImGui_ImplDX11_Init(m_device, m_context);
+
+    m_profiler.Initialize();
 
     m_navmeshRenderer.Initialize(m_device, m_context);
     m_navmeshRenderer3d.Initialize(m_device, m_context);
@@ -120,11 +123,20 @@ bool App::Initialize(HINSTANCE hInstance) {
     m_layers.showBackground = m_settings.showBackground;
     m_layers.navmeshMinZoom = m_settings.navmeshMinZoom;
     m_layers.navmeshMaxTiles = m_settings.navmeshMaxTiles;
+    m_layers.navmeshColorMode = m_settings.navmeshColorMode;
+    m_layers.navmeshDrawEdges = m_settings.navmeshDrawEdges;
+    m_layers.showGroundPlane = m_settings.showGroundPlane;
     m_layers.showTerrain = m_settings.showTerrain;
     m_layers.terrainColorMode = m_settings.terrainColorMode;
     m_layers.showBuildings = m_settings.showBuildings;
     m_layers.showBuildingObjects = m_settings.showBuildingObjects;
     m_layers.enablePortalCulling = m_settings.enablePortalCulling;
+
+    // Restore performance / view settings
+    m_viewMode     = (m_settings.viewMode == 1) ? ViewMode::Mode3D : ViewMode::Mode2D;
+    m_vsync        = m_settings.vsync;
+    m_fpsLimit     = m_settings.fpsLimit;
+    m_showProfiler = m_settings.showProfiler;
 
     LOG(INFO) << "[App] Initialized";
     return true;
@@ -250,6 +262,8 @@ void App::Run() {
 }
 
 void App::RenderFrame() {
+    QueryPerformanceCounter(&m_frameStartQpc);
+
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -653,7 +667,18 @@ void App::RenderFrame() {
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     }
 
-    m_swapChain->Present(1, 0);
+    // FPS limiter: spin-wait until target frame time (sub-ms accuracy)
+    if (m_fpsLimit > 0 && !m_vsync) {
+        LARGE_INTEGER freq, now;
+        QueryPerformanceFrequency(&freq);
+        double targetTicks = static_cast<double>(freq.QuadPart) / m_fpsLimit;
+        while (QueryPerformanceCounter(&now),
+               (now.QuadPart - m_frameStartQpc.QuadPart) < targetTicks)
+            _mm_pause();  // CPU hint: we're spinning (reduces power, avoids pipeline stall)
+    }
+
+    m_swapChain->Present(m_vsync ? 1 : 0, 0);
+    m_profiler.EndFrame();
 }
 
 // ---------------------------------------------------------------------------
@@ -854,6 +879,8 @@ void App::RenderFrame3D() {
                                       m_camera3d.distance);
     }
 
+    m_profiler.BeginFrame();
+
     // Clear backbuffer + depth BEFORE 3D scene rendering
     if (m_rtv) {
         const float clear_color[4] = { 0.1f, 0.1f, 0.12f, 1.0f };
@@ -867,7 +894,8 @@ void App::RenderFrame3D() {
     if (m_layers.showGroundPlane && m_wowDirSet && m_rtv && m_dsv)
         m_groundPlane3d.Render(m_camera3d, m_minimapCache);
 
-    // Render terrain heightmap (opaque, depth write ON — BEFORE navmesh)
+    // --- Terrain (profiled) ---
+    auto tTerrain0 = m_profiler.Now();
     if (m_layers.showTerrain && m_mmapDirSet && m_rtv && m_dsv) {
         m_terrainRenderer.colorMode = m_layers.terrainColorMode;
         m_terrainRenderer.UpdateViewport(m_currentMapId,
@@ -875,8 +903,11 @@ void App::RenderFrame3D() {
                                           m_camera3d.distance);
         m_terrainRenderer.Render(m_camera3d, m_rtv, m_dsv);
     }
+    auto tTerrain1 = m_profiler.Now();
+    m_profiler.RecordLayer(FrameProfiler::Terrain, tTerrain0, tTerrain1);
 
-    // Render buildings (opaque, depth write ON — BEFORE navmesh, AFTER terrain)
+    // --- Buildings (profiled) ---
+    auto tBuild0 = m_profiler.Now();
     if (m_layers.showBuildings && m_mmapDirSet && m_rtv && m_dsv) {
         m_buildingRenderer.SetShowObjects(m_layers.showBuildingObjects);
         m_buildingRenderer.SetPortalCulling(m_layers.enablePortalCulling);
@@ -887,13 +918,21 @@ void App::RenderFrame3D() {
                                            m_camera3d.distance);
         m_buildingRenderer.Render(m_camera3d, m_rtv, m_dsv);
     }
+    auto tBuild1 = m_profiler.Now();
+    m_profiler.RecordLayer(FrameProfiler::Buildings, tBuild0, tBuild1);
 
-    // Render 3D navmesh (direct DX11 draws before ImGui)
+    // --- Navmesh (profiled) ---
+    auto tNav0 = m_profiler.Now();
     if (m_layers.showNavmesh && m_rtv && m_dsv) {
         auto colorMode = static_cast<NavmeshColorMode>(m_layers.navmeshColorMode);
         m_navmeshRenderer3d.Render(m_camera3d, m_tileCache, m_rtv, m_dsv,
                                     colorMode, m_layers.navmeshDrawEdges);
     }
+    auto tNav1 = m_profiler.Now();
+    m_profiler.RecordLayer(FrameProfiler::Navmesh, tNav0, tNav1);
+
+    // --- Overlays (profiled) ---
+    auto tOver0 = m_profiler.Now();
 
     // Phase 3: render 3D overlays via Primitives3D
     m_primitives3d.BeginFrame();
@@ -955,6 +994,21 @@ void App::RenderFrame3D() {
     }
 
     m_primitives3d.Flush(&m_camera3d.viewProj._11);
+
+    auto tOver1 = m_profiler.Now();
+    m_profiler.RecordLayer(FrameProfiler::Overlays, tOver0, tOver1);
+
+    // Collect draw call / vertex stats from renderers
+    m_profiler.drawCalls[FrameProfiler::Terrain]   = m_terrainRenderer.statDrawCalls;
+    m_profiler.drawCalls[FrameProfiler::Buildings]  = m_buildingRenderer.statDrawCalls;
+    m_profiler.drawCalls[FrameProfiler::Navmesh]    = m_navmeshRenderer3d.statDrawCalls;
+    m_profiler.vertices[FrameProfiler::Terrain]     = m_terrainRenderer.statVertices;
+    m_profiler.vertices[FrameProfiler::Buildings]    = m_buildingRenderer.statVertices;
+    m_profiler.vertices[FrameProfiler::Navmesh]      = m_navmeshRenderer3d.statVertices;
+    m_profiler.totalDrawCalls = m_profiler.drawCalls[0] + m_profiler.drawCalls[1] +
+                                 m_profiler.drawCalls[2] + m_profiler.drawCalls[3];
+    m_profiler.totalVertices  = m_profiler.vertices[0] + m_profiler.vertices[1] +
+                                 m_profiler.vertices[2] + m_profiler.vertices[3];
 
     // === 3D mouse interaction: Ctrl+Click teleport, Shift+Click pathfind ===
     {
@@ -1086,6 +1140,62 @@ void App::RenderFrame3D() {
 
     // === Compass (3D: rotates with camera yaw, negated for X-flip) ===
     m_compass.Render(m_canvas.vpX, m_canvas.vpY, m_canvas.vpW, m_canvas.vpH, -m_camera3d.yaw);
+
+    // === Performance Profiler Overlay ===
+    if (m_showProfiler) {
+        ImGuiViewport* pvp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(
+            ImVec2(pvp->WorkPos.x + pvp->WorkSize.x - 320,
+                   pvp->WorkPos.y + 40.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowBgAlpha(0.85f);
+        if (ImGui::Begin("Performance", &m_showProfiler, ImGuiWindowFlags_AlwaysAutoResize)) {
+            // FPS + frame time
+            ImGui::Text("FPS: %.1f", m_profiler.fps);
+            ImGui::SameLine(150);
+            ImGui::Text("Frame: %.2f ms", m_profiler.frameMs);
+            ImGui::Separator();
+
+            // Per-layer breakdown
+            static const char* layerNames[] = { "Terrain", "Buildings", "Navmesh", "Overlays" };
+            float maxMs = 1.0f;
+            for (int i = 0; i < FrameProfiler::COUNT; ++i)
+                if (m_profiler.layerMs[i] > maxMs) maxMs = m_profiler.layerMs[i];
+
+            for (int i = 0; i < FrameProfiler::COUNT; ++i) {
+                float fraction = m_profiler.layerMs[i] / maxMs;
+                ImGui::Text("%-10s", layerNames[i]);
+                ImGui::SameLine(80);
+                ImGui::ProgressBar(fraction, ImVec2(80, 14), "");
+                ImGui::SameLine();
+                ImGui::Text("%6.2f ms  %3d dc  %s",
+                    m_profiler.layerMs[i],
+                    m_profiler.drawCalls[i],
+                    [](int v) -> const char* {
+                        static char buf[16];
+                        if (v >= 1000000) snprintf(buf, sizeof(buf), "%.1fM", v / 1e6f);
+                        else if (v >= 1000) snprintf(buf, sizeof(buf), "%.1fK", v / 1e3f);
+                        else snprintf(buf, sizeof(buf), "%d", v);
+                        return buf;
+                    }(m_profiler.vertices[i]));
+            }
+
+            ImGui::Separator();
+            ImGui::Text("Total: %d draw calls, ", m_profiler.totalDrawCalls);
+            ImGui::SameLine();
+            if (m_profiler.totalVertices >= 1000000)
+                ImGui::Text("%.2fM verts", m_profiler.totalVertices / 1e6f);
+            else
+                ImGui::Text("%dK verts", m_profiler.totalVertices / 1000);
+
+            ImGui::Separator();
+            ImGui::Checkbox("VSync", &m_vsync);
+            if (!m_vsync) {
+                ImGui::SliderInt("FPS Limit", &m_fpsLimit, 0, 300, m_fpsLimit == 0 ? "Unlimited" : "%d");
+            }
+        }
+        ImGui::End();
+    }
 
     // === Status bar (3D mode) ===
     const char* mapName = "No Map";
@@ -1321,11 +1431,20 @@ void App::SaveSettings() {
     m_settings.showBackground = m_layers.showBackground;
     m_settings.navmeshMinZoom = m_layers.navmeshMinZoom;
     m_settings.navmeshMaxTiles = m_layers.navmeshMaxTiles;
+    m_settings.navmeshColorMode = m_layers.navmeshColorMode;
+    m_settings.navmeshDrawEdges = m_layers.navmeshDrawEdges;
+    m_settings.showGroundPlane = m_layers.showGroundPlane;
     m_settings.showTerrain = m_layers.showTerrain;
     m_settings.terrainColorMode = m_layers.terrainColorMode;
     m_settings.showBuildings = m_layers.showBuildings;
     m_settings.showBuildingObjects = m_layers.showBuildingObjects;
     m_settings.enablePortalCulling = m_layers.enablePortalCulling;
+
+    // Performance / view settings
+    m_settings.viewMode     = (m_viewMode == ViewMode::Mode3D) ? 1 : 0;
+    m_settings.vsync        = m_vsync;
+    m_settings.fpsLimit     = m_fpsLimit;
+    m_settings.showProfiler = m_showProfiler;
 
     // Window dimensions
     if (m_hwnd) {

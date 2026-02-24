@@ -526,7 +526,7 @@ void BuildingRenderer::WorkerLoop() {
                 std::memcpy(result.bounds, bounds, sizeof(bounds));
                 result.empty = false;
 
-                LOG(INFO) << "[BuildingRenderer] Tile (" << req.tileX << "," << req.tileY
+                DLOG(INFO) << "[BuildingRenderer] Tile (" << req.tileX << "," << req.tileY
                           << "): " << loadedModels << " models, "
                           << nVerts << " verts, "
                           << (result.indices.size() / 3) << " tris";
@@ -937,6 +937,9 @@ void BuildingRenderer::Render(const Camera3D& camera,
     UINT stride = sizeof(TerrainVertexGpu);
     UINT offset = 0;
 
+    statDrawCalls = 0;
+    statVertices  = 0;
+
     for (const auto& [key, tile] : m_gpuCache) {
         if (!tile.vb || !tile.ib || tile.indexCount == 0) continue;
         if (!FrustumIntersectsAABB(frustum, tile)) continue;
@@ -947,6 +950,8 @@ void BuildingRenderer::Render(const Camera3D& camera,
         if (tile.groupRanges.empty()) {
             // No group data (M2-only tiles, legacy)
             ctx->DrawIndexed(tile.indexCount, 0, 0);
+            statDrawCalls++;
+            statVertices += tile.indexCount;
             continue;
         }
 
@@ -954,6 +959,8 @@ void BuildingRenderer::Render(const Camera3D& camera,
         if (!m_enablePortalCulling) {
             for (const auto& range : tile.groupRanges) {
                 ctx->DrawIndexed(range.indexCount, range.indexStart, 0);
+                statDrawCalls++;
+                statVertices += range.indexCount;
             }
             continue;
         }
@@ -1039,6 +1046,8 @@ void BuildingRenderer::Render(const Camera3D& camera,
                     continue;
             }
             ctx->DrawIndexed(range.indexCount, range.indexStart, 0);
+            statDrawCalls++;
+            statVertices += range.indexCount;
         }
     }
 

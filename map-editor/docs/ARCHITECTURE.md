@@ -66,6 +66,7 @@ map-editor/src/
         terrain_pipeline.h / .cpp   DX11 terrain shader pipeline (lighting, color modes)
         terrain_renderer.h / .cpp   Terrain GPU tile cache + background loading
         building_renderer.h / .cpp  Building GPU tile cache + background loading
+        frame_profiler.h            Per-layer CPU profiler (header-only, QPC timing)
 
     ui/
         main_menu.h / .cpp          File/Edit/View/Map menu bar
@@ -209,8 +210,13 @@ Direct DX11 rendering to RTV+DSV before ImGui overlay. Render order (back to fro
 4. **Navmesh** (`NavmeshRenderer3D`) — semi-transparent colored polygons, depth write OFF, LESS_EQUAL depth test (overlays terrain)
 5. **Overlays** (`Primitives3D`) — grid, graph nodes/edges, routes, paths, player marker (line/circle primitives batched into a single draw call)
 6. **ImGui** — UI panels rendered as overlay on top of 3D scene
+7. **FPS limiter** — spin-wait with `_mm_pause()` before `Present()` (when enabled)
 
 The 3D camera provides perspective projection with orbit controls. A depth-stencil buffer (D24_UNORM_S8) is created alongside the backbuffer.
+
+### Performance Profiler
+
+`FrameProfiler` (header-only) wraps each render layer with `QueryPerformanceCounter` timing, averaged over 60 frames. Each renderer exposes `statDrawCalls` / `statVertices` counters updated during `Render()`. The "Performance" ImGui overlay shows per-layer CPU ms, draw calls, vertex counts, VSync toggle, and FPS limiter slider (0-300, spin-wait based).
 
 Layer visibility is controlled by `LayerVisibility` struct, toggled in the Layer Panel.
 

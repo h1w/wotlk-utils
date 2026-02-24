@@ -145,6 +145,10 @@ public:
     void SetShowObjects(bool show) { m_showObjects = show; }
     void SetMpqArchive(MpqArchiveSet* mpq) { m_mpq = mpq; }
     void SetPortalCulling(bool enable) { m_enablePortalCulling = enable; }
+
+    // Per-frame stats (updated during Render)
+    mutable int statDrawCalls = 0;
+    mutable int statVertices  = 0;
 };
 
 } // namespace mapedit
