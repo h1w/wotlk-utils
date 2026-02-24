@@ -214,11 +214,16 @@ bool NavmeshPipeline3D::Initialize(ID3D11Device* device) {
     }
 
     // Rasterizer: solid fill, no cull, depth clip enabled, no scissor
+    // Negative depth bias pushes navmesh closer to camera so it renders
+    // cleanly on top of terrain without Z-fighting artifacts.
     D3D11_RASTERIZER_DESC rd = {};
-    rd.FillMode        = D3D11_FILL_SOLID;
-    rd.CullMode        = D3D11_CULL_NONE;
-    rd.ScissorEnable   = FALSE;
-    rd.DepthClipEnable = TRUE;
+    rd.FillMode             = D3D11_FILL_SOLID;
+    rd.CullMode             = D3D11_CULL_NONE;
+    rd.ScissorEnable        = FALSE;
+    rd.DepthClipEnable      = TRUE;
+    rd.DepthBias            = -2;
+    rd.SlopeScaledDepthBias = -1.0f;
+    rd.DepthBiasClamp       = -0.001f;
     hr = device->CreateRasterizerState(&rd, &m_rastState);
     if (FAILED(hr)) {
         LOG(ERROR) << "[NavmeshPipeline3D] CreateRasterizerState failed: 0x" << std::hex << hr;

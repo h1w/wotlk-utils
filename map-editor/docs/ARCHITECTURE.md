@@ -158,7 +158,7 @@ Loads TrinityCore `.map` files containing heightmap data (V9 129x129 + V8 128x12
 
 **Data pipeline**: `TerrainLoader` parses `.map` files (int16/int8/float decompression, hole bitmask) → `TerrainMesh` converts to indexed triangle mesh (4 triangles per cell, fan from V8 center, per-vertex normals) → `TerrainRenderer` manages GPU tile cache with background thread loading, frustum culling, LRU eviction (150-tile cap), and max 4 uploads/frame.
 
-**Rendering**: `TerrainPipeline` provides HLSL shaders with directional lighting and 3 color modes (Solid Grey, Height Gradient, Slope Shading). Opaque blend, depth write ON, back-face cull. Renders before navmesh so navmesh overlays as semi-transparent.
+**Rendering**: `TerrainPipeline` provides HLSL shaders with directional lighting and 3 color modes (Solid Grey, Height Gradient, Slope Shading). Opaque blend, depth write ON, back-face cull. Renders before navmesh so navmesh overlays as semi-transparent. **Smooth toggle** controls two shader-level behaviors: (1) normal mode — smooth per-vertex normals vs flat ddx/ddy normals (`heightParams.w`: -1.0=smooth, -2.0=flat); (2) slope-dependent Z offset via `baseColor.a` — pushes terrain below navmesh on steep slopes (flat: -1 unit, vertical: -6 units) to prevent grey terrain bumps poking through the navmesh overlay.
 
 ### Building Rendering (`render/building_renderer.cpp`)
 

@@ -59,6 +59,9 @@ void LayerPanel::Render(LayerVisibility& layers, MapBackgroundMode& bgMode,
             };
             ImGui::SetNextItemWidth(140);
             ImGui::Combo("Terrain Color", &layers.terrainColorMode, terrainColorNames, 3);
+            ImGui::Checkbox("Smooth", &layers.terrainSmooth);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Push terrain slightly below navmesh to remove\nbumps where terrain pokes through.");
             ImGui::Unindent(20.0f);
         }
         ImGui::Checkbox("Buildings", &layers.showBuildings);

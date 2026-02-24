@@ -38,6 +38,7 @@ public:
 
     // Configuration
     int colorMode = 0;    // 0=solid grey, 1=height gradient, 2=slope
+    bool smoothTerrain = false;  // smooth V8 from V9 corner averages
 
     // Per-frame stats (updated during Render)
     mutable int statDrawCalls = 0;
@@ -50,6 +51,7 @@ private:
         UINT indexCount = 0;
         float minX = 0, minY = 0, minZ = 0;
         float maxX = 0, maxY = 0, maxZ = 0;
+        int decimation = 0;   // LOD level this tile was loaded at
     };
 
     using TileKey = std::pair<int, int>;
@@ -65,6 +67,7 @@ private:
     struct LoadResult {
         uint32_t mapId;
         int tileX, tileY;
+        int decimation = 0;
         std::vector<TerrainVertex> vertices;
         std::vector<uint32_t> indices;
         float minX, minY, minZ;
@@ -109,8 +112,9 @@ private:
     std::mutex m_resMutex;
     std::deque<LoadResult> m_results;
 
-    // Tiles currently queued for loading (main thread only)
-    std::set<TileKey> m_pending;
+    // Tiles currently queued for loading (main thread only).
+    // Value = decimation level being loaded.
+    std::map<TileKey, int> m_pending;
 
     // Throttle GPU uploads: max N per frame
     static constexpr int kMaxUploadsPerFrame = 4;

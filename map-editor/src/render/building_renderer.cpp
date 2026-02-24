@@ -913,7 +913,7 @@ void BuildingRenderer::Render(const Camera3D& camera,
     cb.baseColor[0] = 0.50f;
     cb.baseColor[1] = 0.48f;
     cb.baseColor[2] = 0.45f;
-    cb.baseColor[3] = 1.0f;
+    cb.baseColor[3] = 0.0f;  // no Z offset for buildings
 
     cb.heightParams[0] = m_globalMinZ;
     cb.heightParams[1] = m_globalMaxZ;

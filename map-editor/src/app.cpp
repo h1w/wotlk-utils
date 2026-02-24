@@ -128,6 +128,7 @@ bool App::Initialize(HINSTANCE hInstance) {
     m_layers.showGroundPlane = m_settings.showGroundPlane;
     m_layers.showTerrain = m_settings.showTerrain;
     m_layers.terrainColorMode = m_settings.terrainColorMode;
+    m_layers.terrainSmooth = m_settings.terrainSmooth;
     m_layers.showBuildings = m_settings.showBuildings;
     m_layers.showBuildingObjects = m_settings.showBuildingObjects;
     m_layers.enablePortalCulling = m_settings.enablePortalCulling;
@@ -913,6 +914,7 @@ void App::RenderFrame3D() {
     auto tTerrain0 = m_profiler.Now();
     if (m_layers.showTerrain && m_mmapDirSet && m_rtv && m_dsv) {
         m_terrainRenderer.colorMode = m_layers.terrainColorMode;
+        m_terrainRenderer.smoothTerrain = m_layers.terrainSmooth;
         m_terrainRenderer.UpdateViewport(m_currentMapId,
                                           m_camera3d.targetX, m_camera3d.targetY,
                                           m_camera3d.distance);
@@ -1471,6 +1473,7 @@ void App::SaveSettings() {
     m_settings.showGroundPlane = m_layers.showGroundPlane;
     m_settings.showTerrain = m_layers.showTerrain;
     m_settings.terrainColorMode = m_layers.terrainColorMode;
+    m_settings.terrainSmooth = m_layers.terrainSmooth;
     m_settings.showBuildings = m_layers.showBuildings;
     m_settings.showBuildingObjects = m_layers.showBuildingObjects;
     m_settings.enablePortalCulling = m_layers.enablePortalCulling;

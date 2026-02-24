@@ -24,9 +24,14 @@ struct VS_OUT {
 
 VS_OUT main(VS_IN i) {
     VS_OUT o;
-    o.clipPos  = mul(float4(i.pos, 1.0), viewProj);
+    float3 pos = i.pos;
+    // Slope-dependent Z offset: steeper terrain gets pushed down more.
+    // baseColor.a < 0 when smooth enabled, 0 when disabled.
+    float slope = 1.0 - abs(i.norm.z);   // 0=flat, 1=vertical
+    pos.z += baseColor.a * (1.0 + slope * 5.0);  // flat:-1, steep:-6
+    o.clipPos  = mul(float4(pos, 1.0), viewProj);
     o.normal   = i.norm;
-    o.worldPos = i.pos;
+    o.worldPos = i.pos;    // original pos for lighting
     return o;
 }
 )";
@@ -46,11 +51,17 @@ struct PS_IN {
 };
 
 float4 main(PS_IN i) : SV_TARGET {
-    // Use flat normal from derivatives for consistent look with navmesh.
-    // Clip-space X-flip negates ddx, so negate the cross product.
-    float3 dpdx = ddx(i.worldPos);
-    float3 dpdy = ddy(i.worldPos);
-    float3 N = -normalize(cross(dpdx, dpdy));
+    // heightParams.w == -1: terrain smooth — use per-vertex normals.
+    // heightParams.w == -2: terrain flat — use derivative normals.
+    // heightParams.w >= 0:  buildings — use derivative normals.
+    float3 N;
+    if (heightParams.w > -1.5 && heightParams.w < -0.5) {
+        N = normalize(i.normal);
+    } else {
+        float3 dpdx = ddx(i.worldPos);
+        float3 dpdy = ddy(i.worldPos);
+        N = -normalize(cross(dpdx, dpdy));
+    }
 
     // Directional light
     float3 L = normalize(lightDir.xyz);

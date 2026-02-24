@@ -25,6 +25,7 @@ struct LayerVisibility {
     bool showGroundPlane  = true;
     bool showTerrain      = true;
     int  terrainColorMode = 0;  // 0=solid grey, 1=height gradient, 2=slope
+    bool terrainSmooth    = false;  // smooth V8 centers from V9 corner avg
     bool showBuildings    = true;
     bool showBuildingObjects = false;
     bool enablePortalCulling = true;

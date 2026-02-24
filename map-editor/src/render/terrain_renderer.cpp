@@ -81,6 +81,8 @@ void TerrainRenderer::WorkerLoop() {
         result.tileY = req.tileY;
         result.valid = false;
 
+        result.decimation = req.decimation;
+
         TerrainTileData data;
         if (loader.LoadTile(req.mapId, req.tileX, req.tileY, data)) {
             TerrainMesh mesh;
@@ -183,11 +185,18 @@ bool TerrainRenderer::UploadToGpu(const LoadResult& result) {
     gpu.indexCount = static_cast<UINT>(result.indices.size());
     gpu.minX = result.minX; gpu.minY = result.minY; gpu.minZ = result.minZ;
     gpu.maxX = result.maxX; gpu.maxY = result.maxY; gpu.maxZ = result.maxZ;
+    gpu.decimation = result.decimation;
 
     m_globalMinZ = (std::min)(m_globalMinZ, result.minZ);
     m_globalMaxZ = (std::max)(m_globalMaxZ, result.maxZ);
 
-    m_gpuCache[{result.tileX, result.tileY}] = gpu;
+    // Release old tile GPU resources if upgrading LOD
+    TileKey key = {result.tileX, result.tileY};
+    auto it = m_gpuCache.find(key);
+    if (it != m_gpuCache.end())
+        ReleaseTileGpu(it->second);
+
+    m_gpuCache[key] = gpu;
     return true;
 }
 
@@ -234,8 +243,11 @@ void TerrainRenderer::UpdateViewport(uint32_t mapId, float targetX, float target
             if (result.mapId != m_currentMapId)
                 continue;
 
-            // Skip if already in cache (shouldn't happen, but guard)
-            if (m_gpuCache.count(key))
+            // Skip if cache already has equal or better LOD
+            auto cacheIt = m_gpuCache.find(key);
+            if (cacheIt != m_gpuCache.end() &&
+                cacheIt->second.decimation > 0 &&
+                cacheIt->second.decimation <= result.decimation)
                 continue;
 
             if (result.valid) {
@@ -329,12 +341,24 @@ void TerrainRenderer::UpdateViewport(uint32_t mapId, float targetX, float target
         if (queued >= kMaxQueuesPerFrame) break;
         TileKey key = {td.tx, td.ty};
 
-        // Skip if already cached or pending
-        if (m_gpuCache.count(key)) continue;
-        if (m_pending.count(key)) continue;
-
         // Select LOD based on distance from camera center
         int lod = SelectLOD(td.dist);
+
+        // Skip if already pending at equal or better LOD
+        auto pendIt = m_pending.find(key);
+        if (pendIt != m_pending.end() && pendIt->second <= lod)
+            continue;
+
+        // Skip if cache already has equal or better LOD
+        auto cacheIt = m_gpuCache.find(key);
+        if (cacheIt != m_gpuCache.end()) {
+            if (cacheIt->second.decimation > 0 &&
+                cacheIt->second.decimation <= lod)
+                continue;
+            // Empty sentinel (decimation=0) means no data — skip
+            if (cacheIt->second.decimation == 0 && cacheIt->second.vb == nullptr)
+                continue;
+        }
 
         LoadRequest req;
         req.mapId = mapId;
@@ -349,7 +373,7 @@ void TerrainRenderer::UpdateViewport(uint32_t mapId, float targetX, float target
         }
         m_reqCV.notify_one();
 
-        m_pending.insert(key);
+        m_pending[key] = lod;
         ++queued;
     }
 }
@@ -401,12 +425,12 @@ void TerrainRenderer::Render(const Camera3D& camera,
     cb.baseColor[0] = 0.45f;
     cb.baseColor[1] = 0.45f;
     cb.baseColor[2] = 0.48f;
-    cb.baseColor[3] = 1.0f;
+    cb.baseColor[3] = smoothTerrain ? -1.0f : 0.0f;  // Z offset to push terrain below navmesh
 
     cb.heightParams[0] = m_globalMinZ;
     cb.heightParams[1] = m_globalMaxZ;
     cb.heightParams[2] = static_cast<float>(colorMode);
-    cb.heightParams[3] = 0.0f;
+    cb.heightParams[3] = smoothTerrain ? -1.0f : -2.0f;  // -1=smooth normals, -2=flat normals
 
     ID3D11Buffer* cbBuf = m_pipeline.GetCB();
     {
