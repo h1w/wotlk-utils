@@ -123,6 +123,8 @@ bool App::Initialize(HINSTANCE hInstance) {
     m_layers.showTerrain = m_settings.showTerrain;
     m_layers.terrainColorMode = m_settings.terrainColorMode;
     m_layers.showBuildings = m_settings.showBuildings;
+    m_layers.showBuildingObjects = m_settings.showBuildingObjects;
+    m_layers.enablePortalCulling = m_settings.enablePortalCulling;
 
     LOG(INFO) << "[App] Initialized";
     return true;
@@ -688,9 +690,8 @@ void App::RenderFrame2D() {
             m_canvas.ProcessInput();
     }
 
-    // === Update tile cache viewport (only when zoom meets threshold) ===
-    if (m_layers.showNavmesh && m_tileCache.GetNavMesh() &&
-        m_canvas.zoom >= m_layers.navmeshMinZoom) {
+    // === Update tile cache viewport (zoom gates rendering) ===
+    if (m_layers.showNavmesh && m_tileCache.GetNavMesh() && m_canvas.zoom >= m_layers.navmeshMinZoom) {
         m_tileCache.SetMaxTiles(m_layers.navmeshMaxTiles);
         m_tileCache.UpdateViewport(m_canvas);
     }
@@ -842,7 +843,11 @@ void App::RenderFrame3D() {
     m_camera3d.ProcessInput();
     m_camera3d.ComputeMatrices();
 
-    // Update tile cache for 3D viewport
+    // Ensure navmesh tiles around player for pathfinding (even when layer hidden)
+    if (m_playerMarker.placed && m_tileCache.GetNavMesh())
+        m_tileCache.EnsurePathfindingTiles(m_playerMarker.posX, m_playerMarker.posY);
+
+    // Update tile cache for 3D viewport (only when navmesh layer visible)
     if (m_layers.showNavmesh && m_tileCache.GetNavMesh()) {
         m_tileCache.SetMaxTiles(m_layers.navmeshMaxTiles);
         m_tileCache.UpdateViewport3D(m_camera3d.targetX, m_camera3d.targetY,
@@ -873,6 +878,10 @@ void App::RenderFrame3D() {
 
     // Render buildings (opaque, depth write ON — BEFORE navmesh, AFTER terrain)
     if (m_layers.showBuildings && m_mmapDirSet && m_rtv && m_dsv) {
+        m_buildingRenderer.SetShowObjects(m_layers.showBuildingObjects);
+        m_buildingRenderer.SetPortalCulling(m_layers.enablePortalCulling);
+        if (m_wowDirSet)
+            m_buildingRenderer.SetMpqArchive(&m_mpq);
         m_buildingRenderer.UpdateViewport(m_currentMapId,
                                            m_camera3d.targetX, m_camera3d.targetY,
                                            m_camera3d.distance);
@@ -1315,6 +1324,8 @@ void App::SaveSettings() {
     m_settings.showTerrain = m_layers.showTerrain;
     m_settings.terrainColorMode = m_layers.terrainColorMode;
     m_settings.showBuildings = m_layers.showBuildings;
+    m_settings.showBuildingObjects = m_layers.showBuildingObjects;
+    m_settings.enablePortalCulling = m_layers.enablePortalCulling;
 
     // Window dimensions
     if (m_hwnd) {

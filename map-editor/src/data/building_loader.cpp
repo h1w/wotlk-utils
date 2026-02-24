@@ -105,9 +105,13 @@ bool BuildingLoader::ParseVmapModel(const std::string& fullPath, BuildingMesh& o
         return false;
     }
 
+    out.rootWMOID = rootWMOID;
+
     // Initialize bounds
     float bMin[3] = { 1e30f,  1e30f,  1e30f};
     float bMax[3] = {-1e30f, -1e30f, -1e30f};
+
+    out.groups.reserve(nGroups);
 
     // Parse each group
     for (uint32_t g = 0; g < nGroups; ++g) {
@@ -118,11 +122,17 @@ bool BuildingLoader::ParseVmapModel(const std::string& fullPath, BuildingMesh& o
             break;
         }
 
-        uint32_t mogpFlags = 0, groupWMOID = 0, liquidType = 0;
-        ReadU32(buf, fileSize, off, mogpFlags);
-        ReadU32(buf, fileSize, off, groupWMOID);
-        off += 24;  // skip bbox (6 floats)
+        BuildingGroup group;
+        uint32_t liquidType = 0;
+        ReadU32(buf, fileSize, off, group.mogpFlags);
+        ReadU32(buf, fileSize, off, group.groupWMOID);
+        for (int i = 0; i < 6; ++i)
+            ReadFloat(buf, fileSize, off, group.bbox[i]);
         ReadU32(buf, fileSize, off, liquidType);
+
+        // Record offsets before geometry
+        group.indexOffset = static_cast<uint32_t>(out.indices.size());
+        group.vertexOffset = static_cast<uint32_t>(out.vertices.size() / 3);
 
         // "GRP " chunk — skip it
         if (!MatchTag(buf, fileSize, off, "GRP ")) {
@@ -147,12 +157,8 @@ bool BuildingLoader::ParseVmapModel(const std::string& fullPath, BuildingMesh& o
         if (!ReadU32(buf, fileSize, off, nIndices)) break;
 
         if (nIndices == 0 || off + nIndices * 2 > fileSize) {
-            off += nIndices * 2;
-            // Still need to find VERT
-            goto skip_to_vert;
-        }
-
-        {
+            off += nIndices * 2;  // advance past index data
+        } else {
             // Read uint16 indices, offset by current vertex base
             uint32_t vertexBase = static_cast<uint32_t>(out.vertices.size() / 3);
             out.indices.reserve(out.indices.size() + nIndices);
@@ -163,7 +169,6 @@ bool BuildingLoader::ParseVmapModel(const std::string& fullPath, BuildingMesh& o
             }
         }
 
-    skip_to_vert:
         // "VERT" chunk — vertex positions (float3)
         if (!MatchTag(buf, fileSize, off, "VERT")) {
             LOG(WARNING) << "[BuildingLoader] Expected VERT at offset " << off
@@ -176,11 +181,8 @@ bool BuildingLoader::ParseVmapModel(const std::string& fullPath, BuildingMesh& o
         if (!ReadU32(buf, fileSize, off, nVerts)) break;
 
         if (nVerts == 0 || off + nVerts * 12 > fileSize) {
-            off += nVerts * 12;
-            goto skip_liqu;
-        }
-
-        {
+            off += nVerts * 12;  // advance past vertex data
+        } else {
             out.vertices.reserve(out.vertices.size() + nVerts * 3);
             for (uint32_t v = 0; v < nVerts; ++v) {
                 float x, y, z;
@@ -201,7 +203,6 @@ bool BuildingLoader::ParseVmapModel(const std::string& fullPath, BuildingMesh& o
             }
         }
 
-    skip_liqu:
         // "LIQU" chunk — skip if present
         if (off < fileSize && MatchTag(buf, fileSize, off, "LIQU")) {
             off += 4;  // skip tag
@@ -209,6 +210,11 @@ bool BuildingLoader::ParseVmapModel(const std::string& fullPath, BuildingMesh& o
             if (!ReadU32(buf, fileSize, off, liquSize)) break;
             off += liquSize;  // skip liquid data
         }
+
+        // Record counts after geometry
+        group.indexCount = static_cast<uint32_t>(out.indices.size()) - group.indexOffset;
+        group.vertexCount = static_cast<uint32_t>(out.vertices.size() / 3) - group.vertexOffset;
+        out.groups.push_back(group);
     }
 
     if (out.vertices.empty() || out.indices.empty())

@@ -25,7 +25,9 @@ map-editor/src/
         terrain_loader.h / .cpp TC .map file parser (V9/V8 heightmaps, holes)
         terrain_mesh.h / .cpp   Heightmap -> indexed triangle mesh + normals
         vmap_tile_loader.h/.cpp TC .vmtile file parser (M2/WMO spawn list)
-        building_loader.h / .cpp M2/WMO model geometry loader
+        building_loader.h / .cpp M2/WMO collision geometry loader (TC VMAP048 format)
+        wmo_visual_loader.h/.cpp WMO visual geometry from MPQ (full walls, roofs, interiors)
+        wmo_portal_loader.h/.cpp WMO portal graph from MPQ (indoor/outdoor culling)
 
     navmesh/
         tile_loader.h / .cpp    Load .mmtile -> dtNavMesh, extract triangles
@@ -80,7 +82,7 @@ map-editor/src/
         player_marker.h / .cpp      Player position + movement along paths
 ```
 
-**Total**: ~86 files (43 .h + 43 .cpp)
+**Total**: ~90 files (45 .h + 45 .cpp)
 
 ## Data Flow
 
@@ -157,14 +159,18 @@ Loads TrinityCore `.map` files containing heightmap data (V9 129x129 + V8 128x12
 
 **Rendering**: `TerrainPipeline` provides HLSL shaders with directional lighting and 3 color modes (Solid Grey, Height Gradient, Slope Shading). Opaque blend, depth write ON, back-face cull. Renders before navmesh so navmesh overlays as semi-transparent.
 
-### Building Rendering (`data/building_loader.cpp`, `render/building_renderer.cpp`)
+### Building Rendering (`render/building_renderer.cpp`)
 
-Loads building/prop geometry from TrinityCore extracted data. Two-stage pipeline:
+Two-tier data pipeline with visual-first loading:
 
 1. **VMapTileLoader** parses `.vmtile` files from `vmaps/` — each contains a list of M2/WMO model spawns with positions, rotations, and model filenames
-2. **BuildingLoader** loads individual `.m2` and `.wmo` files from `Buildings/` — parses vertex/index/group data from the TC extracted format (NOT raw WoW format)
+2. **WmoVisualLoader** (PRIMARY) — loads full visual geometry from WMO group files in MPQ archives. Complete walls, roofs, arches, staircases, interiors. Uses 2-tier MPQ path resolution (underscore-to-backslash + case-insensitive basename index)
+3. **BuildingLoader** (FALLBACK) — loads TC collision geometry from `Buildings/` directory when MPQ visual data unavailable. Used for M2 props and WMOs not found in MPQ
+4. **WmoPortalLoader** — loads portal graph from WMO root files for indoor/outdoor visibility culling
 
 **BuildingRenderer** manages a GPU tile cache with background thread loading. Each tile aggregates all spawns' transformed geometry into a single vertex/index buffer. Opaque, depth write ON, renders after terrain and before navmesh.
+
+**Portal culling**: When camera enters a WMO group bounding box, BFS traversal through portal graph determines which groups are visible. From outside, all groups are rendered (depth buffer handles occlusion).
 
 **TC data path auto-detection**: probes `{mmaps_parent}/maps/` (sibling layout) and `{mmaps_parent}/trinitycore_data/maps/` (nested layout) to locate terrain `.map` files, `vmaps/` tiles, and `Buildings/` models.
 

@@ -69,6 +69,9 @@ public:
     dtNavMesh* GetNavMesh() { return m_mesh; }
     dtNavMeshQuery* GetQuery() { return m_query; }
 
+    // Load 3x3 navmesh tiles around a position (for pathfinding when layer hidden)
+    void EnsurePathfindingTiles(float posX, float posY);
+
     uint32_t GetMapId() const { return m_mapId; }
     int GetLoadedCount() const { return static_cast<int>(m_cache.size()); }
 

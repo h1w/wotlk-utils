@@ -58,6 +58,13 @@ float4 main(PS_IN i) : SV_TARGET {
     // Two-sided: flip normal if facing away from light
     if (NdotL < 0.0) { N = -N; NdotL = -NdotL; }
 
+    // Wall culling for interior groups viewed from outside (heightParams.w > 0).
+    // normal.z = -1 for interior groups, 0 for exterior/alwaysdraw.
+    if (heightParams.w > 0 && i.normal.z < 0) {
+        if (abs(N.z) < 0.3)
+            discard;
+    }
+
     float ambient = lightDir.w;  // e.g. 0.3
     float lighting = ambient + (1.0 - ambient) * NdotL;
 

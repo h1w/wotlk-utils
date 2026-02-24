@@ -64,6 +64,8 @@ bool AppSettings::Load() {
         showTerrain = layers.value("terrain", true);
         terrainColorMode = layers.value("terrain_color_mode", 0);
         showBuildings = layers.value("buildings", true);
+        showBuildingObjects = layers.value("building_objects", false);
+        enablePortalCulling = layers.value("portal_culling", true);
     }
 
     // Window dimensions
@@ -106,6 +108,8 @@ bool AppSettings::Save() const {
         {"terrain", showTerrain},
         {"terrain_color_mode", terrainColorMode},
         {"buildings", showBuildings},
+        {"building_objects", showBuildingObjects},
+        {"portal_culling", enablePortalCulling},
     };
 
     doc["window"] = {

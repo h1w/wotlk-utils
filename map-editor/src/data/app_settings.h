@@ -32,6 +32,8 @@ struct AppSettings {
     bool showTerrain      = true;
     int  terrainColorMode = 0;    // 0=solid grey, 1=height gradient, 2=slope
     bool showBuildings    = true;
+    bool showBuildingObjects = false;
+    bool enablePortalCulling = true;
 
     // Window dimensions (0 = default)
     int windowWidth  = 0;

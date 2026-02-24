@@ -104,6 +104,15 @@ void TileCache::UpdateViewport(const Canvas& canvas) {
             ++it;
     }
 
+    // --- Step 1b: Refresh accessOrder for wanted tiles already in navmesh ---
+    // Tiles in the rendering cache skip EnsureTileInNavmesh below, so their
+    // accessOrder would go stale and they'd be evicted from dtNavMesh.
+    for (const auto& c : candidates) {
+        auto mit = m_meshTiles.find({c.tx, c.ty});
+        if (mit != m_meshTiles.end())
+            mit->second.accessOrder = ++m_accessCounter;
+    }
+
     // --- Step 2: Populate rendering cache for wanted tiles ---
     int diskLoads = 0;
     for (const auto& c : candidates) {
@@ -212,6 +221,13 @@ void TileCache::UpdateViewport3D(float targetX, float targetY, float cameraDista
             it = m_cache.erase(it);
         else
             ++it;
+    }
+
+    // Refresh accessOrder for wanted tiles already in navmesh (prevents stale eviction)
+    for (const auto& c : candidates) {
+        auto mit = m_meshTiles.find({c.tx, c.ty});
+        if (mit != m_meshTiles.end())
+            mit->second.accessOrder = ++m_accessCounter;
     }
 
     // Populate rendering cache for wanted tiles (same logic as 2D)
@@ -389,6 +405,18 @@ TileInfo TileCache::GetTileInfo(int tileX, int tileY) const {
     info.tileX = tileX;
     info.tileY = tileY;
     return info;
+}
+
+void TileCache::EnsurePathfindingTiles(float posX, float posY) {
+    if (!m_mesh) return;
+    int cx = 31 - static_cast<int>(std::floor(posX / kTileSize));
+    int cy = 31 - static_cast<int>(std::floor(posY / kTileSize));
+    int diskLoads = 0;
+    for (int dx = -1; dx <= 1; ++dx)
+        for (int dy = -1; dy <= 1; ++dy)
+            EnsureTileInNavmesh(std::clamp(cx + dx, 0, 63),
+                                std::clamp(cy + dy, 0, 63),
+                                cx, cy, diskLoads);
 }
 
 void TileCache::Clear() {

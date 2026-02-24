@@ -62,6 +62,16 @@ void LayerPanel::Render(LayerVisibility& layers, MapBackgroundMode& bgMode,
             ImGui::Unindent(20.0f);
         }
         ImGui::Checkbox("Buildings", &layers.showBuildings);
+        if (layers.showBuildings) {
+            ImGui::Indent(20.0f);
+            ImGui::Checkbox("Objects", &layers.showBuildingObjects);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Show M2 collision shapes (fences, barrels, poles, etc.).\nOff by default to reduce visual noise.");
+            ImGui::Checkbox("Portal Culling", &layers.enablePortalCulling);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Hide WMO interior groups not visible through portals.\nReduces visual clutter from interior walls/ceilings.");
+            ImGui::Unindent(20.0f);
+        }
     }
 
     ImGui::End();

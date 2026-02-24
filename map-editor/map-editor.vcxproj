@@ -146,6 +146,8 @@ copy /Y "C:\vcpkg\installed\x64-windows\bin\StormLib.dll" "$(OutDir)StormLib.dll
     <ClInclude Include="src\render\terrain_renderer.h" />
     <ClInclude Include="src\data\building_loader.h" />
     <ClInclude Include="src\data\vmap_tile_loader.h" />
+    <ClInclude Include="src\data\wmo_portal_loader.h" />
+    <ClInclude Include="src\data\wmo_visual_loader.h" />
     <ClInclude Include="src\render\building_renderer.h" />
   </ItemGroup>
   <ItemGroup>
@@ -197,6 +199,8 @@ copy /Y "C:\vcpkg\installed\x64-windows\bin\StormLib.dll" "$(OutDir)StormLib.dll
     <ClCompile Include="src\render\terrain_renderer.cpp" />
     <ClCompile Include="src\data\building_loader.cpp" />
     <ClCompile Include="src\data\vmap_tile_loader.cpp" />
+    <ClCompile Include="src\data\wmo_portal_loader.cpp" />
+    <ClCompile Include="src\data\wmo_visual_loader.cpp" />
     <ClCompile Include="src\render\building_renderer.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
