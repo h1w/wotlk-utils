@@ -21,15 +21,23 @@ ROAD_PATTERNS_HIGH = [
 ]
 
 ROAD_PATTERNS_MEDIUM = [
-    "dirt", "path", "gravel",
+    "path", "gravel", "trail",
 ]
 
 EXCLUDE_PATTERNS = [
+    # terrain
     "grass", "forest", "leaves", "rock", "cliff",
     "snow", "sand", "moss", "water", "lava", "root",
     "fern", "weed", "mud", "swamp", "marsh",
-    "base",  # *DirtBase*, *GravelBase* = generic terrain, not roads
-    "scrub", "brush", "flower", "field",
+    "base", "scrub", "brush", "flower", "field",
+    # water/coast
+    "beach", "shore", "river", "lake", "ocean", "sea",
+    "coral", "kelp", "algae", "underwater",
+    # natural terrain
+    "ground", "floor", "terrain", "earth",
+    "farmland", "crop", "farm",
+    "cave", "cavern", "mine",
+    "rubble", "debris", "ruin",
 ]
 
 

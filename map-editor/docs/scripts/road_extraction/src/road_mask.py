@@ -6,6 +6,7 @@ Each pixel is True if a road texture's alpha exceeds the threshold at that point
 """
 
 import numpy as np
+from skimage.morphology import dilation, disk
 
 from .adt_parser import AdtData, McnkData
 from .mcal_decoder import decode_alpha
@@ -19,6 +20,7 @@ def build_road_mask(
     config: RoadConfig | None = None,
     dbc_data: dict | None = None,
     zone_hint: str = "",
+    min_confidence: float = 0.5,
 ) -> np.ndarray:
     """Build a 1024x1024 binary road mask for one ADT tile.
 
@@ -58,7 +60,7 @@ def build_road_mask(
                 config=config,
                 zone_hint=zone_hint,
             )
-            if not is_road:
+            if not is_road or confidence < min_confidence:
                 continue
 
             # Decode alpha for this layer
@@ -87,6 +89,48 @@ def build_road_mask(
     return mask
 
 
+def build_water_mask(
+    adt: AdtData,
+    water_buffer: int = 5,
+) -> np.ndarray:
+    """Build 1024x1024 boolean mask where True = water/liquid zone.
+
+    Uses MH2O liquid data parsed in adt_parser. Expands 8x8 liquid bitmap
+    to 64x64 pixels per chunk. Optionally dilates by water_buffer pixels
+    to catch road textures at water edges.
+
+    Parameters:
+        adt: parsed ADT data (with has_liquid/liquid_bitmap from MH2O)
+        water_buffer: dilation buffer in pixels (default 5 = ~2.5 yards)
+    """
+    mask = np.zeros((1024, 1024), dtype=bool)
+
+    for chunk in adt.chunks:
+        if not chunk.has_liquid:
+            continue
+
+        r0 = chunk.index_y * 64
+        c0 = chunk.index_x * 64
+
+        if chunk.liquid_bitmap is not None:
+            # Expand 8x8 bitmap to 64x64 (each cell = 8x8 pixels)
+            for br in range(8):
+                for bc in range(8):
+                    if chunk.liquid_bitmap[br, bc]:
+                        pr = r0 + br * 8
+                        pc = c0 + bc * 8
+                        mask[pr:pr + 8, pc:pc + 8] = True
+        else:
+            # No bitmap detail — mark entire chunk
+            mask[r0:r0 + 64, c0:c0 + 64] = True
+
+    # Apply buffer dilation to catch edge false positives
+    if water_buffer > 0 and mask.any():
+        mask = dilation(mask, disk(water_buffer))
+
+    return mask
+
+
 def build_confidence_map(
     adt: AdtData,
     wdt_mphd_flags: int,
@@ -94,6 +138,7 @@ def build_confidence_map(
     config: RoadConfig | None = None,
     dbc_data: dict | None = None,
     zone_hint: str = "",
+    min_confidence: float = 0.0,
 ) -> np.ndarray:
     """Build a 1024x1024 confidence map for road classification.
 
@@ -122,6 +167,8 @@ def build_confidence_map(
                 zone_hint=zone_hint,
             )
             if not is_road:
+                continue
+            if confidence < min_confidence:
                 continue
 
             next_offset = None

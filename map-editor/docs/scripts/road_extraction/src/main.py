@@ -56,7 +56,7 @@ def main():
         "--map", default="Azeroth",
         help="Map internal name (default: Azeroth)"
     )
-    tile_group = parser.add_mutually_exclusive_group(required=True)
+    tile_group = parser.add_mutually_exclusive_group(required=False)
     tile_group.add_argument(
         "--tiles", nargs="+", type=parse_tile_arg,
         help="Tile coordinates as X,Y (e.g., 31,48 31,49)"
@@ -86,12 +86,44 @@ def main():
         help="Generate masks and images but skip graph extraction"
     )
     parser.add_argument(
-        "--prune-iterations", type=int, default=3,
-        help="Spur pruning iterations (default: 3)"
+        "--prune-iterations", type=int, default=8,
+        help="Spur pruning iterations (default: 8)"
     )
     parser.add_argument(
         "--dp-epsilon", type=float, default=2.0,
         help="Douglas-Peucker epsilon in yards (default: 2.0)"
+    )
+    parser.add_argument(
+        "--min-confidence", type=float, default=0.5,
+        help="Minimum classification confidence to include (default: 0.5)"
+    )
+    parser.add_argument(
+        "--close-radius", type=int, default=3,
+        help="Morphological closing radius in pixels (default: 3)"
+    )
+    parser.add_argument(
+        "--open-radius", type=int, default=1,
+        help="Morphological opening radius in pixels (default: 1)"
+    )
+    parser.add_argument(
+        "--min-road-size", type=int, default=50,
+        help="Minimum connected component size in pixels (default: 50)"
+    )
+    parser.add_argument(
+        "--min-road-width", type=int, default=0,
+        help="Minimum road width in pixels, 0=disabled (default: 0)"
+    )
+    parser.add_argument(
+        "--water-buffer", type=int, default=5,
+        help="Water zone erosion buffer in pixels (default: 5)"
+    )
+    parser.add_argument(
+        "--dump-textures", action="store_true",
+        help="Dump all unique textures with classification across all tiles"
+    )
+    parser.add_argument(
+        "--diagnose", action="store_true",
+        help="Run detailed per-tile diagnostics (pixel counts at each pipeline stage)"
     )
 
     args = parser.parse_args()
@@ -137,6 +169,25 @@ def main():
     tile_count = int(wdt.tile_exists.sum())
     print(f"  Tiles with data: {tile_count}")
 
+    # --dump-textures mode: list all unique textures with classification
+    if args.dump_textures:
+        if not args.tiles and not args.all:
+            args.all = True  # default to all tiles for dump modes
+        _dump_all_textures(mpq, wdt, args, config_path)
+        mpq.close()
+        return
+
+    # --diagnose mode: detailed per-tile pipeline diagnostics
+    if args.diagnose:
+        _diagnose_tiles(mpq, wdt, args, config_path)
+        mpq.close()
+        return
+
+    # Require --tiles or --all for processing modes
+    if not args.tiles and not args.all:
+        print("ERROR: --tiles or --all is required", file=sys.stderr)
+        sys.exit(1)
+
     # --all mode: process every tile in the map
     if args.all:
         _process_all_tiles(mpq, wdt, args, output_dir, config_path)
@@ -181,22 +232,32 @@ def main():
     # ---------------------------------------------------------------------------
     # Step 4: Build road masks
     # ---------------------------------------------------------------------------
-    from .road_mask import build_confidence_map, build_road_mask
+    from .road_mask import build_confidence_map, build_road_mask, build_water_mask
     from .visualizer import save_tile_outputs
     from .coord_utils import tile_origin
 
     tile_masks = {}
     for (tx, ty), adt in tile_adts.items():
-        print(f"Building road mask for ({tx},{ty}), threshold={args.threshold}")
+        print(f"Building road mask for ({tx},{ty}), threshold={args.threshold}, min_confidence={args.min_confidence}")
         mask = build_road_mask(
             adt, wdt.mphd_flags,
             threshold=args.threshold,
             config=config,
+            min_confidence=args.min_confidence,
         )
+
+        # Subtract water zones
+        water_mask = build_water_mask(adt, water_buffer=args.water_buffer)
+        if water_mask.any():
+            water_pixels = int(water_mask.sum())
+            mask = mask & ~water_mask
+            print(f"  Water mask: {water_pixels} pixels subtracted")
+
         conf = build_confidence_map(
             adt, wdt.mphd_flags,
             threshold=args.threshold,
             config=config,
+            min_confidence=args.min_confidence,
         )
         tile_masks[(tx, ty)] = mask
 
@@ -241,6 +302,10 @@ def main():
         ox, oy = tile_origin(tx, ty)
         graph = extract_road_graph(
             mask, ox, oy,
+            min_size=args.min_road_size,
+            close_radius=args.close_radius,
+            open_radius=args.open_radius,
+            min_road_width=args.min_road_width,
             prune_iterations=args.prune_iterations,
             dp_epsilon=args.dp_epsilon,
         )
@@ -286,7 +351,7 @@ def _process_all_tiles(mpq, wdt, args, output_dir, config_path):
         merge_tile_graphs_spatial,
     )
     from .road_classifier import RoadConfig
-    from .road_mask import build_road_mask
+    from .road_mask import build_road_mask, build_water_mask
 
     config = RoadConfig(config_path) if config_path else None
 
@@ -323,7 +388,13 @@ def _process_all_tiles(mpq, wdt, args, output_dir, config_path):
                 adt, wdt.mphd_flags,
                 threshold=args.threshold,
                 config=config,
+                min_confidence=args.min_confidence,
             )
+
+            # Subtract water zones
+            water_mask = build_water_mask(adt, water_buffer=args.water_buffer)
+            if water_mask.any():
+                mask = mask & ~water_mask
 
             # Check if any road pixels exist
             if not mask.any():
@@ -334,6 +405,10 @@ def _process_all_tiles(mpq, wdt, args, output_dir, config_path):
             ox, oy = tile_origin(tx, ty)
             graph = extract_road_graph(
                 mask, ox, oy,
+                min_size=args.min_road_size,
+                close_radius=args.close_radius,
+                open_radius=args.open_radius,
+                min_road_width=args.min_road_width,
                 prune_iterations=args.prune_iterations,
                 dp_epsilon=args.dp_epsilon,
             )
@@ -360,7 +435,7 @@ def _process_all_tiles(mpq, wdt, args, output_dir, config_path):
 
     print(f"\nMerging {len(tile_graphs)} tile graphs (spatial merge)...")
     if len(tile_graphs) > 1:
-        final_graph = merge_tile_graphs_spatial(tile_graphs)
+        final_graph = merge_tile_graphs_spatial(tile_graphs, merge_distance=5.0)
     else:
         final_graph = tile_graphs[0]
 
@@ -381,6 +456,261 @@ def _process_all_tiles(mpq, wdt, args, output_dir, config_path):
     print(f"  Tiles: {tiles_with_roads}/{total} with roads"
           f" ({tiles_skipped} skipped)")
     print("Done!")
+
+
+def _diagnose_tiles(mpq, wdt, args, config_path):
+    """Run detailed per-tile diagnostics to identify where road signal is lost."""
+    from .adt_parser import parse_adt
+    from .coord_utils import tile_origin
+    from .mcal_decoder import decode_alpha, get_alpha_format
+    from .road_classifier import RoadConfig, is_road_layer
+    from .road_mask import build_road_mask, build_water_mask
+
+    config = RoadConfig(config_path) if config_path else None
+
+    # Collect tiles to diagnose
+    tiles = []
+    if args.tiles:
+        tiles = args.tiles
+    else:
+        for y in range(64):
+            for x in range(64):
+                if wdt.tile_exists[y, x]:
+                    tiles.append((x, y))
+
+    print(f"=== DIAGNOSTIC MODE ===")
+    print(f"MPHD flags: 0x{wdt.mphd_flags:08X}")
+    print(f"Big alpha (8-bit): {wdt.big_alpha}")
+    print(f"Alpha threshold: {args.threshold}")
+    print(f"Min confidence: {args.min_confidence}")
+    print(f"Tiles to diagnose: {len(tiles)}")
+    print()
+
+    summary = {"total": 0, "with_road_tex": 0, "with_raw_pixels": 0,
+               "with_post_water": 0, "with_post_cleanup": 0}
+
+    for i, (tx, ty) in enumerate(tiles, 1):
+        adt_path = f"World\\Maps\\{args.map}\\{args.map}_{tx}_{ty}.adt"
+        adt_data_bytes = mpq.read_file(adt_path)
+        if adt_data_bytes is None:
+            continue
+
+        try:
+            adt = parse_adt(adt_data_bytes, wdt.mphd_flags)
+        except Exception as e:
+            print(f"[{i}/{len(tiles)}] ({tx},{ty}) PARSE ERROR: {e}")
+            continue
+
+        summary["total"] += 1
+
+        # --- Step 1: Classify all textures in this tile ---
+        road_textures = {}  # tex_path -> {chunks, total_alpha_pixels, alpha_stats}
+        total_road_layers = 0
+        total_alpha_above = 0
+
+        for chunk in adt.chunks:
+            for layer_idx in range(1, len(chunk.layers)):
+                layer = chunk.layers[layer_idx]
+                if not (layer.flags & 0x100):
+                    continue
+                if layer.texture_id >= len(adt.mtex_list):
+                    continue
+
+                tex_path = adt.mtex_list[layer.texture_id]
+                is_road, conf = is_road_layer(
+                    tex_path, effect_id=layer.effect_id,
+                    config=config, zone_hint="",
+                )
+                if not is_road or conf < args.min_confidence:
+                    continue
+
+                total_road_layers += 1
+
+                # Decode alpha to check values
+                next_offset = None
+                if layer_idx + 1 < len(chunk.layers):
+                    next_offset = chunk.layers[layer_idx + 1].offset_in_mcal
+                else:
+                    next_offset = chunk.mcal_size
+
+                try:
+                    alpha = decode_alpha(
+                        chunk.mcal_data, layer.offset_in_mcal,
+                        wdt.mphd_flags, layer.flags,
+                        next_offset=next_offset,
+                    )
+                except (ValueError, IndexError):
+                    continue
+
+                fmt = get_alpha_format(wdt.mphd_flags, layer.flags)
+                above = int((alpha > args.threshold).sum())
+                total_alpha_above += above
+
+                if tex_path not in road_textures:
+                    road_textures[tex_path] = {
+                        "conf": conf, "chunks": 0, "above": 0,
+                        "fmt": fmt, "alpha_min": 255, "alpha_max": 0,
+                        "alpha_sum": 0, "alpha_count": 0,
+                    }
+                rt = road_textures[tex_path]
+                rt["chunks"] += 1
+                rt["above"] += above
+                rt["alpha_min"] = min(rt["alpha_min"], int(alpha.min()))
+                rt["alpha_max"] = max(rt["alpha_max"], int(alpha.max()))
+                rt["alpha_sum"] += int(alpha.sum())
+                rt["alpha_count"] += alpha.size
+
+        if not road_textures:
+            if (i % 100) == 0:
+                print(f"[{i}/{len(tiles)}] ({tx},{ty}) no road textures")
+            continue
+
+        summary["with_road_tex"] += 1
+
+        # --- Step 2: Build raw road mask ---
+        raw_mask = build_road_mask(
+            adt, wdt.mphd_flags, threshold=args.threshold,
+            config=config, min_confidence=args.min_confidence,
+        )
+        raw_pixels = int(raw_mask.sum())
+
+        if raw_pixels == 0:
+            print(f"[{i}/{len(tiles)}] ({tx},{ty}) "
+                  f"road textures={len(road_textures)} layers={total_road_layers} "
+                  f"alpha_above_threshold=0 RAW_MASK=0")
+            for tp, rt in road_textures.items():
+                basename = os.path.basename(tp)
+                avg_alpha = rt["alpha_sum"] / rt["alpha_count"] if rt["alpha_count"] > 0 else 0
+                print(f"    {basename}: conf={rt['conf']:.1f} fmt={rt['fmt']} "
+                      f"chunks={rt['chunks']} above={rt['above']} "
+                      f"alpha=[{rt['alpha_min']},{rt['alpha_max']}] "
+                      f"avg={avg_alpha:.0f}")
+            continue
+
+        summary["with_raw_pixels"] += 1
+
+        # --- Step 3: Water mask ---
+        water_mask = build_water_mask(adt, water_buffer=args.water_buffer)
+        post_water = raw_mask & ~water_mask if water_mask.any() else raw_mask
+        post_water_pixels = int(post_water.sum())
+        water_removed = raw_pixels - post_water_pixels
+
+        if post_water_pixels > 0:
+            summary["with_post_water"] += 1
+
+        # --- Step 4: Morphological cleanup ---
+        from .graph_extractor import cleanup_mask
+        cleaned = cleanup_mask(
+            post_water,
+            min_size=args.min_road_size,
+            close_radius=args.close_radius,
+            open_radius=args.open_radius,
+        )
+        cleaned_pixels = int(cleaned.sum())
+
+        if cleaned_pixels > 0:
+            summary["with_post_cleanup"] += 1
+
+        # --- Print results ---
+        print(f"[{i}/{len(tiles)}] ({tx},{ty}) "
+              f"tex={len(road_textures)} layers={total_road_layers} "
+              f"raw={raw_pixels} water-={water_removed} "
+              f"post_water={post_water_pixels} cleanup={cleaned_pixels}")
+
+        # Show per-texture details for tiles with many road pixels
+        if raw_pixels > 100 or len(tiles) <= 10:
+            for tp, rt in sorted(road_textures.items(),
+                                  key=lambda kv: -kv[1]["above"]):
+                basename = os.path.basename(tp)
+                avg_alpha = rt["alpha_sum"] / rt["alpha_count"] if rt["alpha_count"] > 0 else 0
+                print(f"    {basename}: conf={rt['conf']:.1f} fmt={rt['fmt']} "
+                      f"chunks={rt['chunks']} above={rt['above']} "
+                      f"alpha=[{rt['alpha_min']},{rt['alpha_max']}] "
+                      f"avg={avg_alpha:.0f}")
+
+    # --- Summary ---
+    print(f"\n=== SUMMARY ===")
+    print(f"Total tiles parsed: {summary['total']}")
+    print(f"Tiles with road textures: {summary['with_road_tex']}")
+    print(f"Tiles with raw road pixels (alpha > {args.threshold}): {summary['with_raw_pixels']}")
+    print(f"Tiles with road pixels after water subtraction: {summary['with_post_water']}")
+    print(f"Tiles with road pixels after morphological cleanup: {summary['with_post_cleanup']}")
+
+
+def _dump_all_textures(mpq, wdt, args, config_path):
+    """Dump all unique textures across all tiles with classification."""
+    from .adt_parser import parse_adt
+    from .road_classifier import RoadConfig, is_road_layer
+
+    config = RoadConfig(config_path) if config_path else None
+
+    # Collect all valid tiles
+    tiles = []
+    if args.tiles:
+        tiles = args.tiles
+    else:
+        for y in range(64):
+            for x in range(64):
+                if wdt.tile_exists[y, x]:
+                    tiles.append((x, y))
+
+    # texture_path -> {classification, chunk_count}
+    tex_stats: dict[str, dict] = {}
+
+    total = len(tiles)
+    for i, (tx, ty) in enumerate(tiles, 1):
+        adt_path = f"World\\Maps\\{args.map}\\{args.map}_{tx}_{ty}.adt"
+        adt_data_bytes = mpq.read_file(adt_path)
+        if adt_data_bytes is None:
+            continue
+
+        try:
+            adt = parse_adt(adt_data_bytes, wdt.mphd_flags)
+        except Exception:
+            continue
+
+        if (i % 50) == 0 or i == total:
+            print(f"  Scanning textures... [{i}/{total}]", file=sys.stderr)
+
+        for chunk in adt.chunks:
+            for li, layer in enumerate(chunk.layers):
+                if layer.texture_id >= len(adt.mtex_list):
+                    continue
+                tex = adt.mtex_list[layer.texture_id]
+
+                if tex not in tex_stats:
+                    is_road, conf = is_road_layer(
+                        tex, effect_id=layer.effect_id,
+                        config=config,
+                    )
+                    if is_road and conf >= 1.0:
+                        cls = "road_high"
+                    elif is_road and conf >= 0.6:
+                        cls = "road_medium"
+                    elif is_road:
+                        cls = "road_low"
+                    else:
+                        cls = "not_road"
+                    tex_stats[tex] = {"cls": cls, "conf": conf, "chunks": 0}
+
+                tex_stats[tex]["chunks"] += 1
+
+    # Sort: road_high first, then road_medium, then not_road, then by chunk count
+    cls_order = {"road_high": 0, "road_medium": 1, "road_low": 2, "not_road": 3}
+    sorted_textures = sorted(
+        tex_stats.items(),
+        key=lambda kv: (cls_order.get(kv[1]["cls"], 9), -kv[1]["chunks"]),
+    )
+
+    print(f"\n{'Classification':<14} {'Chunks':>8}  Texture Path")
+    print("-" * 80)
+    for tex_path, info in sorted_textures:
+        print(f"{info['cls']:<14} {info['chunks']:>8}  {tex_path}")
+
+    # Summary
+    road_count = sum(1 for _, v in tex_stats.items() if v["cls"].startswith("road"))
+    total_tex = len(tex_stats)
+    print(f"\nTotal: {total_tex} unique textures, {road_count} classified as road")
 
 
 def _dump_tile_info(adt, wdt_mphd_flags: int, config=None):

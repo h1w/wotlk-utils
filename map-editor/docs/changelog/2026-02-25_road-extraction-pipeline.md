@@ -144,5 +144,6 @@ Then open `output/Azeroth_roads.json` in map-editor via **Graph > Open Road Grap
 ## Known Limitations
 
 - **Z = 0**: alpha maps contain no elevation data; all nodes are at ground zero
-- **Straight edges**: the editor's `WorldEdge` has no waypoint polyline field; edges render as straight lines between junction nodes
 - **No DBC chain**: texture classification uses filename patterns only (GroundEffectTexture.dbc lookup deferred — pattern matching alone achieves high accuracy)
+
+> **Note**: The "straight edges" limitation from the original pipeline was resolved in TASK-007 by expanding edge polylines into actual waypoint nodes. See `2026-02-25_road-extraction-quality.md`.

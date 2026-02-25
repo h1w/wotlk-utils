@@ -5,15 +5,18 @@ Extract road networks from WoW 3.3.5a ADT terrain files into a JSON graph direct
 ## How It Works
 
 1. Opens MPQ archives from a WoW 3.3.5a client
-2. Parses WDT (tile index) and ADT files (terrain + alpha maps)
-3. Classifies textures as road/non-road using pattern matching + optional config
+2. Parses WDT (tile index) and ADT files (terrain + alpha maps + MH2O liquid data)
+3. Classifies textures as road/non-road using pattern matching + confidence scoring
 4. Builds a binary road mask (1024x1024 per tile) from alpha map layers
-5. Skeletonizes the mask (Zhang-Suen) to get 1px-wide centerlines
-6. Converts skeleton to a NetworkX graph (nodes at junctions, edges along road segments)
-7. Assigns WoW world coordinates to all nodes and edge waypoints
-8. Simplifies edges with Douglas-Peucker
-9. Merges tile boundaries (spatial hash for full-map, brute-force for small tile sets)
-10. Exports JSON in map-editor `WorldGraphData` format (ready to open via **Graph > Open Graph JSON...**)
+5. Subtracts water zones (MH2O liquid data) to eliminate ocean/river/lake false positives
+6. Morphological cleanup: close gaps, remove noise, filter by width
+7. Zhang-Suen skeletonization to get 1px-wide centerlines + spur pruning
+8. Converts skeleton to a NetworkX graph (sknw: junctions as nodes, roads as edge polylines)
+9. Assigns WoW world coordinates, simplifies edges (Douglas-Peucker)
+10. Graph post-processing: merge close nodes, remove short components, collapse parallel paths
+11. Expands edge polylines into actual waypoint nodes (preserves road curves)
+12. Merges tile boundaries (spatial hash, 5-yard merge distance)
+13. Exports JSON in map-editor `WorldGraphData` format (ready to open via **Graph > Open Graph JSON...**)
 
 Waypoints are placed exactly at road center by construction (skeleton = centerline of the binary mask).
 
@@ -75,14 +78,14 @@ Processing 687 tiles for map Azeroth...
   [1/687] (27,25) 4 nodes, 3 edges
   [2/687] (28,25) no roads
   ...
-  [687/687] (56,54) 8 nodes, 7 edges
+  [687/687] (34,61) no roads
 
-Merging 203 tile graphs (spatial merge)...
-  Merged: 4521 nodes, 5103 edges
+Merging 187 tile graphs (spatial merge)...
+  Merged: 6016 nodes, 5905 edges
 
 Exported: output/Azeroth_roads.json
-  4521 nodes, 5103 edges
-  Tiles: 203/687 with roads (0 skipped)
+  6016 nodes, 5905 edges
+  Tiles: 187/687 with roads (0 skipped)
 Done!
 ```
 
@@ -94,6 +97,12 @@ Dump texture info without extracting anything:
 
 ```bash
 python -m src.main --client "Z:\Games\wow 3.3.5a client" --map Azeroth --tiles 31,49 --dump-info
+```
+
+Per-tile pipeline diagnostics (road pixels, water pixels, texture hits):
+
+```bash
+python -m src.main --client "Z:\Games\wow 3.3.5a client" --map Azeroth --tiles 31,49 --diagnose
 ```
 
 Generate masks and images but skip graph extraction:
@@ -111,12 +120,19 @@ python -m src.main --client "Z:\Games\wow 3.3.5a client" --map Azeroth --tiles 3
 | `--tiles X,Y [...]` | | Specific tile coordinates (mutually exclusive with `--all`) |
 | `--all` | | Process all tiles in the map (mutually exclusive with `--tiles`) |
 | `--threshold` | `64` | Alpha threshold for road detection (0-255) |
+| `--min-confidence` | `0.5` | Minimum texture classification confidence (0.0-1.0) |
+| `--close-radius` | `3` | Morphological closing radius in pixels (bridges chunk gaps) |
+| `--open-radius` | `1` | Morphological opening radius in pixels (removes thin artifacts) |
+| `--min-road-size` | `50` | Minimum connected component size in pixels |
+| `--min-road-width` | `0` | Minimum road width in pixels (0 = disabled) |
+| `--water-buffer` | `5` | Water zone dilation buffer in pixels (~2.5 yards) |
+| `--prune-iterations` | `8` | Spur pruning iterations (remove short dead-end branches) |
+| `--dp-epsilon` | `2.0` | Douglas-Peucker simplification tolerance in yards |
 | `--output-dir` | `./output` | Output directory |
 | `--config` | `config/road_textures.json` | Road texture classification config |
 | `--dump-info` | off | Only dump tile/texture info, no extraction |
+| `--diagnose` | off | Per-tile pipeline diagnostics |
 | `--no-graph` | off | Generate masks/images but skip graph extraction |
-| `--prune-iterations` | `3` | Spur pruning iterations (remove short dead-end branches) |
-| `--dp-epsilon` | `2.0` | Douglas-Peucker simplification tolerance in yards |
 
 ## Output Format
 

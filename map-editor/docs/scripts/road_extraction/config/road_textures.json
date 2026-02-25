@@ -3,12 +3,18 @@
         "road", "cobble", "cobblestone", "flagstone", "paving", "pavement", "dirtroad"
     ],
     "global_patterns_medium": [
-        "dirt", "path", "gravel"
+        "path", "gravel", "trail"
     ],
     "global_exclude": [
         "grass", "forest", "leaves", "rock", "cliff", "snow", "sand",
         "lava", "moss", "water", "root", "fern", "weed", "mud", "swamp", "marsh",
-        "base", "scrub", "brush", "flower", "field"
+        "base", "scrub", "brush", "flower", "field",
+        "beach", "shore", "river", "lake", "ocean", "sea",
+        "coral", "kelp", "algae", "underwater",
+        "ground", "floor", "terrain", "earth",
+        "farmland", "crop", "farm",
+        "cave", "cavern", "mine",
+        "rubble", "debris", "ruin"
     ],
     "zone_overrides": {
         "Elwynn": {
@@ -20,6 +26,12 @@
         },
         "Westfall": {
             "include": ["WestfallDirt01.blp"]
+        },
+        "Duskwood": {
+            "exclude": ["Duskwood_Dirt01.blp", "Duskwood_Dirt02.blp"]
+        },
+        "Barrens": {
+            "exclude": ["Barrens_Dirt01.blp", "Barrens_DirtCracked.blp"]
         }
     }
 }

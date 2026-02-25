@@ -45,6 +45,9 @@ class McnkData:
     layers: list[MclyEntry] = field(default_factory=list)
     mcal_data: bytes = b""
     mcal_size: int = 0
+    has_liquid: bool = False
+    liquid_coverage: float = 0.0
+    liquid_bitmap: np.ndarray | None = None  # 8x8 bool array, or None
 
 
 @dataclass
@@ -91,6 +94,121 @@ def _parse_mtex(data: bytes, offset: int, size: int) -> list[str]:
     # Split on null bytes, filter empty strings
     parts = raw.split(b"\x00")
     return [p.decode("utf-8", errors="replace") for p in parts if p]
+
+
+# ---------------------------------------------------------------------------
+# MH2O parser
+# ---------------------------------------------------------------------------
+
+def _parse_mh2o_for_chunks(data: bytes, mhdr_off: int, chunks: list[McnkData]) -> None:
+    """Parse MH2O liquid headers and annotate McnkData with liquid info.
+
+    MH2O is located via MHDR offset at byte 0x14 (ofsMH2O).
+    Contains 256 SLiquidChunk entries (12 bytes each), one per MCNK.
+    All offsets inside MH2O are relative to mh2o_data_start.
+    """
+    # MHDR offsets are relative to MHDR data start
+    # MHDR layout: 0x00=flags, 0x04=mcin, 0x08=mtex, 0x0C=mmdx, 0x10=mmid,
+    #   0x14=mwmo, 0x18=mwid, 0x1C=mddf, 0x20=modf, 0x24=mfbo, 0x28=mh2o
+    ofs_mh2o = struct.unpack_from("<I", data, mhdr_off + 0x28)[0]
+    if ofs_mh2o == 0:
+        return
+
+    # MH2O absolute position = MHDR data start + offset
+    mh2o_abs = mhdr_off + ofs_mh2o
+
+    if mh2o_abs + 8 > len(data):
+        return
+
+    # Check if there's a chunk tag here
+    tag = data[mh2o_abs:mh2o_abs + 4]
+    if tag == b"O2HM":
+        mh2o_size = struct.unpack_from("<I", data, mh2o_abs + 4)[0]
+        mh2o_data_start = mh2o_abs + 8
+        mh2o_data_end = mh2o_data_start + mh2o_size
+    else:
+        mh2o_data_start = mh2o_abs
+        mh2o_data_end = len(data)
+
+    # Build chunk lookup by (index_x, index_y)
+    chunk_map = {}
+    for chunk in chunks:
+        chunk_map[(chunk.index_x, chunk.index_y)] = chunk
+
+    # 256 SLiquidChunk entries, 12 bytes each: {offset_instances, layer_count, offset_attributes}
+    ENTRY_SIZE = 12
+    header_end = mh2o_data_start + 256 * ENTRY_SIZE
+
+    for idx in range(256):
+        entry_off = mh2o_data_start + idx * ENTRY_SIZE
+        if entry_off + ENTRY_SIZE > mh2o_data_end:
+            break
+
+        offset_instances, layer_count, offset_attributes = struct.unpack_from(
+            "<III", data, entry_off
+        )
+
+        if layer_count == 0 or offset_instances == 0:
+            continue
+
+        cx = idx % 16
+        cy = idx // 16
+        chunk = chunk_map.get((cx, cy))
+        if chunk is None:
+            continue
+
+        chunk.has_liquid = True
+
+        # Parse first SLiquidInstance (24 bytes) — offsets relative to mh2o_data_start
+        inst_abs = mh2o_data_start + offset_instances
+        if inst_abs + 24 > len(data):
+            chunk.liquid_coverage = 1.0
+            continue
+
+        (liquid_type, liquid_vertex_format,
+         min_height, max_height,
+         x_offset, y_offset, width, height,
+         offset_exists_bitmap, offset_vertex_data) = struct.unpack_from(
+            "<HHffBBBBII", data, inst_abs
+        )
+
+        # Build 8x8 liquid bitmap with bounds validation
+        bitmap = np.zeros((8, 8), dtype=bool)
+
+        # Clamp sub-rect to 8x8 grid
+        if x_offset > 7 or y_offset > 7:
+            bitmap[:] = True
+        elif width == 0 or height == 0:
+            bitmap[:] = True
+        else:
+            w = min(width, 8 - x_offset)
+            h = min(height, 8 - y_offset)
+
+            if offset_exists_bitmap != 0:
+                bmp_abs = mh2o_data_start + offset_exists_bitmap
+                total_bits = width * height
+                total_bytes = (total_bits + 7) // 8
+
+                if bmp_abs + total_bytes <= len(data):
+                    bmp_data = data[bmp_abs:bmp_abs + total_bytes]
+                    bit_idx = 0
+                    for row in range(height):
+                        for col in range(width):
+                            byte_idx = bit_idx // 8
+                            bit_pos = bit_idx % 8
+                            if byte_idx < len(bmp_data) and (bmp_data[byte_idx] >> bit_pos) & 1:
+                                br = y_offset + row
+                                bc = x_offset + col
+                                if 0 <= br < 8 and 0 <= bc < 8:
+                                    bitmap[br, bc] = True
+                            bit_idx += 1
+                else:
+                    bitmap[y_offset:y_offset + h, x_offset:x_offset + w] = True
+            else:
+                bitmap[y_offset:y_offset + h, x_offset:x_offset + w] = True
+
+        chunk.liquid_bitmap = bitmap
+        chunk.liquid_coverage = float(bitmap.sum()) / 64.0
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +331,12 @@ def parse_adt(data: bytes, wdt_mphd_flags: int = 0) -> AdtData:
 
         chunk = _parse_mcnk(data, mcnk_abs_offset, wdt_mphd_flags)
         chunks.append(chunk)
+
+    # Parse MHDR for MH2O offset
+    result = _find_chunk(data, b"RDHM")
+    if result is not None:
+        mhdr_off, mhdr_size = result
+        _parse_mh2o_for_chunks(data, mhdr_off, chunks)
 
     return AdtData(mtex_list=mtex_list, chunks=chunks)
 
