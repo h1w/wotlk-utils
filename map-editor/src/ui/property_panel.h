@@ -4,14 +4,14 @@
 namespace mapedit {
 
 class WorldGraphData;
-struct Selection;
+struct MultiSelection;
 struct Canvas;
 struct UndoContext;
 class TileCache;
 
 class PropertyPanel {
 public:
-    void Render(WorldGraphData& graph, Selection& selection, uint32_t mapId,
+    void Render(WorldGraphData& graph, MultiSelection& selection, uint32_t mapId,
                 const Canvas& canvas, TileCache& tileCache, UndoContext& undo);
 };
 

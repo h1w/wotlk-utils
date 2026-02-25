@@ -27,10 +27,30 @@ static ImU32 EdgeColor(EdgeType type) {
     }
 }
 
+// Helper: create transparent overlay window for drawing (renders above panels, below popups)
+static ImDrawList* BeginGraphOverlay(const char* name, const Canvas& canvas) {
+    ImGui::SetNextWindowPos(ImVec2(canvas.vpX, canvas.vpY));
+    ImGui::SetNextWindowSize(ImVec2(canvas.vpW, canvas.vpH));
+    ImGui::SetNextWindowBgAlpha(0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::Begin(name, nullptr,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoInputs);
+    ImGui::PopStyleVar(2);
+    return ImGui::GetWindowDrawList();
+}
+
+static void EndGraphOverlay() {
+    ImGui::End();
+}
+
 void GraphRenderer::Render(const Canvas& canvas, const WorldGraphData& graph,
-                           uint32_t mapId, const Selection& selection,
+                           uint32_t mapId, const MultiSelection& selection,
                            const LayerVisibility& layers) {
-    auto* dl = ImGui::GetForegroundDrawList();
+    auto* dl = BeginGraphOverlay("##GraphOverlay", canvas);
 
     float minX, maxX, minY, maxY;
     canvas.GetViewBounds(minX, maxX, minY, maxY);
@@ -53,7 +73,7 @@ void GraphRenderer::Render(const Canvas& canvas, const WorldGraphData& graph,
             ImU32 color = EdgeColor(edge.type);
             float thickness = 1.5f;
 
-            if (selection.IsEdge() && selection.edgeIndex == i) {
+            if (selection.IsEdgeSelected(i)) {
                 color = IM_COL32(255, 255, 0, 255);
                 thickness = 3.0f;
             }
@@ -77,7 +97,7 @@ void GraphRenderer::Render(const Canvas& canvas, const WorldGraphData& graph,
             float radius = 6.0f;
             ImU32 color = NodeColor(node.type);
 
-            bool selected = selection.IsNode() && selection.nodeId == node.id;
+            bool selected = selection.IsNodeSelected(node.id);
             if (selected) {
                 dl->AddCircleFilled(ImVec2(sx, sy), radius + 3.0f, IM_COL32(255, 255, 0, 200));
             }
@@ -92,11 +112,13 @@ void GraphRenderer::Render(const Canvas& canvas, const WorldGraphData& graph,
             }
         }
     }
+
+    EndGraphOverlay();
 }
 
 void GraphRenderer::RenderRoadOverlay(const Canvas& canvas, const WorldGraphData& roadGraph,
                                       uint32_t mapId) {
-    auto* dl = ImGui::GetForegroundDrawList();
+    auto* dl = BeginGraphOverlay("##RoadOverlay", canvas);
 
     float minX, maxX, minY, maxY;
     canvas.GetViewBounds(minX, maxX, minY, maxY);
@@ -128,6 +150,8 @@ void GraphRenderer::RenderRoadOverlay(const Canvas& canvas, const WorldGraphData
         canvas.WorldToScreen(node.x, node.y, sx, sy);
         dl->AddCircleFilled(ImVec2(sx, sy), 3.0f, nodeColor);
     }
+
+    EndGraphOverlay();
 }
 
 } // namespace mapedit

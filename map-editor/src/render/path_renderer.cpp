@@ -14,8 +14,23 @@ void PathRenderer::Reset() {
     m_path.valid = false;
 }
 
+static ImDrawList* BeginOverlay(const char* name, const Canvas& canvas) {
+    ImGui::SetNextWindowPos(ImVec2(canvas.vpX, canvas.vpY));
+    ImGui::SetNextWindowSize(ImVec2(canvas.vpW, canvas.vpH));
+    ImGui::SetNextWindowBgAlpha(0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::Begin(name, nullptr,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoInputs);
+    ImGui::PopStyleVar(2);
+    return ImGui::GetWindowDrawList();
+}
+
 void PathRenderer::Render(const Canvas& canvas) {
-    auto* dl = ImGui::GetForegroundDrawList();
+    auto* dl = BeginOverlay("##PathOverlay", canvas);
 
     // Draw point A
     if (m_hasA) {
@@ -62,6 +77,8 @@ void PathRenderer::Render(const Canvas& canvas) {
         ImVec2 mouse = ImGui::GetIO().MousePos;
         dl->AddCircle(ImVec2(mouse.x, mouse.y), 12.0f, IM_COL32(50, 255, 50, 180), 0, 2.0f);
     }
+
+    ImGui::End();
 }
 
 bool PathRenderer::ProcessInput(const Canvas& canvas, TileCache& cache, MapPathfinder& pathfinder) {

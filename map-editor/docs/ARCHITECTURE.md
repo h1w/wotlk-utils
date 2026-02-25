@@ -41,10 +41,11 @@ map-editor/src/
         world_map_loader.h/.cpp Zone world map BLP loading (unused legacy)
 
     editor/
-        selection.h / .cpp      Selection state machine (node/edge/waypoint)
-        graph_editor.h / .cpp   Graph node/edge CRUD + drag
+        selection.h             MultiSelection (unordered_set-based multi-node/edge)
+        graph_editor.h / .cpp   Full graph editor: draw/edge/split modes, context menu, drag,
+                                lasso/box selection, merge, straighten, auto-connect, validate
         route_editor.h / .cpp   Route waypoint placement + drag
-        undo_redo.h / .cpp      Snapshot-based undo/redo (100 levels)
+        undo_redo.h / .cpp      Snapshot-based undo/redo (100 levels, separate stacks per graph)
 
     render/
         grid_renderer.h / .cpp      Coordinate + tile grid
@@ -144,11 +145,11 @@ Thread safety: MPQ reads on main thread (StormLib not thread-safe), BLP decode o
 
 Full CRUD for the navigation graph: nodes (POIs with type, faction, coordinates) and edges (connections with type, cost, directionality). Dirty-flag tracking for unsaved changes.
 
-The app holds two `WorldGraphData` instances: `m_graphData` (main, editable) and `m_roadGraphData` (road overlay, read-only). The road graph loads via **Graph > Open Road Graph...** and renders as a semi-transparent amber overlay beneath the main graph in 2D mode only.
+The app holds two `WorldGraphData` instances: `m_graphData` (world/POI graph) and `m_roadGraphData` (road network). Three editing modes control which is active: **Read Only** (view both, edit neither), **World Graph** (edit world graph, road as overlay), **Road Graph** (edit road graph, world as overlay). Each graph has its own `UndoRedo` stack. The road graph loads via **Graph > Open Road Graph...** and saves via **Graph > Save Road Graph**.
 
 ### Undo/Redo (`editor/undo_redo.cpp`)
 
-Snapshot-based: captures full graph+route state before each mutation. Supports up to 100 undo levels. Both undo and redo stacks maintained.
+Snapshot-based: captures full graph+route state before each mutation. Supports up to 100 undo levels. Both undo and redo stacks maintained. The app has two separate `UndoRedo` instances (`m_undoRedo` for world graph, `m_roadUndoRedo` for road graph); the active stack is selected based on the current editing mode (`ActiveGraph`).
 
 ### MPQ Reading (`mpq/`)
 

@@ -23,6 +23,7 @@ struct AppSettings {
     bool showNodes   = true;
     bool showEdges   = true;
     bool showLabels  = true;
+    bool showWorldGraph = true;
     bool showRoadGraph = true;
     bool showRoutes  = true;
     bool showPath    = true;

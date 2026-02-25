@@ -34,10 +34,11 @@ void LayerPanel::Render(LayerVisibility& layers, MapBackgroundMode& bgMode,
             ImGui::SetTooltip("Maximum number of navmesh tiles kept in cache.\nHigher = more coverage, more memory.");
         ImGui::Unindent(20.0f);
     }
+    ImGui::Checkbox("World Graph", &layers.showWorldGraph);
+    ImGui::Checkbox("Road Graph", &layers.showRoadGraph);
     ImGui::Checkbox("Nodes", &layers.showNodes);
     ImGui::Checkbox("Edges", &layers.showEdges);
     ImGui::Checkbox("Labels", &layers.showLabels);
-    ImGui::Checkbox("Road Graph", &layers.showRoadGraph);
     ImGui::Checkbox("Routes", &layers.showRoutes);
     ImGui::Checkbox("Path Test", &layers.showPath);
 

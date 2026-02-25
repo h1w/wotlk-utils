@@ -13,12 +13,14 @@ public:
         bool openRoadGraph = false;
         bool saveGraph = false;
         bool saveGraphAs = false;
+        bool saveRoadGraph = false;
+        bool saveRoadGraphAs = false;
         bool quit = false;
         std::string graphFilePath;
         std::string roadGraphFilePath;
     };
 
-    Actions Render(const WorldGraphData& graph);
+    Actions Render(const WorldGraphData& graph, const WorldGraphData& roadGraph);
 };
 
 } // namespace mapedit

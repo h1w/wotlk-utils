@@ -57,6 +57,7 @@ bool AppSettings::Load() {
         showNodes   = layers.value("nodes", true);
         showEdges   = layers.value("edges", true);
         showLabels  = layers.value("labels", true);
+        showWorldGraph = layers.value("world_graph", true);
         showRoadGraph = layers.value("road_graph", true);
         showRoutes  = layers.value("routes", true);
         showPath    = layers.value("path", true);
@@ -113,6 +114,7 @@ bool AppSettings::Save() const {
         {"nodes",   showNodes},
         {"edges",   showEdges},
         {"labels",  showLabels},
+        {"world_graph", showWorldGraph},
         {"road_graph", showRoadGraph},
         {"routes",  showRoutes},
         {"path",    showPath},

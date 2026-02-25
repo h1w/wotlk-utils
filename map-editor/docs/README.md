@@ -14,7 +14,7 @@ Standalone **x64 Windows** desktop application for WoW 3.3.5a (WotLK) navmesh vi
 - **Minimap tile background** — streams BLP minimap textures from WoW MPQ archives via `md5translate.trs`, decoded on background thread, all tiles loaded permanently per map
 - **Coordinate grid** — adaptive-step grid (10/100/1000 yd) with tile grid overlay
 - **World graph** — renders POI nodes (flight masters, portals, innkeepers, etc.) with color-coded types and directed edges
-- **Road graph overlay** — loads `_roads.json` as a read-only semi-transparent amber layer beneath the main graph; dedicated menu item (**Graph > Open Road Graph...**) and layer toggle
+- **Road graph overlay** — loads `_roads.json` as semi-transparent amber layer beneath the main graph; fully editable in Road Graph mode; dedicated menu item (**Graph > Open Road Graph...**) and layer toggle
 - **Route visualization** — numbered waypoints with colored polylines, loop support, direction arrows
 - **Path visualization** — Detour pathfinding results rendered as yellow polylines with distance labels
 - **Layer panel** — toggle visibility of all render layers independently
@@ -31,11 +31,19 @@ Standalone **x64 Windows** desktop application for WoW 3.3.5a (WotLK) navmesh vi
 - **Compass rose** — rotates with camera yaw
 
 ### Editing
-- **World graph CRUD** — add/remove/move nodes and edges, edit properties in inspector panel
+- **Three editing modes** — Read Only (view only), World Graph (edit POI graph), Road Graph (edit road network); cycled via toolbar button
+- **Multi-selection** — Shift+Click to toggle, box selection (drag on empty space), lasso selection (Alt+drag), Ctrl+A to select all
+- **Draw Mode (D)** — click to place nodes with auto-connect chain; click existing node to connect; click on edge to auto-split and connect
+- **Edge Mode (E)** — click two nodes to create an edge between them
+- **Split Edge (S)** — splits nearest edge at cursor position
+- **Context menu** — right-click for Delete, Connect Nodes, Split Edge, Merge Nodes, Straighten Path, Add Node, Auto-Connect, Validate Graph
+- **Graph operations** — merge nodes (centroid), straighten path (lerp chain), auto-connect endpoints, graph validation (components, dead-ends, duplicates, orphans)
+- **Bulk property editing** — multi-select: change Type/Faction for all selected nodes, Edge Type/Bidirectional for all selected edges
 - **Route editor** — create/edit/delete routes with waypoint placement by clicking on canvas
-- **Undo/Redo** — snapshot-based history (Ctrl+Z / Ctrl+Y), up to 100 levels
-- **Property panel** — inspector for selected nodes, edges, and waypoints
+- **Undo/Redo** — snapshot-based history (Ctrl+Z / Ctrl+Shift+Z), up to 100 levels; independent stacks for world graph and road graph
+- **Property panel** — inspector for selected nodes, edges, and waypoints; multi-selection summary
 - **Path testing** — click two points to visualize Detour navmesh pathfinding between them
+- **Help panel (F1)** — comprehensive keyboard shortcuts and feature reference
 
 ### Data Formats
 - **Navmesh** — TrinityCore `.mmtile` files (Detour format with MMAP header)
@@ -47,7 +55,7 @@ Standalone **x64 Windows** desktop application for WoW 3.3.5a (WotLK) navmesh vi
 - **Map definitions** — `Map.dbc` from MPQ for map ID/name lookups
 
 ### UI
-- **Menu bar** — File (open/save graph+routes), Edit (undo/redo/delete), View (panels/legend), Map (selector)
+- **Menu bar** — File (open/save graph+routes), Edit (undo/redo/delete), Graph (road graph save), View (panels/legend/help), Map (selector)
 - **Status bar** — cursor world coordinates, tile coordinates, zoom level, current map name
 - **Log window** — glog-integrated log viewer with severity filters, text search, auto-scroll, docked bottom-left
 - **File dialogs** — native Win32 open/save dialogs

@@ -8,9 +8,24 @@
 
 namespace mapedit {
 
+static ImDrawList* BeginOverlay(const char* name, const Canvas& canvas) {
+    ImGui::SetNextWindowPos(ImVec2(canvas.vpX, canvas.vpY));
+    ImGui::SetNextWindowSize(ImVec2(canvas.vpW, canvas.vpH));
+    ImGui::SetNextWindowBgAlpha(0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::Begin(name, nullptr,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoInputs);
+    ImGui::PopStyleVar(2);
+    return ImGui::GetWindowDrawList();
+}
+
 void RouteRenderer::Render(const Canvas& canvas, const RouteData& data,
                            const RouteEditor& editor, uint32_t mapId) {
-    auto* dl = ImGui::GetForegroundDrawList();
+    auto* dl = BeginOverlay("##RouteOverlay", canvas);
 
     int selectedRoute = editor.GetSelectedRoute();
     int selectedWp = editor.GetSelectedWaypoint();
@@ -80,6 +95,8 @@ void RouteRenderer::Render(const Canvas& canvas, const RouteData& data,
             }
         }
     }
+
+    ImGui::End();
 }
 
 } // namespace mapedit

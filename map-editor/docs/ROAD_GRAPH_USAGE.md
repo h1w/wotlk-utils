@@ -18,7 +18,7 @@ The Python road extraction pipeline (`docs/scripts/road_extraction/`) produces a
 
 4. Toggle visibility in the **Layers** panel via the "Road Graph" checkbox.
 
-> **Note**: The road graph is loaded into a dedicated read-only slot, separate from the main world graph. You can have both open simultaneously — the road network provides spatial context while the POI graph sits on top.
+> **Note**: The road graph is loaded into a dedicated slot, separate from the main world graph. You can have both open simultaneously — the road network provides spatial context while the POI graph sits on top. Switch to **Road Graph** editing mode via the toolbar button to edit it directly.
 
 ## Output Format
 
@@ -67,24 +67,28 @@ The `--map` name is automatically mapped to the correct WoW DBC mapId:
 
 - **Z = 0** — nodes have no height data (alpha maps don't contain elevation)
 - **2D only** — road graph is not rendered in 3D mode (nodes at z=0 have no useful height data)
-- **Read-only** — the road graph overlay is not editable (no selection, drag, or undo/redo). To edit a road graph, load it as the main graph via **Graph > Open Graph JSON...**
 - **Straight edges** — the editor renders edges as straight lines between nodes. Node density compensates — junctions are close enough that straight lines approximate curves
 
 ## Editing Road Graphs
 
-The road graph overlay is read-only. To edit a road graph, load it as the **main** graph via **Graph > Open Graph JSON...**. It then becomes fully editable with all standard editor tools:
+The road graph is directly editable. Click the toolbar mode button to switch to **Road Graph** mode (orange). All standard editor tools apply:
 
 | Action | How |
 |---|---|
+| Switch to Road Graph mode | Click toolbar button until "Road Graph" (orange) |
 | Select node | Click on it |
-| Move node | Drag |
-| Delete node | Select + `Delete` (removes connected edges too) |
+| Multi-select | Shift+Click, box drag, Alt+drag (lasso), Ctrl+A |
+| Move nodes | Drag (moves all selected) |
+| Delete | Select + `Delete` |
 | Add node | Double-click on empty canvas |
-| Create edge | `E` (edge mode), click first node, click second node |
-| Delete edge | Select edge + `Delete` |
-| Edit properties | Select node/edge, modify in property panel |
-| Undo / Redo | `Ctrl+Z` / `Ctrl+Y` |
-| Save | `Ctrl+S` or **Graph > Save** |
+| Draw mode | `D` — click to place chain of connected nodes |
+| Edge mode | `E` — click two nodes to connect |
+| Split edge | `S` — split nearest edge at cursor |
+| Context menu | Right-click — Delete, Connect, Split, Merge, Straighten, Validate |
+| Auto-connect | Right-click > Auto-Connect Nearby (joins close endpoints) |
+| Validate | Right-click > Validate Graph (find disconnected components, dead-ends, orphans) |
+| Undo / Redo | `Ctrl+Z` / `Ctrl+Shift+Z` (independent from world graph undo) |
+| Save | **Graph > Save Road Graph** or **Save Road Graph As...** |
 
 ## Recommended Workflow
 

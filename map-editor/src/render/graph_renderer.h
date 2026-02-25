@@ -5,7 +5,7 @@ namespace mapedit {
 
 struct Canvas;
 class WorldGraphData;
-struct Selection;
+struct MultiSelection;
 
 struct LayerVisibility {
     bool showNodes = true;
@@ -13,6 +13,7 @@ struct LayerVisibility {
     bool showLabels = true;
     bool showGrid = true;
     bool showNavmesh = true;
+    bool showWorldGraph = true;
     bool showRoadGraph = true;
     bool showRoutes = true;
     bool showPath = true;
@@ -35,7 +36,7 @@ struct LayerVisibility {
 class GraphRenderer {
 public:
     void Render(const Canvas& canvas, const WorldGraphData& graph,
-                uint32_t mapId, const Selection& selection,
+                uint32_t mapId, const MultiSelection& selection,
                 const LayerVisibility& layers);
 
     void RenderRoadOverlay(const Canvas& canvas, const WorldGraphData& roadGraph,

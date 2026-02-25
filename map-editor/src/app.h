@@ -51,6 +51,7 @@
 namespace mapedit {
 
 enum class ViewMode { Mode2D, Mode3D };
+enum class ActiveGraph { ReadOnly, World, Road };
 
 class App {
 public:
@@ -117,8 +118,10 @@ private:
     // Editors
     GraphEditor     m_graphEditor;
     RouteEditor     m_routeEditor;
-    Selection       m_selection;
+    MultiSelection  m_selection;
     UndoRedo        m_undoRedo;
+    UndoRedo        m_roadUndoRedo;
+    ActiveGraph     m_activeGraph = ActiveGraph::ReadOnly;
 
     // Data
     WorldGraphData  m_graphData;
@@ -159,6 +162,7 @@ private:
     uint32_t     m_lastMinimapMapId = 0xFFFFFFFF;
     bool         m_autoBgFromMpq = true;
     bool         m_showLegend = true;
+    bool         m_showHelp = false;
     bool         m_showBgBoundsPopup = false;
     std::string  m_pendingBgImagePath;
     float        m_bgBoundsMinX = 0, m_bgBoundsMaxX = 0;

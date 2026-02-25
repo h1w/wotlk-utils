@@ -7,12 +7,14 @@
 #include <imgui.h>
 #include <cstring>
 #include <cmath>
+#include <algorithm>
+#include <vector>
 
 namespace mapedit {
 
 static constexpr float kTileSize = 533.33333f;
 
-void PropertyPanel::Render(WorldGraphData& graph, Selection& selection, uint32_t mapId,
+void PropertyPanel::Render(WorldGraphData& graph, MultiSelection& selection, uint32_t mapId,
                            const Canvas& canvas, TileCache& tileCache, UndoContext& undo) {
     ImGuiViewport* vp = ImGui::GetMainViewport();
     float panelW = 280.0f;
@@ -27,7 +29,7 @@ void PropertyPanel::Render(WorldGraphData& graph, Selection& selection, uint32_t
     ImGui::Begin("Properties", nullptr,
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 
-    if (!selection.HasSelection()) {
+    if (selection.Empty()) {
         ImGui::TextDisabled("No selection");
         ImGui::Separator();
         ImGui::Text("Nodes: %d", static_cast<int>(graph.GetNodes().size()));
@@ -35,8 +37,9 @@ void PropertyPanel::Render(WorldGraphData& graph, Selection& selection, uint32_t
         if (graph.IsDirty())
             ImGui::TextColored(ImVec4(1,1,0,1), "Unsaved changes");
     }
-    else if (selection.IsNode()) {
-        auto* node = graph.GetNode(selection.nodeId);
+    else if (selection.IsSingleNode()) {
+        uint32_t nodeId = selection.SingleNodeId();
+        auto* node = graph.GetNode(nodeId);
         if (node) {
             ImGui::Text("Node #%u", node->id);
             ImGui::Separator();
@@ -112,13 +115,13 @@ void PropertyPanel::Render(WorldGraphData& graph, Selection& selection, uint32_t
             }
         }
     }
-    else if (selection.IsEdge()) {
-        if (selection.edgeIndex < graph.GetEdges().size()) {
-            // Need mutable access
+    else if (selection.IsSingleEdge()) {
+        size_t edgeIdx = selection.SingleEdgeIndex();
+        if (edgeIdx < graph.GetEdges().size()) {
             auto& edges = const_cast<std::vector<WorldEdge>&>(graph.GetEdges());
-            auto& edge = edges[selection.edgeIndex];
+            auto& edge = edges[edgeIdx];
 
-            ImGui::Text("Edge #%zu", selection.edgeIndex);
+            ImGui::Text("Edge #%zu", edgeIdx);
             ImGui::Separator();
 
             ImGui::Text("From: %u", edge.fromNode);
@@ -156,10 +159,106 @@ void PropertyPanel::Render(WorldGraphData& graph, Selection& selection, uint32_t
             ImGui::Separator();
             if (ImGui::Button("Delete Edge")) {
                 undo.Snapshot("Delete Edge");
-                size_t idx = selection.edgeIndex;
+                size_t idx = edgeIdx;
                 selection.Clear();
                 graph.RemoveEdge(idx);
             }
+        }
+    }
+    else {
+        // Multi-selection summary
+        ImGui::Text("Selection: %zu nodes, %zu edges",
+                     selection.nodes.size(), selection.edges.size());
+        ImGui::Separator();
+
+        // Bulk type change for nodes
+        if (selection.HasNodes()) {
+            ImGui::SeparatorText("Bulk Node Edit");
+            const char* nodeTypes[] = {"waypoint","flight_master","portal","boat_zeppelin",
+                                        "innkeeper","zone_boundary","dungeon"};
+            static int bulkNodeType = -1;
+            if (ImGui::Combo("Set Type##BulkNode", &bulkNodeType, nodeTypes, IM_ARRAYSIZE(nodeTypes))) {
+                undo.Snapshot("Bulk Set Node Type");
+                for (uint32_t id : selection.nodes) {
+                    auto* node = graph.GetNode(id);
+                    if (node) node->type = static_cast<NodeType>(bulkNodeType);
+                }
+                graph.MarkDirty();
+                bulkNodeType = -1;
+            }
+
+            static char bulkFaction[64] = {};
+            if (ImGui::InputText("Set Faction##Bulk", bulkFaction, sizeof(bulkFaction),
+                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+                undo.Snapshot("Bulk Set Faction");
+                for (uint32_t id : selection.nodes) {
+                    auto* node = graph.GetNode(id);
+                    if (node) node->faction = bulkFaction;
+                }
+                graph.MarkDirty();
+                bulkFaction[0] = '\0';
+            }
+        }
+
+        // Bulk type change for edges
+        if (selection.HasEdges()) {
+            ImGui::SeparatorText("Bulk Edge Edit");
+            const char* edgeTypes[] = {"walk", "flight", "teleport", "boat"};
+            static int bulkEdgeType = -1;
+            if (ImGui::Combo("Set Type##BulkEdge", &bulkEdgeType, edgeTypes, IM_ARRAYSIZE(edgeTypes))) {
+                undo.Snapshot("Bulk Set Edge Type");
+                auto& edges = const_cast<std::vector<WorldEdge>&>(graph.GetEdges());
+                for (size_t idx : selection.edges) {
+                    if (idx < edges.size())
+                        edges[idx].type = static_cast<EdgeType>(bulkEdgeType);
+                }
+                graph.MarkDirty();
+                bulkEdgeType = -1;
+            }
+
+            static int bulkBidir = -1;
+            const char* bidirOpts[] = {"One-way", "Bidirectional"};
+            if (ImGui::Combo("Direction##Bulk", &bulkBidir, bidirOpts, IM_ARRAYSIZE(bidirOpts))) {
+                undo.Snapshot("Bulk Set Bidirectional");
+                auto& edges = const_cast<std::vector<WorldEdge>&>(graph.GetEdges());
+                for (size_t idx : selection.edges) {
+                    if (idx < edges.size())
+                        edges[idx].bidirectional = (bulkBidir == 1);
+                }
+                graph.MarkDirty();
+                bulkBidir = -1;
+            }
+
+            if (ImGui::Button("Recalc Costs")) {
+                undo.Snapshot("Recalc Edge Costs");
+                auto& edges = const_cast<std::vector<WorldEdge>&>(graph.GetEdges());
+                for (size_t idx : selection.edges) {
+                    if (idx >= edges.size()) continue;
+                    auto& edge = edges[idx];
+                    auto* from = graph.GetNode(edge.fromNode);
+                    auto* to = graph.GetNode(edge.toNode);
+                    if (from && to) {
+                        float dx = from->x - to->x;
+                        float dy = from->y - to->y;
+                        edge.cost = std::sqrt(dx * dx + dy * dy) / 7.0f;
+                    }
+                }
+                graph.MarkDirty();
+            }
+        }
+
+        ImGui::Separator();
+        if (ImGui::Button("Delete All Selected")) {
+            undo.Snapshot("Delete Selection");
+            // Delete edges first (sort descending to preserve indices)
+            std::vector<size_t> edgeList(selection.edges.begin(), selection.edges.end());
+            std::sort(edgeList.begin(), edgeList.end(), std::greater<size_t>());
+            for (size_t idx : edgeList)
+                graph.RemoveEdge(idx);
+            // Delete nodes (cascade-deletes their edges)
+            for (uint32_t id : selection.nodes)
+                graph.RemoveNode(id);
+            selection.Clear();
         }
     }
 

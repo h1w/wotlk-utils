@@ -122,6 +122,7 @@ bool App::Initialize(HINSTANCE hInstance) {
     m_layers.showNodes = m_settings.showNodes;
     m_layers.showEdges = m_settings.showEdges;
     m_layers.showLabels = m_settings.showLabels;
+    m_layers.showWorldGraph = m_settings.showWorldGraph;
     m_layers.showRoadGraph = m_settings.showRoadGraph;
     m_layers.showRoutes = m_settings.showRoutes;
     m_layers.showPath = m_settings.showPath;
@@ -369,25 +370,27 @@ void App::RenderFrame() {
             ImGui::EndMenu();
         }
 
-        // Edit menu (Undo/Redo)
-        if (ImGui::BeginMenu("Edit")) {
+        // Edit menu (Undo/Redo — routes to active graph, disabled in ReadOnly)
+        if (ImGui::BeginMenu("Edit", m_activeGraph != ActiveGraph::ReadOnly)) {
+            auto& activeUndo = (m_activeGraph == ActiveGraph::Road) ? m_roadUndoRedo : m_undoRedo;
+            auto& activeGraph = (m_activeGraph == ActiveGraph::Road) ? m_roadGraphData : m_graphData;
             char undoLabel[128];
-            snprintf(undoLabel, sizeof(undoLabel), "Undo %s", m_undoRedo.UndoDescription());
-            if (ImGui::MenuItem(undoLabel, "Ctrl+Z", false, m_undoRedo.CanUndo()))
-                m_undoRedo.Undo(m_graphData, m_routeData);
+            snprintf(undoLabel, sizeof(undoLabel), "Undo %s", activeUndo.UndoDescription());
+            if (ImGui::MenuItem(undoLabel, "Ctrl+Z", false, activeUndo.CanUndo()))
+                activeUndo.Undo(activeGraph, m_routeData);
 
             char redoLabel[128];
-            snprintf(redoLabel, sizeof(redoLabel), "Redo %s", m_undoRedo.RedoDescription());
-            if (ImGui::MenuItem(redoLabel, "Ctrl+Shift+Z", false, m_undoRedo.CanRedo()))
-                m_undoRedo.Redo(m_graphData, m_routeData);
+            snprintf(redoLabel, sizeof(redoLabel), "Redo %s", activeUndo.RedoDescription());
+            if (ImGui::MenuItem(redoLabel, "Ctrl+Shift+Z", false, activeUndo.CanRedo()))
+                activeUndo.Redo(activeGraph, m_routeData);
 
             ImGui::Separator();
-            ImGui::TextDisabled("Undo: %zu / %zu", m_undoRedo.UndoCount(), UndoRedo::kMaxDepth);
+            ImGui::TextDisabled("Undo: %zu / %zu", activeUndo.UndoCount(), UndoRedo::kMaxDepth);
             ImGui::EndMenu();
         }
 
         // Graph menu (Phase 3)
-        auto menuActions = m_mainMenu.Render(m_graphData);
+        auto menuActions = m_mainMenu.Render(m_graphData, m_roadGraphData);
         if (menuActions.openGraph) {
             m_graphData.LoadFromFile(menuActions.graphFilePath);
             m_undoRedo.Clear();
@@ -403,6 +406,14 @@ void App::RenderFrame() {
         if (menuActions.saveGraphAs) {
             m_graphData.SaveToFile(menuActions.graphFilePath);
             m_graphData.ClearDirty();
+        }
+        if (menuActions.saveRoadGraph && m_roadGraphData.IsLoaded()) {
+            m_roadGraphData.SaveToFile(m_roadGraphData.GetFilePath());
+            m_roadGraphData.ClearDirty();
+        }
+        if (menuActions.saveRoadGraphAs) {
+            m_roadGraphData.SaveToFile(menuActions.roadGraphFilePath);
+            m_roadGraphData.ClearDirty();
         }
 
         // Route menu
@@ -483,6 +494,7 @@ void App::RenderFrame() {
             ImGui::MenuItem("Routes", nullptr, &m_layers.showRoutes);
             ImGui::MenuItem("Path Test", nullptr, &m_layers.showPath);
             ImGui::MenuItem("Legend", nullptr, &m_showLegend);
+            ImGui::MenuItem("Help / Shortcuts", "F1", &m_showHelp);
             {
                 bool logOpen = m_logWindow.IsOpen();
                 if (ImGui::MenuItem("Log", nullptr, &logOpen))
@@ -544,6 +556,10 @@ void App::RenderFrame() {
         ImGui::EndMainMenuBar();
     }
 
+    // F1 toggle help
+    if (ImGui::IsKeyPressed(ImGuiKey_F1) && !ImGui::GetIO().WantTextInput)
+        m_showHelp = !m_showHelp;
+
     // === Toolbar ===
     RenderMapSelector();
 
@@ -591,13 +607,15 @@ void App::RenderFrame() {
         }
     }
 
-    // === Keyboard shortcuts: Undo/Redo ===
-    if (!ImGui::GetIO().WantTextInput) {
+    // === Keyboard shortcuts: Undo/Redo (active graph, disabled in ReadOnly) ===
+    if (!ImGui::GetIO().WantTextInput && m_activeGraph != ActiveGraph::ReadOnly) {
+        auto& activeUndo = (m_activeGraph == ActiveGraph::Road) ? m_roadUndoRedo : m_undoRedo;
+        auto& activeGraph = (m_activeGraph == ActiveGraph::Road) ? m_roadGraphData : m_graphData;
         if (ImGui::GetIO().KeyCtrl && ImGui::GetIO().KeyShift &&
             ImGui::IsKeyPressed(ImGuiKey_Z)) {
-            m_undoRedo.Redo(m_graphData, m_routeData);
+            activeUndo.Redo(activeGraph, m_routeData);
         } else if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) {
-            m_undoRedo.Undo(m_graphData, m_routeData);
+            activeUndo.Undo(activeGraph, m_routeData);
         }
     }
 
@@ -640,8 +658,8 @@ void App::RenderFrame() {
                     m_camera3d.targetX = m_playerMarker.posX;
                     m_camera3d.targetY = m_playerMarker.posY;
                     m_camera3d.targetZ = m_playerMarker.posZ + 2.0f;
-                } else if (m_selection.IsNode()) {
-                    const auto* node = m_graphData.GetNode(m_selection.nodeId);
+                } else if (m_selection.IsSingleNode()) {
+                    const auto* node = m_graphData.GetNode(m_selection.SingleNodeId());
                     if (node) {
                         m_camera3d.targetX = node->x;
                         m_camera3d.targetY = node->y;
@@ -664,6 +682,10 @@ void App::RenderFrame() {
         if (m_graphData.IsLoaded() && m_graphData.IsDirty()) {
             m_graphData.SaveToFile(m_graphData.GetFilePath());
             m_graphData.ClearDirty();
+        }
+        if (m_roadGraphData.IsLoaded() && m_roadGraphData.IsDirty()) {
+            m_roadGraphData.SaveToFile(m_roadGraphData.GetFilePath());
+            m_roadGraphData.ClearDirty();
         }
         if (m_routeData.IsLoaded() && m_routeData.IsDirty()) {
             m_routeData.SaveToFile(m_routeData.GetFilePath());
@@ -726,9 +748,14 @@ void App::RenderFrame2D() {
         inputConsumed = m_routeEditor.ProcessInput(m_canvas, m_routeData, m_currentMapId, undo);
     }
 
-    // Graph editor input
-    if (!inputConsumed && m_graphData.IsLoaded() && m_layers.showNodes) {
-        inputConsumed = m_graphEditor.ProcessInput(m_canvas, m_graphData, m_selection, m_currentMapId, undo);
+    // Graph editor input (routes to active graph; disabled in ReadOnly)
+    if (m_activeGraph != ActiveGraph::ReadOnly) {
+        auto& activeGraph = (m_activeGraph == ActiveGraph::Road) ? m_roadGraphData : m_graphData;
+        auto& activeUndo = (m_activeGraph == ActiveGraph::Road) ? m_roadUndoRedo : m_undoRedo;
+        UndoContext activeUndoCtx{activeUndo, activeGraph, m_routeData};
+        if (!inputConsumed && activeGraph.IsLoaded() && m_layers.showNodes) {
+            inputConsumed = m_graphEditor.ProcessInput(m_canvas, activeGraph, m_selection, m_currentMapId, activeUndoCtx);
+        }
     }
 
     // Canvas pan/zoom (only if no editor consumed the input)
@@ -763,13 +790,28 @@ void App::RenderFrame2D() {
     if (m_layers.showNavmesh)
         m_navmeshRenderer.Render(m_canvas, m_tileCache, m_layers.navmeshMinZoom);
 
-    // Road graph overlay (underneath main graph)
-    if (m_layers.showRoadGraph && m_roadGraphData.IsLoaded())
-        m_graphRenderer.RenderRoadOverlay(m_canvas, m_roadGraphData, m_currentMapId);
-
-    // Graph (nodes + edges)
-    if (m_graphData.IsLoaded())
-        m_graphRenderer.Render(m_canvas, m_graphData, m_currentMapId, m_selection, m_layers);
+    // Render graphs with independent visibility
+    // Active graph gets full selection rendering, inactive gets overlay rendering
+    // ReadOnly: world graph full style (no selection), road graph orange overlay
+    {
+        MultiSelection emptySel; // empty selection for ReadOnly mode
+        if (m_activeGraph == ActiveGraph::ReadOnly) {
+            if (m_layers.showRoadGraph && m_roadGraphData.IsLoaded())
+                m_graphRenderer.RenderRoadOverlay(m_canvas, m_roadGraphData, m_currentMapId);
+            if (m_layers.showWorldGraph && m_graphData.IsLoaded())
+                m_graphRenderer.Render(m_canvas, m_graphData, m_currentMapId, emptySel, m_layers);
+        } else if (m_activeGraph == ActiveGraph::World) {
+            if (m_layers.showRoadGraph && m_roadGraphData.IsLoaded())
+                m_graphRenderer.RenderRoadOverlay(m_canvas, m_roadGraphData, m_currentMapId);
+            if (m_layers.showWorldGraph && m_graphData.IsLoaded())
+                m_graphRenderer.Render(m_canvas, m_graphData, m_currentMapId, m_selection, m_layers);
+        } else {
+            if (m_layers.showWorldGraph && m_graphData.IsLoaded())
+                m_graphRenderer.RenderRoadOverlay(m_canvas, m_graphData, m_currentMapId);
+            if (m_layers.showRoadGraph && m_roadGraphData.IsLoaded())
+                m_graphRenderer.Render(m_canvas, m_roadGraphData, m_currentMapId, m_selection, m_layers);
+        }
+    }
 
     // Routes
     if (m_layers.showRoutes)
@@ -780,8 +822,13 @@ void App::RenderFrame2D() {
         m_pathRenderer.Render(m_canvas);
 
     // === UI Panels ===
-    m_propertyPanel.Render(m_graphData, m_selection, m_currentMapId,
-                           m_canvas, m_tileCache, undo);
+    {
+        auto& activeGraph = (m_activeGraph == ActiveGraph::Road) ? m_roadGraphData : m_graphData;
+        auto& activeUndo = (m_activeGraph == ActiveGraph::Road) ? m_roadUndoRedo : m_undoRedo;
+        UndoContext activeUndoCtx{activeUndo, activeGraph, m_routeData};
+        m_propertyPanel.Render(activeGraph, m_selection, m_currentMapId,
+                               m_canvas, m_tileCache, activeUndoCtx);
+    }
 
     m_routeEditor.RenderPanel(m_routeData, m_currentMapId, undo);
     m_layerPanel.Render(m_layers, m_bgMode, &m_minimapCache);
@@ -831,6 +878,69 @@ void App::RenderFrame2D() {
             legendItem(ImVec4(0.20f, 1.0f, 0.20f, 0.86f), "Point B");
             legendItem(ImVec4(1.0f, 1.0f, 0.0f, 0.86f), "Path");
             legendItem(ImVec4(1.0f, 0.65f, 0.0f, 0.86f), "Path (partial)");
+        }
+        ImGui::End();
+    }
+
+    // === Help / Shortcuts panel ===
+    if (m_showHelp) {
+        ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Help / Shortcuts", &m_showHelp, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::SeparatorText("Navigation");
+            ImGui::BulletText("Left Drag on empty space: pan canvas");
+            ImGui::BulletText("Scroll Wheel: zoom in/out");
+
+            ImGui::SeparatorText("Selection");
+            ImGui::BulletText("Left Click on node/edge: select");
+            ImGui::BulletText("Shift + Click: toggle (add/remove from selection)");
+            ImGui::BulletText("Left Drag on empty space: box select");
+            ImGui::BulletText("Alt + Drag: lasso (freeform) select");
+            ImGui::BulletText("Ctrl+A: select all nodes on current map");
+            ImGui::BulletText("Escape: clear selection");
+
+            ImGui::SeparatorText("Node Editing");
+            ImGui::BulletText("Double Click: add new node");
+            ImGui::BulletText("Drag selected node(s): move");
+            ImGui::BulletText("Ctrl + Drag (single node): snap to nearest");
+            ImGui::BulletText("Delete: delete selected nodes & edges");
+            ImGui::BulletText("S: split nearest edge at cursor position");
+
+            ImGui::SeparatorText("Draw Mode (D)");
+            ImGui::BulletText("Press D to toggle draw mode");
+            ImGui::BulletText("Left Click: place node, auto-connect to previous");
+            ImGui::BulletText("Left Click on existing node: continue from it");
+            ImGui::BulletText("Right Click on node: delete it");
+            ImGui::BulletText("Right Click on empty: break chain (next click starts new)");
+            ImGui::BulletText("Press D again to exit draw mode");
+
+            ImGui::SeparatorText("Edge Mode (E)");
+            ImGui::BulletText("Press E to toggle edge creation mode");
+            ImGui::BulletText("Click 1st node, then 2nd node: creates edge");
+            ImGui::BulletText("Press E again to exit edge mode");
+
+            ImGui::SeparatorText("Context Menu (Right Click)");
+            ImGui::BulletText("Add Node Here: create node at cursor");
+            ImGui::BulletText("Connect Nodes: link 2 selected nodes");
+            ImGui::BulletText("Split Edge: insert midpoint on edge");
+            ImGui::BulletText("Merge Nodes: merge 2+ nodes into one");
+            ImGui::BulletText("Straighten Path: align 3+ chain nodes");
+            ImGui::BulletText("Auto-Connect Endpoints: link nearby dead-ends");
+            ImGui::BulletText("Validate Graph: check for issues");
+            ImGui::BulletText("Delete Selected: remove selection");
+
+            ImGui::SeparatorText("Undo / Save");
+            ImGui::BulletText("Ctrl+Z: undo");
+            ImGui::BulletText("Ctrl+Y: redo");
+            ImGui::BulletText("Ctrl+S: save all");
+
+            ImGui::SeparatorText("Active Graph");
+            ImGui::BulletText("Toolbar toggle: switch World / Road graph");
+            ImGui::BulletText("Editing, undo, save route to active graph");
+
+            ImGui::SeparatorText("Other");
+            ImGui::BulletText("F1: toggle this help panel");
+            ImGui::BulletText("View > Legend: color reference");
+            ImGui::BulletText("View > Log: application log");
         }
         ImGui::End();
     }
@@ -970,8 +1080,17 @@ void App::RenderFrame3D() {
     if (m_layers.showGrid)
         m_gridRenderer3d.Render(m_camera3d, m_primitives3d, m_tileIndex, m_currentMapId);
 
-    if (m_graphData.IsLoaded())
-        m_graphRenderer3d.Render(m_camera3d, m_primitives3d, m_graphData, m_currentMapId, m_selection, m_layers);
+    {
+        MultiSelection emptySel;
+        if (m_activeGraph == ActiveGraph::ReadOnly) {
+            if (m_graphData.IsLoaded())
+                m_graphRenderer3d.Render(m_camera3d, m_primitives3d, m_graphData, m_currentMapId, emptySel, m_layers);
+        } else {
+            auto& activeGraph = (m_activeGraph == ActiveGraph::Road) ? m_roadGraphData : m_graphData;
+            if (activeGraph.IsLoaded())
+                m_graphRenderer3d.Render(m_camera3d, m_primitives3d, activeGraph, m_currentMapId, m_selection, m_layers);
+        }
+    }
 
     if (m_layers.showRoutes)
         m_routeRenderer3d.Render(m_camera3d, m_primitives3d, m_routeData, m_routeEditor, m_currentMapId);
@@ -1086,10 +1205,14 @@ void App::RenderFrame3D() {
     }
 
     // === UI Panels (same as 2D) ===
-    UndoContext undo{m_undoRedo, m_graphData, m_routeData};
-    m_propertyPanel.Render(m_graphData, m_selection, m_currentMapId,
-                           m_canvas, m_tileCache, undo);
-    m_routeEditor.RenderPanel(m_routeData, m_currentMapId, undo);
+    {
+        auto& activeGraph = (m_activeGraph == ActiveGraph::Road) ? m_roadGraphData : m_graphData;
+        auto& activeUndo = (m_activeGraph == ActiveGraph::Road) ? m_roadUndoRedo : m_undoRedo;
+        UndoContext undo{activeUndo, activeGraph, m_routeData};
+        m_propertyPanel.Render(activeGraph, m_selection, m_currentMapId,
+                               m_canvas, m_tileCache, undo);
+        m_routeEditor.RenderPanel(m_routeData, m_currentMapId, undo);
+    }
     m_layerPanel.Render(m_layers, m_bgMode, &m_minimapCache);
     m_logWindow.Render();
 
@@ -1298,10 +1421,43 @@ void App::RenderMapSelector() {
         auto& tiles = m_tileIndex.GetTilesForMap(m_currentMapId);
         ImGui::Text("(%d tiles)", static_cast<int>(tiles.size()));
 
-        // Edge mode indicator
-        if (m_graphEditor.IsEdgeMode()) {
+        // Active graph mode toggle (ReadOnly -> World -> Road -> ReadOnly)
+        ImGui::SameLine();
+        {
+            const char* label = "Read Only";
+            ImVec4 btnColor(0.4f, 0.4f, 0.4f, 1.0f);
+            if (m_activeGraph == ActiveGraph::World) {
+                label = "World Graph";
+                btnColor = ImVec4(0.2f, 0.5f, 0.7f, 1.0f);
+            } else if (m_activeGraph == ActiveGraph::Road) {
+                label = "Road Graph";
+                btnColor = ImVec4(0.7f, 0.5f, 0.2f, 1.0f);
+            }
+            ImGui::PushStyleColor(ImGuiCol_Button, btnColor);
+            if (ImGui::Button(label)) {
+                if (m_activeGraph == ActiveGraph::ReadOnly)
+                    m_activeGraph = ActiveGraph::World;
+                else if (m_activeGraph == ActiveGraph::World)
+                    m_activeGraph = ActiveGraph::Road;
+                else
+                    m_activeGraph = ActiveGraph::ReadOnly;
+                m_selection.Clear();
+                m_graphEditor.SetEdgeMode(false);
+                m_graphEditor.SetDrawMode(false);
+            }
+            ImGui::PopStyleColor();
+        }
+
+        // Edge mode indicator (not in ReadOnly)
+        if (m_activeGraph != ActiveGraph::ReadOnly && m_graphEditor.IsEdgeMode()) {
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(1, 0.8f, 0, 1), "[Edge Mode - E to toggle]");
+        }
+
+        // Draw mode indicator (not in ReadOnly)
+        if (m_activeGraph != ActiveGraph::ReadOnly && m_graphEditor.IsDrawMode()) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1), "[Draw Mode - D to toggle]");
         }
 
         // Path test state
@@ -1319,25 +1475,30 @@ void App::RenderMapSelector() {
             ImGui::TextDisabled("Navmesh: %d tiles loaded", m_tileCache.GetLoadedCount());
         }
 
-        // Undo/Redo buttons (right side of toolbar)
+        // Undo/Redo buttons (right side of toolbar, routed to active graph, hidden in ReadOnly)
         {
             float undoX = vp->WorkPos.x + vp->WorkSize.x - 480;
             ImGui::SameLine(undoX - ImGui::GetCursorPosX() + ImGui::GetCursorPosX());
             ImGui::SetCursorPosX(undoX);
 
-            ImGui::BeginDisabled(!m_undoRedo.CanUndo());
-            if (ImGui::Button("Undo"))
-                m_undoRedo.Undo(m_graphData, m_routeData);
-            ImGui::EndDisabled();
+            if (m_activeGraph != ActiveGraph::ReadOnly) {
+                auto& activeUndo = (m_activeGraph == ActiveGraph::Road) ? m_roadUndoRedo : m_undoRedo;
+                auto& activeGraph = (m_activeGraph == ActiveGraph::Road) ? m_roadGraphData : m_graphData;
 
-            ImGui::SameLine();
-            ImGui::BeginDisabled(!m_undoRedo.CanRedo());
-            if (ImGui::Button("Redo"))
-                m_undoRedo.Redo(m_graphData, m_routeData);
-            ImGui::EndDisabled();
+                ImGui::BeginDisabled(!activeUndo.CanUndo());
+                if (ImGui::Button("Undo"))
+                    activeUndo.Undo(activeGraph, m_routeData);
+                ImGui::EndDisabled();
 
-            ImGui::SameLine();
-            ImGui::TextDisabled("%zu/%zu", m_undoRedo.UndoCount(), UndoRedo::kMaxDepth);
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!activeUndo.CanRedo());
+                if (ImGui::Button("Redo"))
+                    activeUndo.Redo(activeGraph, m_routeData);
+                ImGui::EndDisabled();
+
+                ImGui::SameLine();
+                ImGui::TextDisabled("%zu/%zu", activeUndo.UndoCount(), UndoRedo::kMaxDepth);
+            }
         }
 
         // Performance overlay (right of undo/redo)
@@ -1478,6 +1639,7 @@ void App::SaveSettings() {
     m_settings.showNodes = m_layers.showNodes;
     m_settings.showEdges = m_layers.showEdges;
     m_settings.showLabels = m_layers.showLabels;
+    m_settings.showWorldGraph = m_layers.showWorldGraph;
     m_settings.showRoadGraph = m_layers.showRoadGraph;
     m_settings.showRoutes = m_layers.showRoutes;
     m_settings.showPath = m_layers.showPath;

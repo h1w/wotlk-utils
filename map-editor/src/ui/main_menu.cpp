@@ -36,7 +36,7 @@ static std::string SaveFileDialog(const char* filter, const char* title) {
     return {};
 }
 
-MainMenu::Actions MainMenu::Render(const WorldGraphData& graph) {
+MainMenu::Actions MainMenu::Render(const WorldGraphData& graph, const WorldGraphData& roadGraph) {
     Actions actions;
 
     // Note: This is called inside an existing BeginMainMenuBar block from App
@@ -54,14 +54,24 @@ MainMenu::Actions MainMenu::Render(const WorldGraphData& graph) {
                 actions.openRoadGraph = true;
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Save", "Ctrl+S", false, graph.IsLoaded())) {
+        if (ImGui::MenuItem("Save Graph", "Ctrl+S", false, graph.IsLoaded())) {
             actions.saveGraph = true;
         }
-        if (ImGui::MenuItem("Save As...", nullptr, false, graph.IsLoaded())) {
+        if (ImGui::MenuItem("Save Graph As...", nullptr, false, graph.IsLoaded())) {
             actions.graphFilePath = SaveFileDialog(
                 "JSON files\0*.json\0All files\0*.*\0", "Save World Graph");
             if (!actions.graphFilePath.empty())
                 actions.saveGraphAs = true;
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Save Road Graph", nullptr, false, roadGraph.IsLoaded())) {
+            actions.saveRoadGraph = true;
+        }
+        if (ImGui::MenuItem("Save Road Graph As...", nullptr, false, roadGraph.IsLoaded())) {
+            actions.roadGraphFilePath = SaveFileDialog(
+                "JSON files\0*.json\0All files\0*.*\0", "Save Road Graph");
+            if (!actions.roadGraphFilePath.empty())
+                actions.saveRoadGraphAs = true;
         }
         ImGui::EndMenu();
     }

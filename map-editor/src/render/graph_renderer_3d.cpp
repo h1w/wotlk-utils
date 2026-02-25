@@ -40,7 +40,7 @@ static uint32_t EdgeColorABGR(EdgeType type) {
 
 void Graph3DRenderer::Render(const Camera3D& camera, Primitives3D& prims,
                               const WorldGraphData& graph, uint32_t mapId,
-                              const Selection& selection, const LayerVisibility& layers) {
+                              const MultiSelection& selection, const LayerVisibility& layers) {
     auto* fgDL = ImGui::GetForegroundDrawList();
 
     // Draw edges first so nodes render on top
@@ -55,7 +55,7 @@ void Graph3DRenderer::Render(const Camera3D& camera, Primitives3D& prims,
             if (from->mapId != mapId && to->mapId != mapId) continue;
 
             uint32_t color = EdgeColorABGR(edge.type);
-            if (selection.IsEdge() && selection.edgeIndex == i)
+            if (selection.IsEdgeSelected(i))
                 color = IM_COL32(255, 255, 0, 255); // selected: bright yellow
 
             // Elevate slightly above ground to reduce z-fighting with navmesh
@@ -72,7 +72,7 @@ void Graph3DRenderer::Render(const Camera3D& camera, Primitives3D& prims,
 
             uint32_t color = NodeColorABGR(node.type);
             float    radius = 3.0f;
-            bool     selected = selection.IsNode() && selection.nodeId == node.id;
+            bool     selected = selection.IsNodeSelected(node.id);
 
             if (selected) {
                 // White outer ring for selected node
