@@ -490,9 +490,9 @@ void App::RenderFrame() {
         // View menu
         if (ImGui::BeginMenu("View")) {
             if (ImGui::MenuItem("Mode: 2D", "Ctrl+1", m_viewMode == ViewMode::Mode2D))
-                m_viewMode = ViewMode::Mode2D;
+                SetViewMode(ViewMode::Mode2D);
             if (ImGui::MenuItem("Mode: 3D", "Ctrl+2", m_viewMode == ViewMode::Mode3D))
-                m_viewMode = ViewMode::Mode3D;
+                SetViewMode(ViewMode::Mode3D);
             if (m_viewMode == ViewMode::Mode3D) {
                 ImGui::Separator();
                 if (ImGui::MenuItem("Orbit Camera", "V",
@@ -639,9 +639,9 @@ void App::RenderFrame() {
     // === View mode toggle shortcuts ===
     if (!ImGui::GetIO().WantTextInput) {
         if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_1))
-            m_viewMode = ViewMode::Mode2D;
+            SetViewMode(ViewMode::Mode2D);
         if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_2))
-            m_viewMode = ViewMode::Mode3D;
+            SetViewMode(ViewMode::Mode3D);
 
         // 3D mode shortcuts
         if (m_viewMode == ViewMode::Mode3D) {
@@ -1024,7 +1024,7 @@ void App::RenderFrame2D() {
     const char* mapName = "No Map";
     if (auto* mi = FindMap(m_currentMapId))
         mapName = mi->name;
-    m_statusBar.Render(m_canvas, m_currentMapId, mapName);
+    m_statusBar.Render(m_canvas, m_currentMapId, mapName, &m_heightSampler);
 }
 
 // ---------------------------------------------------------------------------
@@ -1419,7 +1419,7 @@ void App::RenderFrame3D() {
     const char* mapName = "No Map";
     if (auto* mi = FindMap(m_currentMapId))
         mapName = mi->name;
-    m_statusBar.Render3D(m_camera3d, m_currentMapId, mapName);
+    m_statusBar.Render3D(m_camera3d, m_currentMapId, mapName, &m_heightSampler);
 }
 
 void App::RenderMapSelector() {
@@ -1717,6 +1717,25 @@ void App::SaveSettings() {
     }
 
     m_settings.Save();
+}
+
+void App::SetViewMode(ViewMode mode) {
+    if (mode == m_viewMode) return;
+
+    bool orbit = (m_camera3d.cameraMode == Camera3D::CameraMode::Orbit);
+
+    if (mode == ViewMode::Mode3D && orbit) {
+        // 2D → 3D orbit: sync canvas center to orbit camera target
+        m_camera3d.targetX = m_canvas.centerX;
+        m_camera3d.targetY = m_canvas.centerY;
+    } else if (mode == ViewMode::Mode2D && orbit) {
+        // 3D orbit → 2D: sync orbit target to canvas center
+        m_canvas.centerX = m_camera3d.targetX;
+        m_canvas.centerY = m_camera3d.targetY;
+    }
+    // Free camera: no position sync in either direction
+
+    m_viewMode = mode;
 }
 
 bool App::HasUnsavedChanges() const {

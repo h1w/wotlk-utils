@@ -76,6 +76,7 @@ private:
     bool HasUnsavedChanges() const;
     void SaveAllDirty();
     void RequestQuit();
+    void SetViewMode(ViewMode mode);
 
     // Win32 / DX11
     HWND                    m_hwnd = nullptr;
