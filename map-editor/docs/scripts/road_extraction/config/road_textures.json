@@ -1,0 +1,25 @@
+{
+    "global_patterns_high": [
+        "road", "cobble", "cobblestone", "flagstone", "paving", "pavement", "dirtroad"
+    ],
+    "global_patterns_medium": [
+        "dirt", "path", "gravel"
+    ],
+    "global_exclude": [
+        "grass", "forest", "leaves", "rock", "cliff", "snow", "sand",
+        "lava", "moss", "water", "root", "fern", "weed", "mud", "swamp", "marsh",
+        "base", "scrub", "brush", "flower", "field"
+    ],
+    "zone_overrides": {
+        "Elwynn": {
+            "include": ["ElwynnDirt01.blp"],
+            "exclude": ["ElwynnDirtCliff.blp"]
+        },
+        "DunMorogh": {
+            "include": ["DunMoroghSnowTrack.blp", "DunMoroghSnowDirt.blp"]
+        },
+        "Westfall": {
+            "include": ["WestfallDirt01.blp"]
+        }
+    }
+}

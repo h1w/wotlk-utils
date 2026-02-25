@@ -1,0 +1,15 @@
+[project]
+name = "wow-road-extraction"
+version = "0.1.0"
+description = "Extract road networks from WoW 3.3.5a ADT terrain files"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "Pillow>=10.0",
+    "scikit-image>=0.21",
+    "scipy>=1.11",
+    "networkx>=3.1",
+    "sknw>=0.14",
+    "rdp>=0.8",
+    "matplotlib>=3.7",
+]
