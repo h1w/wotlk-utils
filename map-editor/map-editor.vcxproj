@@ -140,6 +140,7 @@ copy /Y "C:\vcpkg\installed\x64-windows\bin\StormLib.dll" "$(OutDir)StormLib.dll
     <ClInclude Include="src\mpq\mpq_archive.h" />
     <ClInclude Include="src\mpq\world_map_loader.h" />
     <ClInclude Include="src\simulation\player_marker.h" />
+    <ClInclude Include="src\data\terrain_height_sampler.h" />
     <ClInclude Include="src\data\terrain_loader.h" />
     <ClInclude Include="src\data\terrain_mesh.h" />
     <ClInclude Include="src\render\terrain_pipeline.h" />
@@ -194,6 +195,7 @@ copy /Y "C:\vcpkg\installed\x64-windows\bin\StormLib.dll" "$(OutDir)StormLib.dll
     <ClCompile Include="src\mpq\mpq_archive.cpp" />
     <ClCompile Include="src\mpq\world_map_loader.cpp" />
     <ClCompile Include="src\simulation\player_marker.cpp" />
+    <ClCompile Include="src\data\terrain_height_sampler.cpp" />
     <ClCompile Include="src\data\terrain_loader.cpp" />
     <ClCompile Include="src\data\terrain_mesh.cpp" />
     <ClCompile Include="src\render\terrain_pipeline.cpp" />

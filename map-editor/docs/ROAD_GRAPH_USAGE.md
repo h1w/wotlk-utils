@@ -44,7 +44,7 @@ All fields match the C++ `WorldGraphData` loader (`world_graph_data.cpp`):
 | Node `name` | `""` | Empty — can be filled in editor |
 | Node `map` | mapId (0, 1, 530, 571) | Auto-set from `--map` argument |
 | Node `x`, `y` | WoW world coords | Road centerline positions |
-| Node `z` | `0.0` | No height from alpha maps |
+| Node `z` | `0.0` | No height from alpha maps; use **Tools > Assign Terrain Heights** to populate |
 | Node `type` | `"waypoint"` | |
 | Edge `type` | `"walk"` | |
 | Edge `cost` | Euclidean distance (yards) | Between endpoints |
@@ -63,10 +63,21 @@ The `--map` name is automatically mapped to the correct WoW DBC mapId:
 | `Expansion01` | 530 | Outland |
 | `Northrend` | 571 | Northrend |
 
+## Assigning Terrain Heights
+
+Extracted road nodes have `z=0` because alpha maps contain no elevation data. To assign real terrain heights:
+
+1. Set the mmaps directory (**File > Set mmaps Directory**) — this auto-detects the TC data path containing `.map` heightmap files
+2. Load the road graph (**Graph > Open Road Graph...**)
+3. **Tools > Assign Terrain Heights** — batch-updates all nodes on the current map with terrain-sampled Z values
+4. Save (**Graph > Save Road Graph** or `Ctrl+S`)
+
+After assigning heights, road graph nodes sit on the terrain surface and render correctly in 3D mode.
+
+New nodes created via the editor (double-click, draw mode, split edge, context menu) automatically receive terrain-sampled heights when the TC data path is set.
+
 ## Known Limitations
 
-- **Z = 0** — nodes have no height data (alpha maps don't contain elevation)
-- **2D only** — road graph is not rendered in 3D mode (nodes at z=0 have no useful height data)
 - **Straight edges** — the editor renders edges as straight lines between nodes. Node density compensates — junctions are close enough that straight lines approximate curves
 
 ## Editing Road Graphs
@@ -120,3 +131,4 @@ The road graph is directly editable. Click the toolbar mode button to switch to 
 | C++ graph renderer (2D) | `map-editor/src/render/graph_renderer.cpp` |
 | C++ graph renderer (3D) | `map-editor/src/render/graph_renderer_3d.cpp` |
 | C++ graph editor | `map-editor/src/editor/graph_editor.cpp` |
+| C++ terrain height sampler | `map-editor/src/data/terrain_height_sampler.h` / `.cpp` |

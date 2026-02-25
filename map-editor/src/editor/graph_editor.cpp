@@ -2,6 +2,7 @@
 #include "undo_redo.h"
 #include "../canvas/canvas.h"
 #include "../data/world_graph_data.h"
+#include "../data/terrain_height_sampler.h"
 #include <imgui.h>
 #include <cmath>
 #include <algorithm>
@@ -113,6 +114,10 @@ bool GraphEditor::RenderPopups(const Canvas& canvas, WorldGraphData& graph,
             node.x = m_contextMenuWx;
             node.y = m_contextMenuWy;
             node.z = 0;
+            if (m_heightSampler) {
+                auto h = m_heightSampler->SampleHeight(mapId, node.x, node.y);
+                if (h.has_value()) node.z = h.value();
+            }
             node.name = "";
             node.type = NodeType::Waypoint;
             uint32_t id = graph.AddNode(node);
@@ -164,6 +169,10 @@ bool GraphEditor::RenderPopups(const Canvas& canvas, WorldGraphData& graph,
                     mid.x = (from->x + to->x) * 0.5f;
                     mid.y = (from->y + to->y) * 0.5f;
                     mid.z = (from->z + to->z) * 0.5f;
+                    if (m_heightSampler) {
+                        auto h = m_heightSampler->SampleHeight(mid.mapId, mid.x, mid.y);
+                        if (h.has_value()) mid.z = h.value();
+                    }
                     mid.name = "";
                     mid.type = NodeType::Waypoint;
 
@@ -580,6 +589,10 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
                     mid.x = wx;
                     mid.y = wy;
                     mid.z = (from->z + to->z) * 0.5f;
+                    if (m_heightSampler) {
+                        auto h = m_heightSampler->SampleHeight(mid.mapId, mid.x, mid.y);
+                        if (h.has_value()) mid.z = h.value();
+                    }
                     mid.name = "";
                     mid.type = NodeType::Waypoint;
 
@@ -886,6 +899,10 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
                         mid.x = wx;
                         mid.y = wy;
                         mid.z = (efrom->z + eto->z) * 0.5f;
+                        if (m_heightSampler) {
+                            auto h = m_heightSampler->SampleHeight(mid.mapId, mid.x, mid.y);
+                            if (h.has_value()) mid.z = h.value();
+                        }
                         mid.name = "";
                         mid.type = NodeType::Waypoint;
 
@@ -949,6 +966,10 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
                     node.x = wx;
                     node.y = wy;
                     node.z = 0;
+                    if (m_heightSampler) {
+                        auto h = m_heightSampler->SampleHeight(mapId, node.x, node.y);
+                        if (h.has_value()) node.z = h.value();
+                    }
                     node.name = "";
                     node.type = NodeType::Waypoint;
                     uint32_t newId = graph.AddNode(node);
@@ -1091,6 +1112,10 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
         node.x = wx;
         node.y = wy;
         node.z = 0;
+        if (m_heightSampler) {
+            auto h = m_heightSampler->SampleHeight(mapId, node.x, node.y);
+            if (h.has_value()) node.z = h.value();
+        }
         node.name = "";
         node.type = NodeType::Waypoint;
 

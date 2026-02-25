@@ -22,6 +22,7 @@
 #include "render/path_renderer_3d.h"
 #include "render/grid_renderer_3d.h"
 #include "render/ground_plane_3d.h"
+#include "data/terrain_height_sampler.h"
 #include "render/terrain_renderer.h"
 #include "render/building_renderer.h"
 #include "render/graph_renderer.h"
@@ -117,6 +118,9 @@ private:
     PathRenderer    m_pathRenderer;
     MapBackground   m_mapBackground;
     MinimapTileCache m_minimapCache;
+
+    // Height sampling
+    TerrainHeightSampler m_heightSampler;
 
     // Editors
     GraphEditor     m_graphEditor;

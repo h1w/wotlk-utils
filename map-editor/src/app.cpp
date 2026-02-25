@@ -79,6 +79,7 @@ bool App::Initialize(HINSTANCE hInstance) {
             if (!tcDataPath.empty()) {
                 m_terrainRenderer.SetDataPath(tcDataPath);
                 m_buildingRenderer.SetDataPath(tcDataPath);
+                m_heightSampler.SetDataPath(tcDataPath);
                 LOG(INFO) << "[App] TC data path: " << tcDataPath;
             }
         }
@@ -144,6 +145,8 @@ bool App::Initialize(HINSTANCE hInstance) {
     m_vsync        = m_settings.vsync;
     m_fpsLimit     = m_settings.fpsLimit;
     m_showProfiler = m_settings.showProfiler;
+
+    m_graphEditor.SetHeightSampler(&m_heightSampler);
 
     LOG(INFO) << "[App] Initialized";
     return true;
@@ -317,6 +320,7 @@ void App::RenderFrame() {
                                     if (!tcDataPath.empty()) {
                                         m_terrainRenderer.SetDataPath(tcDataPath);
                                         m_buildingRenderer.SetDataPath(tcDataPath);
+                                        m_heightSampler.SetDataPath(tcDataPath);
                                         LOG(INFO) << "[App] TC data path: " << tcDataPath;
                                     }
                                 }
@@ -466,6 +470,19 @@ void App::RenderFrame() {
             }
             if (ImGui::MenuItem("Reset Path", nullptr, false, m_pathRenderer.HasResult())) {
                 m_pathRenderer.Reset();
+            }
+            ImGui::Separator();
+            {
+                // Assign terrain heights to active graph nodes
+                auto& activeGraph = (m_activeGraph == ActiveGraph::Road) ? m_roadGraphData : m_graphData;
+                bool hasGraph = activeGraph.IsLoaded();
+                if (ImGui::MenuItem("Assign Terrain Heights", nullptr, false, hasGraph)) {
+                    auto& activeUndo = (m_activeGraph == ActiveGraph::Road) ? m_roadUndoRedo : m_undoRedo;
+                    activeUndo.Snapshot(activeGraph, m_routeData, "Assign Terrain Heights");
+                    int count = m_heightSampler.AssignHeights(m_currentMapId, activeGraph.GetNodesMut());
+                    activeGraph.MarkDirty();
+                    LOG(INFO) << "[App] Assigned heights to " << count << " nodes";
+                }
             }
             ImGui::EndMenu();
         }
@@ -1109,7 +1126,9 @@ void App::RenderFrame3D() {
     {
         MultiSelection emptySel;
         if (m_activeGraph == ActiveGraph::ReadOnly) {
-            if (m_graphData.IsLoaded())
+            if (m_layers.showRoadGraph && m_roadGraphData.IsLoaded())
+                m_graphRenderer3d.Render(m_camera3d, m_primitives3d, m_roadGraphData, m_currentMapId, emptySel, m_layers);
+            if (m_layers.showWorldGraph && m_graphData.IsLoaded())
                 m_graphRenderer3d.Render(m_camera3d, m_primitives3d, m_graphData, m_currentMapId, emptySel, m_layers);
         } else {
             auto& activeGraph = (m_activeGraph == ActiveGraph::Road) ? m_roadGraphData : m_graphData;

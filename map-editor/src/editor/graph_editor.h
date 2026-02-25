@@ -11,6 +11,7 @@ namespace mapedit {
 struct Canvas;
 struct UndoContext;
 class WorldGraphData;
+class TerrainHeightSampler;
 
 class GraphEditor {
 public:
@@ -19,6 +20,8 @@ public:
     bool ProcessInput(const Canvas& canvas, WorldGraphData& graph,
                       MultiSelection& selection, uint32_t mapId,
                       UndoContext& undo);
+
+    void SetHeightSampler(TerrainHeightSampler* sampler) { m_heightSampler = sampler; }
 
     bool IsEdgeMode() const { return m_edgeMode; }
     void SetEdgeMode(bool on) { m_edgeMode = on; }
@@ -30,6 +33,8 @@ public:
     bool IsBoxSelecting() const { return m_boxSelecting; }
 
 private:
+    TerrainHeightSampler* m_heightSampler = nullptr;
+
     bool m_edgeMode = false;
     uint32_t m_edgeStartNode = 0;
 

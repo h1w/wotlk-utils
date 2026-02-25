@@ -24,6 +24,7 @@ map-editor/src/
         app_settings.h / .cpp   Persistent settings (JSON file)
         terrain_loader.h / .cpp TC .map file parser (V9/V8 heightmaps, holes)
         terrain_mesh.h / .cpp   Heightmap -> indexed triangle mesh + normals
+        terrain_height_sampler.h/.cpp CPU-side terrain height lookup (LRU-cached, barycentric)
         vmap_tile_loader.h/.cpp TC .vmtile file parser (M2/WMO spawn list)
         building_loader.h / .cpp M2/WMO collision geometry loader (TC VMAP048 format)
         wmo_visual_loader.h/.cpp WMO visual geometry from MPQ (full walls, roofs, interiors)
@@ -162,6 +163,12 @@ Loads TrinityCore `.map` files containing heightmap data (V9 129x129 + V8 128x12
 **Data pipeline**: `TerrainLoader` parses `.map` files (int16/int8/float decompression, hole bitmask) → `TerrainMesh` converts to indexed triangle mesh (4 triangles per cell, fan from V8 center, per-vertex normals) → `TerrainRenderer` manages GPU tile cache with background thread loading, frustum culling, LRU eviction (150-tile cap), and max 4 uploads/frame.
 
 **Rendering**: `TerrainPipeline` provides HLSL shaders with directional lighting and 3 color modes (Solid Grey, Height Gradient, Slope Shading). Opaque blend, depth write ON, back-face cull. Renders before navmesh so navmesh overlays as semi-transparent. **Smooth toggle** controls two shader-level behaviors: (1) normal mode — smooth per-vertex normals vs flat ddx/ddy normals (`heightParams.w`: -1.0=smooth, -2.0=flat); (2) slope-dependent Z offset via `baseColor.a` — pushes terrain below navmesh on steep slopes (flat: -1 unit, vertical: -6 units) to prevent grey terrain bumps poking through the navmesh overlay.
+
+### Terrain Height Sampling (`data/terrain_height_sampler.cpp`)
+
+CPU-side point-query for terrain height at any WoW coordinate. Uses `TerrainLoader` to read `.map` files with an LRU tile cache (64 tiles, ~8.5 MB). Barycentric interpolation in the triangle-fan grid (4 triangles per cell from V8 center to V9 corners) matches the GPU mesh exactly.
+
+Used by `GraphEditor` to auto-assign Z when creating/splitting nodes, and by the **Tools > Assign Terrain Heights** menu action to batch-update all nodes in the active graph. This solves the road graph `z=0` problem — nodes extracted from 2D alpha-map texture analysis have no elevation data and need height sampling from terrain data to render correctly in 3D.
 
 ### Building Rendering (`render/building_renderer.cpp`)
 

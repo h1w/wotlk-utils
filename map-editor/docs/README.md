@@ -26,7 +26,7 @@ Standalone **x64 Windows** desktop application for WoW 3.3.5a (WotLK) navmesh vi
 - **Building geometry** — loads M2/WMO models from TC extracted `Buildings/` via `.vmtile` spawn lists; rendered as opaque geometry on top of terrain
 - **Ground plane** — minimap tile textures rendered as flat quads at Z=0 underneath terrain
 - **Semi-transparent navmesh** — navmesh overlays terrain as colored translucent polygons with optional wireframe edges
-- **3D overlays** — coordinate grid, world graph nodes/edges, routes, path test results drawn as 3D line/circle primitives
+- **3D overlays** — coordinate grid, world graph nodes/edges, road graph, routes, path test results drawn as 3D line/circle primitives
 - **Player marker** — Ctrl+Click to place, Shift+Click to pathfind; moves along Detour paths at configurable speed (1x-10x); route following support
 - **Compass rose** — rotates with camera yaw
 
@@ -42,6 +42,7 @@ Standalone **x64 Windows** desktop application for WoW 3.3.5a (WotLK) navmesh vi
 - **Route editor** — create/edit/delete routes with waypoint placement by clicking on canvas
 - **Undo/Redo** — snapshot-based history (Ctrl+Z / Ctrl+Shift+Z), up to 100 levels; independent stacks for world graph and road graph
 - **Property panel** — inspector for selected nodes, edges, and waypoints; multi-selection summary
+- **Terrain height sampling** — **Tools > Assign Terrain Heights** batch-assigns real Z values to graph nodes; new nodes auto-sample height on creation
 - **Path testing** — click two points to visualize Detour navmesh pathfinding between them
 - **Help panel (F1)** — comprehensive keyboard shortcuts and feature reference
 
