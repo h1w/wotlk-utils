@@ -366,7 +366,7 @@ void App::RenderFrame() {
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit"))
-                PostQuitMessage(0);
+                RequestQuit();
             ImGui::EndMenu();
         }
 
@@ -691,6 +691,32 @@ void App::RenderFrame() {
             m_routeData.SaveToFile(m_routeData.GetFilePath());
             m_routeData.ClearDirty();
         }
+    }
+
+    // === Exit confirmation popup ===
+    if (m_showExitConfirm) {
+        ImGui::OpenPopup("Unsaved Changes");
+        m_showExitConfirm = false;
+    }
+    if (ImGui::BeginPopupModal("Unsaved Changes", nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::Text("You have unsaved changes. What would you like to do?");
+        ImGui::Separator();
+        if (ImGui::Button("Save & Exit", ImVec2(120, 0))) {
+            SaveAllDirty();
+            ImGui::CloseCurrentPopup();
+            PostQuitMessage(0);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Don't Save", ImVec2(120, 0))) {
+            ImGui::CloseCurrentPopup();
+            PostQuitMessage(0);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
 
     // === DX11 render ===
@@ -1674,6 +1700,36 @@ void App::SaveSettings() {
     m_settings.Save();
 }
 
+bool App::HasUnsavedChanges() const {
+    if (m_graphData.IsLoaded() && m_graphData.IsDirty()) return true;
+    if (m_roadGraphData.IsLoaded() && m_roadGraphData.IsDirty()) return true;
+    if (m_routeData.IsLoaded() && m_routeData.IsDirty()) return true;
+    return false;
+}
+
+void App::SaveAllDirty() {
+    if (m_graphData.IsLoaded() && m_graphData.IsDirty()) {
+        m_graphData.SaveToFile(m_graphData.GetFilePath());
+        m_graphData.ClearDirty();
+    }
+    if (m_roadGraphData.IsLoaded() && m_roadGraphData.IsDirty()) {
+        m_roadGraphData.SaveToFile(m_roadGraphData.GetFilePath());
+        m_roadGraphData.ClearDirty();
+    }
+    if (m_routeData.IsLoaded() && m_routeData.IsDirty()) {
+        m_routeData.SaveToFile(m_routeData.GetFilePath());
+        m_routeData.ClearDirty();
+    }
+}
+
+void App::RequestQuit() {
+    if (HasUnsavedChanges()) {
+        m_showExitConfirm = true;
+    } else {
+        DestroyWindow(m_hwnd);
+    }
+}
+
 LRESULT CALLBACK App::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
         return true;
@@ -1685,6 +1741,9 @@ LRESULT CALLBACK App::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 s_app->m_resizeWidth = LOWORD(lParam);
                 s_app->m_resizeHeight = HIWORD(lParam);
             }
+            return 0;
+        case WM_CLOSE:
+            s_app->RequestQuit();
             return 0;
         case WM_DESTROY:
             PostQuitMessage(0);

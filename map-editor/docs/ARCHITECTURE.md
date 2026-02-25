@@ -190,6 +190,10 @@ Virtual player marker for 3D mode. Supports Ctrl+Click teleport, Shift+Click pat
 
 JSON file (`app_settings.json`) stores: directories, last map, layer visibility, background mode/opacity, window dimensions, terrain/building layer toggles. Loaded on startup, saved on exit.
 
+### Exit Confirmation (`app.cpp`)
+
+All exit paths (window close button, Alt+F4, File > Exit) go through `RequestQuit()`. If any data source (`m_graphData`, `m_roadGraphData`, `m_routeData`) has unsaved changes, an ImGui modal popup offers three choices: **Save & Exit** (save all dirty data then quit), **Don't Save** (discard and quit), **Cancel** (resume editing). If nothing is dirty, the window closes immediately.
+
 ## Rendering Architecture
 
 The app supports two view modes (Ctrl+1 / Ctrl+2): 2D top-down and 3D perspective.

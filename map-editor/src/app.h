@@ -72,6 +72,9 @@ private:
     void RenderMapSelector();
     void LoadSettings();
     void SaveSettings();
+    bool HasUnsavedChanges() const;
+    void SaveAllDirty();
+    void RequestQuit();
 
     // Win32 / DX11
     HWND                    m_hwnd = nullptr;
@@ -164,6 +167,7 @@ private:
     bool         m_showLegend = true;
     bool         m_showHelp = false;
     bool         m_showBgBoundsPopup = false;
+    bool         m_showExitConfirm = false;
     std::string  m_pendingBgImagePath;
     float        m_bgBoundsMinX = 0, m_bgBoundsMaxX = 0;
     float        m_bgBoundsMinY = 0, m_bgBoundsMaxY = 0;
