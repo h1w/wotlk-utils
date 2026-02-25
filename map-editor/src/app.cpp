@@ -797,7 +797,9 @@ void App::RenderFrame2D() {
         auto& activeUndo = (m_activeGraph == ActiveGraph::Road) ? m_roadUndoRedo : m_undoRedo;
         UndoContext activeUndoCtx{activeUndo, activeGraph, m_routeData};
         if (!inputConsumed && activeGraph.IsLoaded() && m_layers.showNodes) {
-            inputConsumed = m_graphEditor.ProcessInput(m_canvas, activeGraph, m_selection, m_currentMapId, activeUndoCtx);
+            EditorProjection2D proj2d;
+            proj2d.canvas = &m_canvas;
+            inputConsumed = m_graphEditor.ProcessInput(proj2d, activeGraph, m_selection, m_currentMapId, activeUndoCtx);
         }
     }
 
@@ -1131,6 +1133,13 @@ void App::RenderFrame3D() {
             if (m_layers.showWorldGraph && m_graphData.IsLoaded())
                 m_graphRenderer3d.Render(m_camera3d, m_primitives3d, m_graphData, m_currentMapId, emptySel, m_layers);
         } else {
+            // Render inactive graph as dim overlay first
+            auto& inactiveGraph = (m_activeGraph == ActiveGraph::Road) ? m_graphData : m_roadGraphData;
+            bool showInactive = (m_activeGraph == ActiveGraph::Road) ? m_layers.showWorldGraph : m_layers.showRoadGraph;
+            if (showInactive && inactiveGraph.IsLoaded())
+                m_graphRenderer3d.Render(m_camera3d, m_primitives3d, inactiveGraph, m_currentMapId, emptySel, m_layers, 0.3f);
+
+            // Render active graph with full selection on top
             auto& activeGraph = (m_activeGraph == ActiveGraph::Road) ? m_roadGraphData : m_graphData;
             if (activeGraph.IsLoaded())
                 m_graphRenderer3d.Render(m_camera3d, m_primitives3d, activeGraph, m_currentMapId, m_selection, m_layers);
@@ -1204,7 +1213,20 @@ void App::RenderFrame3D() {
     m_profiler.totalVertices  = m_profiler.vertices[0] + m_profiler.vertices[1] +
                                  m_profiler.vertices[2] + m_profiler.vertices[3];
 
+    // === 3D graph editing ===
+    if (m_activeGraph != ActiveGraph::ReadOnly) {
+        auto& activeGraph = (m_activeGraph == ActiveGraph::Road) ? m_roadGraphData : m_graphData;
+        auto& activeUndo = (m_activeGraph == ActiveGraph::Road) ? m_roadUndoRedo : m_undoRedo;
+        UndoContext activeUndoCtx{activeUndo, activeGraph, m_routeData};
+        if (activeGraph.IsLoaded() && m_layers.showNodes) {
+            EditorProjection3D proj3d;
+            proj3d.camera = &m_camera3d;
+            m_graphEditor.ProcessInput(proj3d, activeGraph, m_selection, m_currentMapId, activeUndoCtx);
+        }
+    }
+
     // === 3D mouse interaction: Ctrl+Click teleport, Shift+Click pathfind ===
+    // Only when not actively editing a graph (ReadOnly mode) or when Ctrl/Shift held
     {
         auto& io = ImGui::GetIO();
         bool mouseInViewport = (io.MousePos.x >= m_canvas.vpX &&
@@ -1224,7 +1246,6 @@ void App::RenderFrame3D() {
                                         ox, oy, oz, dx, dy, dz);
 
                 // Simple ground-plane intersection: find t where oz + dz*t = targetZ (approx ground)
-                // Better: find t where ray hits Z ≈ camera target Z or Z=0
                 float groundZ = m_camera3d.targetZ;
                 if (fabsf(dz) > 0.001f) {
                     float t = (groundZ - oz) / dz;

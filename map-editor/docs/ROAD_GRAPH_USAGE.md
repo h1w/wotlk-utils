@@ -82,24 +82,27 @@ New nodes created via the editor (double-click, draw mode, split edge, context m
 
 ## Editing Road Graphs
 
-The road graph is directly editable. Click the toolbar mode button to switch to **Road Graph** mode (orange). All standard editor tools apply:
+The road graph is directly editable in both 2D and 3D views. Click the toolbar mode button to switch to **Road Graph** mode (orange). All standard editor tools apply:
 
-| Action | How |
-|---|---|
-| Switch to Road Graph mode | Click toolbar button until "Road Graph" (orange) |
-| Select node | Click on it |
-| Multi-select | Shift+Click, box drag, Alt+drag (lasso), Ctrl+A |
-| Move nodes | Drag (moves all selected) |
-| Delete | Select + `Delete` |
-| Add node | Double-click on empty canvas |
-| Draw mode | `D` — click to place chain of connected nodes |
-| Edge mode | `E` — click two nodes to connect |
-| Split edge | `S` — split nearest edge at cursor |
-| Context menu | Right-click — Delete, Connect, Split, Merge, Straighten, Validate |
-| Auto-connect | Right-click > Auto-Connect Nearby (joins close endpoints) |
-| Validate | Right-click > Validate Graph (find disconnected components, dead-ends, orphans) |
-| Undo / Redo | `Ctrl+Z` / `Ctrl+Shift+Z` (independent from world graph undo) |
-| Save | **Graph > Save Road Graph** or **Save Road Graph As...** |
+| Action | 2D | 3D |
+|---|---|---|
+| Switch to Road Graph mode | Click toolbar button until "Road Graph" (orange) | Same |
+| Select node | Click on it | Same |
+| Multi-select | Shift+Click, box drag, Alt+drag (lasso), Ctrl+A | Same |
+| Move nodes | Drag (moves all selected) | Drag (XY only, Z unchanged) |
+| Delete | Select + `Delete` | Same |
+| Add node | Double-click on empty canvas | Same |
+| Draw mode | `D` — click to place chain of connected nodes | Same |
+| Edge mode | `E` — click two nodes to connect | Same |
+| Split edge | `S` — split nearest edge at cursor | Same |
+| Context menu | Right-click | **Shift+Right-click** (plain RMB = camera orbit) |
+| Draw mode delete node | Right-click on node | **Shift+Right-click** on node |
+| Auto-connect | Context menu > Auto-Connect Nearby | Same |
+| Validate | Context menu > Validate Graph | Same |
+| Undo / Redo | `Ctrl+Z` / `Ctrl+Shift+Z` (independent from world graph undo) | Same |
+| Save | **Graph > Save Road Graph** or **Save Road Graph As...** | Same |
+
+> **3D Note**: In 3D mode, plain right-click is reserved for camera orbit control. Use **Shift+Right-click** to open the context menu or delete nodes in draw mode. Node dragging in 3D moves only X/Y; Z coordinates are unchanged (edit Z via the Property Panel).
 
 ## Recommended Workflow
 

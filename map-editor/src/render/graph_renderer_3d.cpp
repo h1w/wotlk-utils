@@ -38,9 +38,18 @@ static uint32_t EdgeColorABGR(EdgeType type) {
 // Render
 // ---------------------------------------------------------------------------
 
+// Apply dimAlpha to the alpha channel of an ABGR color
+static uint32_t ApplyDim(uint32_t color, float dimAlpha) {
+    if (dimAlpha >= 1.0f) return color;
+    uint32_t a = (color >> 24) & 0xFF;
+    a = static_cast<uint32_t>(a * dimAlpha);
+    return (color & 0x00FFFFFF) | (a << 24);
+}
+
 void Graph3DRenderer::Render(const Camera3D& camera, Primitives3D& prims,
                               const WorldGraphData& graph, uint32_t mapId,
-                              const MultiSelection& selection, const LayerVisibility& layers) {
+                              const MultiSelection& selection, const LayerVisibility& layers,
+                              float dimAlpha) {
     auto* fgDL = ImGui::GetForegroundDrawList();
 
     // Draw edges first so nodes render on top
@@ -54,9 +63,9 @@ void Graph3DRenderer::Render(const Camera3D& camera, Primitives3D& prims,
             // Skip if neither endpoint is on the current map
             if (from->mapId != mapId && to->mapId != mapId) continue;
 
-            uint32_t color = EdgeColorABGR(edge.type);
+            uint32_t color = ApplyDim(EdgeColorABGR(edge.type), dimAlpha);
             if (selection.IsEdgeSelected(i))
-                color = IM_COL32(255, 255, 0, 255); // selected: bright yellow
+                color = IM_COL32(255, 255, 0, 255); // selected: bright yellow (not dimmed)
 
             // Elevate slightly above ground to reduce z-fighting with navmesh
             prims.AddLine(from->x, from->y, from->z + 0.5f,
@@ -70,12 +79,12 @@ void Graph3DRenderer::Render(const Camera3D& camera, Primitives3D& prims,
         for (const auto& node : graph.GetNodes()) {
             if (node.mapId != mapId) continue;
 
-            uint32_t color = NodeColorABGR(node.type);
+            uint32_t color = ApplyDim(NodeColorABGR(node.type), dimAlpha);
             float    radius = 2.1f;
             bool     selected = selection.IsNodeSelected(node.id);
 
             if (selected) {
-                // White outer ring for selected node
+                // White outer ring for selected node (not dimmed)
                 prims.AddCircle(node.x, node.y, node.z + 0.5f,
                                 radius + 2.0f, IM_COL32(255, 255, 255, 220), 24);
             }

@@ -1,6 +1,7 @@
 #include "graph_editor.h"
 #include "undo_redo.h"
 #include "../canvas/canvas.h"
+#include "../camera/camera3d.h"
 #include "../data/world_graph_data.h"
 #include "../data/terrain_height_sampler.h"
 #include <imgui.h>
@@ -12,7 +13,54 @@
 
 namespace mapedit {
 
-uint32_t GraphEditor::HitTestNode(const Canvas& canvas, const WorldGraphData& graph,
+// ── EditorProjection2D ──────────────────────────────────────────────────────
+
+bool EditorProjection2D::WorldToScreen(float wx, float wy, float /*wz*/,
+                                        float& sx, float& sy) const {
+    canvas->WorldToScreen(wx, wy, sx, sy);
+    return true;
+}
+
+bool EditorProjection2D::ScreenToWorldXY(float sx, float sy, float /*refZ*/,
+                                          float& wx, float& wy) const {
+    canvas->ScreenToWorld(sx, sy, wx, wy);
+    return true;
+}
+
+bool EditorProjection2D::IsInViewport(float sx, float sy) const {
+    return sx >= canvas->vpX && sx <= canvas->vpX + canvas->vpW &&
+           sy >= canvas->vpY && sy <= canvas->vpY + canvas->vpH;
+}
+
+// ── EditorProjection3D ──────────────────────────────────────────────────────
+
+bool EditorProjection3D::WorldToScreen(float wx, float wy, float wz,
+                                        float& sx, float& sy) const {
+    return camera->WorldToScreen(wx, wy, wz, sx, sy);
+}
+
+bool EditorProjection3D::ScreenToWorldXY(float sx, float sy, float refZ,
+                                          float& wx, float& wy) const {
+    float ox, oy, oz, dx, dy, dz;
+    camera->ScreenToRay(sx, sy, ox, oy, oz, dx, dy, dz);
+
+    if (std::fabs(dz) < 0.0001f) return false;  // ray parallel to plane
+    float t = (refZ - oz) / dz;
+    if (t <= 0.0f) return false;  // behind camera
+
+    wx = ox + dx * t;
+    wy = oy + dy * t;
+    return true;
+}
+
+bool EditorProjection3D::IsInViewport(float sx, float sy) const {
+    return sx >= camera->vpX && sx <= camera->vpX + camera->vpW &&
+           sy >= camera->vpY && sy <= camera->vpY + camera->vpH;
+}
+
+// ── Hit testing ─────────────────────────────────────────────────────────────
+
+uint32_t GraphEditor::HitTestNode(const EditorProjection& proj, const WorldGraphData& graph,
                                    uint32_t mapId, float sx, float sy, float radius) {
     float bestDist = radius;
     uint32_t bestId = 0;
@@ -20,7 +68,8 @@ uint32_t GraphEditor::HitTestNode(const Canvas& canvas, const WorldGraphData& gr
     for (const auto& node : graph.GetNodes()) {
         if (node.mapId != mapId) continue;
         float nsx, nsy;
-        canvas.WorldToScreen(node.x, node.y, nsx, nsy);
+        if (!proj.WorldToScreen(node.x, node.y, node.z + 0.5f, nsx, nsy))
+            continue;
         float dx = nsx - sx, dy = nsy - sy;
         float dist = std::sqrt(dx * dx + dy * dy);
         if (dist < bestDist) {
@@ -31,7 +80,7 @@ uint32_t GraphEditor::HitTestNode(const Canvas& canvas, const WorldGraphData& gr
     return bestId;
 }
 
-int GraphEditor::HitTestEdge(const Canvas& canvas, const WorldGraphData& graph,
+int GraphEditor::HitTestEdge(const EditorProjection& proj, const WorldGraphData& graph,
                               uint32_t mapId, float sx, float sy, float threshold) {
     float bestDist = threshold;
     int bestIdx = -1;
@@ -44,8 +93,8 @@ int GraphEditor::HitTestEdge(const Canvas& canvas, const WorldGraphData& graph,
         if (from->mapId != mapId && to->mapId != mapId) continue;
 
         float sx1, sy1, sx2, sy2;
-        canvas.WorldToScreen(from->x, from->y, sx1, sy1);
-        canvas.WorldToScreen(to->x, to->y, sx2, sy2);
+        if (!proj.WorldToScreen(from->x, from->y, from->z + 0.5f, sx1, sy1)) continue;
+        if (!proj.WorldToScreen(to->x, to->y, to->z + 0.5f, sx2, sy2)) continue;
 
         // Point-to-segment distance
         float dx = sx2 - sx1, dy = sy2 - sy1;
@@ -76,7 +125,7 @@ static void AutoSelectEdges(MultiSelection& selection, const WorldGraphData& gra
     }
 }
 
-bool GraphEditor::RenderPopups(const Canvas& canvas, WorldGraphData& graph,
+bool GraphEditor::RenderPopups(const EditorProjection& proj, WorldGraphData& graph,
                                 MultiSelection& selection, uint32_t mapId,
                                 UndoContext& undo) {
     bool handled = false;
@@ -535,11 +584,11 @@ bool GraphEditor::RenderPopups(const Canvas& canvas, WorldGraphData& graph,
     return handled;
 }
 
-bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
+bool GraphEditor::ProcessInput(const EditorProjection& proj, WorldGraphData& graph,
                                 MultiSelection& selection, uint32_t mapId,
                                 UndoContext& undo) {
     // === Render popups FIRST (must run every frame, even when WantCaptureMouse) ===
-    bool popupHandled = RenderPopups(canvas, graph, selection, mapId, undo);
+    bool popupHandled = RenderPopups(proj, graph, selection, mapId, undo);
 
     if (ImGui::GetIO().WantCaptureMouse)
         return popupHandled;
@@ -548,8 +597,7 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
     float mx = mouse.x, my = mouse.y;
 
     // Check if in viewport
-    if (mx < canvas.vpX || mx > canvas.vpX + canvas.vpW ||
-        my < canvas.vpY || my > canvas.vpY + canvas.vpH)
+    if (!proj.IsInViewport(mx, my))
         return false;
 
     bool shiftDown = ImGui::GetIO().KeyShift;
@@ -573,7 +621,7 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
     if (!ImGui::GetIO().WantTextInput) {
         // S: split nearest edge at cursor
         if (ImGui::IsKeyPressed(ImGuiKey_S) && !ctrlDown) {
-            int hitEdge = HitTestEdge(canvas, graph, mapId, mx, my);
+            int hitEdge = HitTestEdge(proj, graph, mapId, mx, my);
             if (hitEdge >= 0) {
                 size_t idx = static_cast<size_t>(hitEdge);
                 const auto& edge = graph.GetEdges()[idx];
@@ -581,14 +629,22 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
                 auto* to   = graph.GetNode(edge.toNode);
                 if (from && to) {
                     undo.Snapshot("Split Edge");
-                    float wx, wy;
-                    canvas.ScreenToWorld(mx, my, wx, wy);
+                    // Compute split position: project edge endpoints to screen,
+                    // find parametric t of cursor on the screen segment, lerp world coords
+                    float sx1, sy1, sx2, sy2;
+                    proj.WorldToScreen(from->x, from->y, from->z + 0.5f, sx1, sy1);
+                    proj.WorldToScreen(to->x, to->y, to->z + 0.5f, sx2, sy2);
+                    float edx = sx2 - sx1, edy = sy2 - sy1;
+                    float lenSq = edx * edx + edy * edy;
+                    float t = (lenSq > 1.0f) ? std::clamp(((mx - sx1) * edx + (my - sy1) * edy) / lenSq, 0.05f, 0.95f) : 0.5f;
+                    float wx = from->x + t * (to->x - from->x);
+                    float wy = from->y + t * (to->y - from->y);
 
                     WorldNode mid;
                     mid.mapId = from->mapId;
                     mid.x = wx;
                     mid.y = wy;
-                    mid.z = (from->z + to->z) * 0.5f;
+                    mid.z = from->z + t * (to->z - from->z);
                     if (m_heightSampler) {
                         auto h = m_heightSampler->SampleHeight(mid.mapId, mid.x, mid.y);
                         if (h.has_value()) mid.z = h.value();
@@ -679,7 +735,7 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
                     m_drag.snapshotTaken = true;
                     // Capture start positions
                     float wx, wy;
-                    canvas.ScreenToWorld(mx, my, wx, wy);
+                    proj.ScreenToWorldXY(mx, my, m_drag.referenceZ, wx, wy);
                     m_drag.anchorWx = wx;
                     m_drag.anchorWy = wy;
                     m_drag.startPositions.clear();
@@ -692,18 +748,20 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
             }
             if (m_drag.snapshotTaken) {
                 float wx, wy;
-                canvas.ScreenToWorld(mx, my, wx, wy);
-                float deltaWx = wx - m_drag.anchorWx;
-                float deltaWy = wy - m_drag.anchorWy;
+                if (proj.ScreenToWorldXY(mx, my, m_drag.referenceZ, wx, wy)) {
+                    float deltaWx = wx - m_drag.anchorWx;
+                    float deltaWy = wy - m_drag.anchorWy;
 
-                for (auto& [id, startPos] : m_drag.startPositions) {
-                    auto* node = graph.GetNode(id);
-                    if (node) {
-                        node->x = startPos.first + deltaWx;
-                        node->y = startPos.second + deltaWy;
+                    for (auto& [id, startPos] : m_drag.startPositions) {
+                        auto* node = graph.GetNode(id);
+                        if (node) {
+                            node->x = startPos.first + deltaWx;
+                            node->y = startPos.second + deltaWy;
+                            // Z is NOT modified during drag
+                        }
                     }
+                    graph.MarkDirty();
                 }
-                graph.MarkDirty();
 
                 // === Snap-to-nearest indicator ===
                 if (ctrlDown && selection.nodes.size() == 1) {
@@ -711,14 +769,14 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
                     auto* draggedNode = graph.GetNode(draggedId);
                     if (draggedNode) {
                         float dsx, dsy;
-                        canvas.WorldToScreen(draggedNode->x, draggedNode->y, dsx, dsy);
+                        proj.WorldToScreen(draggedNode->x, draggedNode->y, draggedNode->z + 0.5f, dsx, dsy);
                         float bestSnapDist = 15.0f;
                         const WorldNode* snapTarget = nullptr;
                         for (const auto& other : graph.GetNodes()) {
                             if (other.id == draggedId || other.mapId != mapId) continue;
                             if (selection.IsNodeSelected(other.id)) continue;
                             float osx, osy;
-                            canvas.WorldToScreen(other.x, other.y, osx, osy);
+                            if (!proj.WorldToScreen(other.x, other.y, other.z + 0.5f, osx, osy)) continue;
                             float d = std::sqrt((osx - dsx) * (osx - dsx) + (osy - dsy) * (osy - dsy));
                             if (d < bestSnapDist) {
                                 bestSnapDist = d;
@@ -727,12 +785,12 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
                         }
                         if (snapTarget) {
                             float tsx, tsy;
-                            canvas.WorldToScreen(snapTarget->x, snapTarget->y, tsx, tsy);
+                            proj.WorldToScreen(snapTarget->x, snapTarget->y, snapTarget->z + 0.5f, tsx, tsy);
                             auto* dl = ImGui::GetForegroundDrawList();
                             dl->AddLine(ImVec2(dsx, dsy), ImVec2(tsx, tsy),
                                         IM_COL32(255, 255, 0, 180), 1.0f);
                             dl->AddCircle(ImVec2(tsx, tsy), 8.0f, IM_COL32(255, 255, 0, 200), 0, 2.0f);
-                            // Snap position on Ctrl
+                            // Snap position on Ctrl (XY only)
                             draggedNode->x = snapTarget->x;
                             draggedNode->y = snapTarget->y;
                         }
@@ -780,7 +838,8 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
             for (const auto& node : graph.GetNodes()) {
                 if (node.mapId != mapId) continue;
                 float nsx, nsy;
-                canvas.WorldToScreen(node.x, node.y, nsx, nsy);
+                if (!proj.WorldToScreen(node.x, node.y, node.z + 0.5f, nsx, nsy))
+                    continue;
                 if (pointInPoly(m_lassoPoints, nsx, nsy))
                     selection.SelectNode(node.id);
             }
@@ -815,7 +874,8 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
             for (const auto& node : graph.GetNodes()) {
                 if (node.mapId != mapId) continue;
                 float nsx, nsy;
-                canvas.WorldToScreen(node.x, node.y, nsx, nsy);
+                if (!proj.WorldToScreen(node.x, node.y, node.z + 0.5f, nsx, nsy))
+                    continue;
                 if (nsx >= bx0 && nsx <= bx1 && nsy >= by0 && nsy <= by1)
                     selection.SelectNode(node.id);
             }
@@ -833,10 +893,11 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
             auto* lastNode = graph.GetNode(m_drawLastNode);
             if (lastNode) {
                 float lsx, lsy;
-                canvas.WorldToScreen(lastNode->x, lastNode->y, lsx, lsy);
-                auto* dl = ImGui::GetForegroundDrawList();
-                dl->AddLine(ImVec2(lsx, lsy), ImVec2(mx, my),
-                            IM_COL32(100, 255, 100, 150), 1.5f);
+                if (proj.WorldToScreen(lastNode->x, lastNode->y, lastNode->z + 0.5f, lsx, lsy)) {
+                    auto* dl = ImGui::GetForegroundDrawList();
+                    dl->AddLine(ImVec2(lsx, lsy), ImVec2(mx, my),
+                                IM_COL32(100, 255, 100, 150), 1.5f);
+                }
             }
         }
         // Cursor crosshair
@@ -847,7 +908,7 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
 
         // Left click: place node (or click existing to continue from it)
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            uint32_t hitNode = HitTestNode(canvas, graph, mapId, mx, my);
+            uint32_t hitNode = HitTestNode(proj, graph, mapId, mx, my);
 
             if (hitNode) {
                 // Clicked existing node: connect from chain if active, then continue from it
@@ -880,11 +941,18 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
                 m_drawLastNode = hitNode;
                 selection.SetSingleNode(hitNode);
             } else {
+                // Compute world XY. For 3D, use camera targetZ or last node's Z as reference.
+                float drawRefZ = 0.0f;
+                if (m_drawLastNode != 0) {
+                    auto* ln = graph.GetNode(m_drawLastNode);
+                    if (ln) drawRefZ = ln->z;
+                }
                 float wx, wy;
-                canvas.ScreenToWorld(mx, my, wx, wy);
+                if (!proj.ScreenToWorldXY(mx, my, drawRefZ, wx, wy))
+                    return false;
 
                 // If chain is active and click lands on an edge, auto-split and connect
-                int hitEdge = (m_drawLastNode != 0) ? HitTestEdge(canvas, graph, mapId, mx, my) : -1;
+                int hitEdge = (m_drawLastNode != 0) ? HitTestEdge(proj, graph, mapId, mx, my) : -1;
                 if (hitEdge >= 0) {
                     size_t idx = static_cast<size_t>(hitEdge);
                     const auto& edge = graph.GetEdges()[idx];
@@ -999,8 +1067,9 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
         }
 
         // Right click: delete node under cursor (or break chain)
-        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-            uint32_t hitNode = HitTestNode(canvas, graph, mapId, mx, my);
+        // In 3D: require Shift+RMB (plain RMB is camera orbit)
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && (!proj.Is3D() || shiftDown)) {
+            uint32_t hitNode = HitTestNode(proj, graph, mapId, mx, my);
             if (hitNode) {
                 undo.Snapshot("Delete Node");
                 if (m_drawLastNode == hitNode)
@@ -1018,17 +1087,24 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
     }
 
     // === Right-click: context menu ===
-    if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-        m_contextHitNode = HitTestNode(canvas, graph, mapId, mx, my);
-        m_contextHitEdge = HitTestEdge(canvas, graph, mapId, mx, my);
-        canvas.ScreenToWorld(mx, my, m_contextMenuWx, m_contextMenuWy);
+    // In 3D: require Shift+RMB (plain RMB is camera orbit)
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && (!proj.Is3D() || shiftDown)) {
+        m_contextHitNode = HitTestNode(proj, graph, mapId, mx, my);
+        m_contextHitEdge = HitTestEdge(proj, graph, mapId, mx, my);
+        // Compute world XY for "Add Node Here" — use camera targetZ as fallback
+        float refZ = 0.0f;
+        if (m_contextHitNode) {
+            auto* n = graph.GetNode(m_contextHitNode);
+            if (n) refZ = n->z;
+        }
+        proj.ScreenToWorldXY(mx, my, refZ, m_contextMenuWx, m_contextMenuWy);
         m_wantOpenContextMenu = true;
     }
 
     // === Left click ===
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         // Try node hit first
-        uint32_t hitNode = HitTestNode(canvas, graph, mapId, mx, my);
+        uint32_t hitNode = HitTestNode(proj, graph, mapId, mx, my);
 
         if (m_edgeMode) {
             if (hitNode) {
@@ -1067,12 +1143,15 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
                 m_drag.active = true;
                 m_drag.snapshotTaken = false;
                 m_drag.startPositions.clear();
+                // Reference Z for 3D plane intersection
+                auto* hitN = graph.GetNode(hitNode);
+                m_drag.referenceZ = hitN ? hitN->z : 0.0f;
             }
             return true;
         }
 
         // Try edge hit
-        int hitEdge = HitTestEdge(canvas, graph, mapId, mx, my);
+        int hitEdge = HitTestEdge(proj, graph, mapId, mx, my);
         if (hitEdge >= 0) {
             if (shiftDown) {
                 selection.ToggleEdge(static_cast<size_t>(hitEdge));
@@ -1103,9 +1182,11 @@ bool GraphEditor::ProcessInput(const Canvas& canvas, WorldGraphData& graph,
 
     // Double-click to add node
     if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !m_edgeMode) {
-        undo.Snapshot("Add Node");
         float wx, wy;
-        canvas.ScreenToWorld(mx, my, wx, wy);
+        if (!proj.ScreenToWorldXY(mx, my, 0.0f, wx, wy))
+            return false;
+
+        undo.Snapshot("Add Node");
 
         WorldNode node;
         node.mapId = mapId;

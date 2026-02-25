@@ -44,7 +44,8 @@ map-editor/src/
     editor/
         selection.h             MultiSelection (unordered_set-based multi-node/edge)
         graph_editor.h / .cpp   Full graph editor: draw/edge/split modes, context menu, drag,
-                                lasso/box selection, merge, straighten, auto-connect, validate
+                                lasso/box selection, merge, straighten, auto-connect, validate.
+                                EditorProjection abstraction enables same code for 2D and 3D.
         route_editor.h / .cpp   Route waypoint placement + drag
         undo_redo.h / .cpp      Snapshot-based undo/redo (100 levels, separate stacks per graph)
 
