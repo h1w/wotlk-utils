@@ -71,7 +71,7 @@ void Graph3DRenderer::Render(const Camera3D& camera, Primitives3D& prims,
             if (node.mapId != mapId) continue;
 
             uint32_t color = NodeColorABGR(node.type);
-            float    radius = 3.0f;
+            float    radius = 2.1f;
             bool     selected = selection.IsNodeSelected(node.id);
 
             if (selected) {

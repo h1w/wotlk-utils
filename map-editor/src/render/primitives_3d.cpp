@@ -217,8 +217,10 @@ void Primitives3D::BeginFrame() {
 void Primitives3D::AddLine(float x1, float y1, float z1,
                             float x2, float y2, float z2,
                             uint32_t abgrColor) {
-    if (m_lines.size() + 2 > kMaxVertices)
-        return; // budget exhausted for this frame
+    if (m_lines.size() + 2 > kMaxVertices) {
+        LOG_FIRST_N(WARNING, 1) << "[Primitives3D] Vertex budget exhausted (" << kMaxVertices << "), dropping geometry";
+        return;
+    }
 
     m_lines.push_back({ x1, y1, z1, abgrColor });
     m_lines.push_back({ x2, y2, z2, abgrColor });
@@ -229,8 +231,10 @@ void Primitives3D::AddLine(float x1, float y1, float z1,
 void Primitives3D::AddCircle(float cx, float cy, float cz,
                               float radius, uint32_t abgrColor, int segments) {
     if (segments < 3) segments = 3;
-    if (m_lines.size() + static_cast<size_t>(segments) * 2 > kMaxVertices)
+    if (m_lines.size() + static_cast<size_t>(segments) * 2 > kMaxVertices) {
+        LOG_FIRST_N(WARNING, 1) << "[Primitives3D] Vertex budget exhausted (" << kMaxVertices << "), dropping circle";
         return;
+    }
 
     const float step = 2.0f * 3.14159265358979f / static_cast<float>(segments);
     for (int i = 0; i < segments; ++i) {

@@ -45,7 +45,7 @@ private:
     ID3D11RasterizerState*   m_rastState  = nullptr;
 
     std::vector<LineVertex> m_lines; // accumulated this frame
-    static constexpr UINT kMaxVertices = 65536;
+    static constexpr UINT kMaxVertices = 524288; // 512K verts (8 MB GPU buffer)
 };
 
 } // namespace mapedit
