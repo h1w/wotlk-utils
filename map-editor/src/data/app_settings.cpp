@@ -41,6 +41,7 @@ bool AppSettings::Load() {
     mmapDir        = doc.value("mmap_dir", std::string());
     wowDir         = doc.value("wow_dir", std::string());
     worldGraphPath = doc.value("world_graph_path", std::string());
+    roadGraphPath  = doc.value("road_graph_path", std::string());
     routesPath     = doc.value("routes_path", std::string());
     lastMapId      = doc.value("last_map_id", 0u);
     bgOpacity      = doc.value("bg_opacity", 0.3f);
@@ -56,6 +57,7 @@ bool AppSettings::Load() {
         showNodes   = layers.value("nodes", true);
         showEdges   = layers.value("edges", true);
         showLabels  = layers.value("labels", true);
+        showRoadGraph = layers.value("road_graph", true);
         showRoutes  = layers.value("routes", true);
         showPath    = layers.value("path", true);
         showBackground = layers.value("background", true);
@@ -97,6 +99,7 @@ bool AppSettings::Save() const {
     doc["mmap_dir"]         = mmapDir;
     doc["wow_dir"]          = wowDir;
     doc["world_graph_path"] = worldGraphPath;
+    doc["road_graph_path"]  = roadGraphPath;
     doc["routes_path"]      = routesPath;
     doc["last_map_id"]      = lastMapId;
     doc["bg_opacity"]       = bgOpacity;
@@ -110,6 +113,7 @@ bool AppSettings::Save() const {
         {"nodes",   showNodes},
         {"edges",   showEdges},
         {"labels",  showLabels},
+        {"road_graph", showRoadGraph},
         {"routes",  showRoutes},
         {"path",    showPath},
         {"background", showBackground},

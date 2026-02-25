@@ -12,9 +12,13 @@ The Python road extraction pipeline (`docs/scripts/road_extraction/`) produces a
    python -m src.main --client "Z:\Games\wow 3.3.5a client" --map Azeroth --all
    ```
 
-2. Open map-editor, menu **Graph > Open Graph JSON...**, select `output/Azeroth_roads.json`.
+2. Open map-editor, menu **Graph > Open Road Graph...**, select `output/Azeroth_roads.json`.
 
-3. Nodes and edges render immediately on the 2D canvas and in 3D view.
+3. Road network renders immediately as a semi-transparent amber overlay on the 2D canvas (underneath the main world graph).
+
+4. Toggle visibility in the **Layers** panel via the "Road Graph" checkbox.
+
+> **Note**: The road graph is loaded into a dedicated read-only slot, separate from the main world graph. You can have both open simultaneously — the road network provides spatial context while the POI graph sits on top.
 
 ## Output Format
 
@@ -61,12 +65,14 @@ The `--map` name is automatically mapped to the correct WoW DBC mapId:
 
 ## Known Limitations
 
-- **Z = 0** — nodes have no height data (alpha maps don't contain elevation). In 3D view, road nodes float at ground zero; they may clip through or hover above terrain.
-- **Straight edges** — the editor renders edges as straight lines between nodes. The extraction pipeline's intermediate waypoints (from skeletonization) are not stored in the output because `WorldGraphData` has no `waypoints` field on edges. Node density compensates — junctions are close enough that straight lines approximate curves.
+- **Z = 0** — nodes have no height data (alpha maps don't contain elevation)
+- **2D only** — road graph is not rendered in 3D mode (nodes at z=0 have no useful height data)
+- **Read-only** — the road graph overlay is not editable (no selection, drag, or undo/redo). To edit a road graph, load it as the main graph via **Graph > Open Graph JSON...**
+- **Straight edges** — the editor renders edges as straight lines between nodes. Node density compensates — junctions are close enough that straight lines approximate curves
 
-## Editing Imported Roads
+## Editing Road Graphs
 
-The imported graph is fully editable with all standard editor tools:
+The road graph overlay is read-only. To edit a road graph, load it as the **main** graph via **Graph > Open Graph JSON...**. It then becomes fully editable with all standard editor tools:
 
 | Action | How |
 |---|---|
@@ -88,7 +94,7 @@ The imported graph is fully editable with all standard editor tools:
    python -m src.main --client "..." --map Northrend --all
    ```
 
-2. **Load** — open `Azeroth_roads.json` in map-editor via **Graph > Open Graph JSON...**
+2. **Load as overlay** — open `Azeroth_roads.json` via **Graph > Open Road Graph...** (read-only overlay, displayed beneath the main world graph)
 
 3. **Review** — pan/zoom to areas of interest, check road connectivity visually.
 

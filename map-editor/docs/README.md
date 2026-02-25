@@ -14,6 +14,7 @@ Standalone **x64 Windows** desktop application for WoW 3.3.5a (WotLK) navmesh vi
 - **Minimap tile background** — streams BLP minimap textures from WoW MPQ archives via `md5translate.trs`, decoded on background thread, all tiles loaded permanently per map
 - **Coordinate grid** — adaptive-step grid (10/100/1000 yd) with tile grid overlay
 - **World graph** — renders POI nodes (flight masters, portals, innkeepers, etc.) with color-coded types and directed edges
+- **Road graph overlay** — loads `_roads.json` as a read-only semi-transparent amber layer beneath the main graph; dedicated menu item (**Graph > Open Road Graph...**) and layer toggle
 - **Route visualization** — numbered waypoints with colored polylines, loop support, direction arrows
 - **Path visualization** — Detour pathfinding results rendered as yellow polylines with distance labels
 - **Layer panel** — toggle visibility of all render layers independently
@@ -73,4 +74,5 @@ See [BUILD.md](BUILD.md) for build instructions.
 | [tasks/TASK_001.md](tasks/TASK_001.md) | Initial 2D editor implementation |
 | [tasks/TASK_002.md](tasks/TASK_002.md) | 3D mode, camera, overlays, player simulation |
 | [tasks/TASK_003.md](tasks/TASK_003.md) | Terrain heightmap + building geometry rendering |
+| [ROAD_GRAPH_USAGE.md](ROAD_GRAPH_USAGE.md) | Road extraction output usage guide |
 | [changelog/](changelog/) | Per-feature/fix changelogs |

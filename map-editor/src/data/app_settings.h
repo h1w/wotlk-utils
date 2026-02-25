@@ -9,6 +9,7 @@ struct AppSettings {
     std::string mmapDir;
     std::string wowDir;
     std::string worldGraphPath;
+    std::string roadGraphPath;
     std::string routesPath;
     uint32_t lastMapId = 0;
     float bgOpacity    = 0.3f;
@@ -22,6 +23,7 @@ struct AppSettings {
     bool showNodes   = true;
     bool showEdges   = true;
     bool showLabels  = true;
+    bool showRoadGraph = true;
     bool showRoutes  = true;
     bool showPath    = true;
     bool showBackground = true;

@@ -122,6 +122,7 @@ private:
 
     // Data
     WorldGraphData  m_graphData;
+    WorldGraphData  m_roadGraphData;
     RouteData       m_routeData;
 
     // UI

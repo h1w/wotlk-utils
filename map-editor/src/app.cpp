@@ -102,6 +102,10 @@ bool App::Initialize(HINSTANCE hInstance) {
         m_graphData.LoadFromFile(m_settings.worldGraphPath);
         m_graphData.ClearDirty();
     }
+    if (!m_settings.roadGraphPath.empty()) {
+        m_roadGraphData.LoadFromFile(m_settings.roadGraphPath);
+        m_roadGraphData.ClearDirty();
+    }
     if (!m_settings.routesPath.empty()) {
         m_routeData.LoadFromFile(m_settings.routesPath);
         m_routeData.ClearDirty();
@@ -118,6 +122,7 @@ bool App::Initialize(HINSTANCE hInstance) {
     m_layers.showNodes = m_settings.showNodes;
     m_layers.showEdges = m_settings.showEdges;
     m_layers.showLabels = m_settings.showLabels;
+    m_layers.showRoadGraph = m_settings.showRoadGraph;
     m_layers.showRoutes = m_settings.showRoutes;
     m_layers.showPath = m_settings.showPath;
     m_layers.showBackground = m_settings.showBackground;
@@ -390,6 +395,10 @@ void App::RenderFrame() {
         if (menuActions.saveGraph && m_graphData.IsLoaded()) {
             m_graphData.SaveToFile(m_graphData.GetFilePath());
             m_graphData.ClearDirty();
+        }
+        if (menuActions.openRoadGraph) {
+            m_roadGraphData.LoadFromFile(menuActions.roadGraphFilePath);
+            m_roadGraphData.ClearDirty();
         }
         if (menuActions.saveGraphAs) {
             m_graphData.SaveToFile(menuActions.graphFilePath);
@@ -753,6 +762,10 @@ void App::RenderFrame2D() {
     // Navmesh
     if (m_layers.showNavmesh)
         m_navmeshRenderer.Render(m_canvas, m_tileCache, m_layers.navmeshMinZoom);
+
+    // Road graph overlay (underneath main graph)
+    if (m_layers.showRoadGraph && m_roadGraphData.IsLoaded())
+        m_graphRenderer.RenderRoadOverlay(m_canvas, m_roadGraphData, m_currentMapId);
 
     // Graph (nodes + edges)
     if (m_graphData.IsLoaded())
@@ -1449,6 +1462,8 @@ void App::SaveSettings() {
     // We don't store it separately, so we save what we have in settings
     if (m_graphData.IsLoaded())
         m_settings.worldGraphPath = m_graphData.GetFilePath();
+    if (m_roadGraphData.IsLoaded())
+        m_settings.roadGraphPath = m_roadGraphData.GetFilePath();
     if (m_routeData.IsLoaded())
         m_settings.routesPath = m_routeData.GetFilePath();
     m_settings.lastMapId = m_currentMapId;
@@ -1463,6 +1478,7 @@ void App::SaveSettings() {
     m_settings.showNodes = m_layers.showNodes;
     m_settings.showEdges = m_layers.showEdges;
     m_settings.showLabels = m_layers.showLabels;
+    m_settings.showRoadGraph = m_layers.showRoadGraph;
     m_settings.showRoutes = m_layers.showRoutes;
     m_settings.showPath = m_layers.showPath;
     m_settings.showBackground = m_layers.showBackground;

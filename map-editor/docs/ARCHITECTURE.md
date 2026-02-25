@@ -144,6 +144,8 @@ Thread safety: MPQ reads on main thread (StormLib not thread-safe), BLP decode o
 
 Full CRUD for the navigation graph: nodes (POIs with type, faction, coordinates) and edges (connections with type, cost, directionality). Dirty-flag tracking for unsaved changes.
 
+The app holds two `WorldGraphData` instances: `m_graphData` (main, editable) and `m_roadGraphData` (road overlay, read-only). The road graph loads via **Graph > Open Road Graph...** and renders as a semi-transparent amber overlay beneath the main graph in 2D mode only.
+
 ### Undo/Redo (`editor/undo_redo.cpp`)
 
 Snapshot-based: captures full graph+route state before each mutation. Supports up to 100 undo levels. Both undo and redo stacks maintained.
@@ -197,7 +199,7 @@ Mixed rendering: most layers use ImGui's `ImDrawList` API, navmesh uses a native
 
 - **Background draw list** — minimap tiles (textured quads), navmesh (DX11 callback), grid lines
 - **DX11 navmesh pipeline** — `NavmeshPipeline` compiles embedded HLSL at startup. `NavmeshRenderer` maintains a GPU tile cache with per-tile immutable vertex buffers (detail + LOD base polygons). Vertex shader transforms world coords to NDC; pixel shader renders barycentric wireframe. Injected into ImGui's background draw list via `AddCallback` / `ImDrawCallback_ResetRenderState`
-- **Window draw list** — grid, graph nodes/edges, routes, paths (layered by render order)
+- **Window draw list** — grid, road graph overlay, graph nodes/edges, routes, paths (layered by render order)
 - **ImGui windows** — panels, menus, status bar (standard ImGui widgets)
 
 ### 3D Mode

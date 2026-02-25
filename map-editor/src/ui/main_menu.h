@@ -10,10 +10,12 @@ public:
     struct Actions {
         bool openMmapDir = false;
         bool openGraph = false;
+        bool openRoadGraph = false;
         bool saveGraph = false;
         bool saveGraphAs = false;
         bool quit = false;
         std::string graphFilePath;
+        std::string roadGraphFilePath;
     };
 
     Actions Render(const WorldGraphData& graph);

@@ -47,6 +47,13 @@ MainMenu::Actions MainMenu::Render(const WorldGraphData& graph) {
             if (!actions.graphFilePath.empty())
                 actions.openGraph = true;
         }
+        if (ImGui::MenuItem("Open Road Graph...")) {
+            actions.roadGraphFilePath = OpenFileDialog(
+                "JSON files\0*.json\0All files\0*.*\0", "Open Road Graph");
+            if (!actions.roadGraphFilePath.empty())
+                actions.openRoadGraph = true;
+        }
+        ImGui::Separator();
         if (ImGui::MenuItem("Save", "Ctrl+S", false, graph.IsLoaded())) {
             actions.saveGraph = true;
         }

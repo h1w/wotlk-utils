@@ -139,7 +139,7 @@ python -m src.main --client "Z:\Games\wow 3.3.5a client" --map Azeroth --all
 python -m src.main --client "Z:\Games\wow 3.3.5a client" --map Northrend --all
 ```
 
-Then open `output/Azeroth_roads.json` in map-editor via **Graph > Open Graph JSON...**
+Then open `output/Azeroth_roads.json` in map-editor via **Graph > Open Road Graph...** (read-only overlay) or **Graph > Open Graph JSON...** (editable main graph)
 
 ## Known Limitations
 

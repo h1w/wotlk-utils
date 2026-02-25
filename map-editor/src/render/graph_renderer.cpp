@@ -94,4 +94,40 @@ void GraphRenderer::Render(const Canvas& canvas, const WorldGraphData& graph,
     }
 }
 
+void GraphRenderer::RenderRoadOverlay(const Canvas& canvas, const WorldGraphData& roadGraph,
+                                      uint32_t mapId) {
+    auto* dl = ImGui::GetForegroundDrawList();
+
+    float minX, maxX, minY, maxY;
+    canvas.GetViewBounds(minX, maxX, minY, maxY);
+
+    const ImU32 edgeColor = IM_COL32(200, 140, 50, 120);
+    const ImU32 nodeColor = IM_COL32(180, 130, 60, 160);
+
+    // Draw edges
+    for (const auto& edge : roadGraph.GetEdges()) {
+        const auto* from = roadGraph.GetNode(edge.fromNode);
+        const auto* to   = roadGraph.GetNode(edge.toNode);
+        if (!from || !to) continue;
+        if (from->mapId != mapId && to->mapId != mapId) continue;
+
+        float sx1, sy1, sx2, sy2;
+        canvas.WorldToScreen(from->x, from->y, sx1, sy1);
+        canvas.WorldToScreen(to->x, to->y, sx2, sy2);
+
+        dl->AddLine(ImVec2(sx1, sy1), ImVec2(sx2, sy2), edgeColor, 1.0f);
+    }
+
+    // Draw nodes
+    for (const auto& node : roadGraph.GetNodes()) {
+        if (node.mapId != mapId) continue;
+        if (node.x < minX || node.x > maxX || node.y < minY || node.y > maxY)
+            continue;
+
+        float sx, sy;
+        canvas.WorldToScreen(node.x, node.y, sx, sy);
+        dl->AddCircleFilled(ImVec2(sx, sy), 3.0f, nodeColor);
+    }
+}
+
 } // namespace mapedit

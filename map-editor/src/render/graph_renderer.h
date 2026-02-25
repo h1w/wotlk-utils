@@ -13,6 +13,7 @@ struct LayerVisibility {
     bool showLabels = true;
     bool showGrid = true;
     bool showNavmesh = true;
+    bool showRoadGraph = true;
     bool showRoutes = true;
     bool showPath = true;
     bool showBackground = true;
@@ -36,6 +37,9 @@ public:
     void Render(const Canvas& canvas, const WorldGraphData& graph,
                 uint32_t mapId, const Selection& selection,
                 const LayerVisibility& layers);
+
+    void RenderRoadOverlay(const Canvas& canvas, const WorldGraphData& roadGraph,
+                           uint32_t mapId);
 };
 
 } // namespace mapedit
