@@ -55,6 +55,8 @@ bool App::Initialize(HINSTANCE hInstance) {
     m_navmeshRenderer.Initialize(m_device, m_context);
     m_navmeshRenderer3d.Initialize(m_device, m_context);
     m_primitives3d.Initialize(m_device, m_context);
+    m_worldGraphCache.Initialize(m_device);
+    m_roadGraphCache.Initialize(m_device);
     m_groundPlane3d.Initialize(m_device, m_context);
     m_terrainRenderer.Initialize(m_device, m_context);
     m_buildingRenderer.Initialize(m_device, m_context);
@@ -1234,24 +1236,46 @@ void App::RenderFrame3D() {
     if (m_layers.showGrid)
         m_gridRenderer3d.Render(m_camera3d, m_primitives3d, m_tileIndex, m_currentMapId);
 
+    // Graph rendering: use cached geometry VBs + label-only pass
+    // (caches are drawn after Primitives3D::Flush below)
+    bool drawWorldGraph = false, drawRoadGraph = false;
     {
         MultiSelection emptySel;
         if (m_activeGraph == ActiveGraph::ReadOnly) {
-            if (m_layers.showRoadGraph && m_roadGraphData.IsLoaded())
-                m_graphRenderer3d.Render(m_camera3d, m_primitives3d, m_roadGraphData, m_currentMapId, emptySel, m_layers);
-            if (m_layers.showWorldGraph && m_graphData.IsLoaded())
-                m_graphRenderer3d.Render(m_camera3d, m_primitives3d, m_graphData, m_currentMapId, emptySel, m_layers);
+            if (m_layers.showRoadGraph && m_roadGraphData.IsLoaded()) {
+                m_roadGraphCache.Update(m_roadGraphData, m_currentMapId, emptySel, m_layers, 1.0f);
+                m_graphRenderer3d.RenderLabelsOnly(m_camera3d, m_roadGraphData, m_currentMapId, m_layers);
+                drawRoadGraph = true;
+            }
+            if (m_layers.showWorldGraph && m_graphData.IsLoaded()) {
+                m_worldGraphCache.Update(m_graphData, m_currentMapId, emptySel, m_layers, 1.0f);
+                m_graphRenderer3d.RenderLabelsOnly(m_camera3d, m_graphData, m_currentMapId, m_layers);
+                drawWorldGraph = true;
+            }
         } else {
             // Render inactive graph as dim overlay first
             auto& inactiveGraph = (m_activeGraph == ActiveGraph::Road) ? m_graphData : m_roadGraphData;
+            auto& inactiveCache = (m_activeGraph == ActiveGraph::Road) ? m_worldGraphCache : m_roadGraphCache;
             bool showInactive = (m_activeGraph == ActiveGraph::Road) ? m_layers.showWorldGraph : m_layers.showRoadGraph;
-            if (showInactive && inactiveGraph.IsLoaded())
-                m_graphRenderer3d.Render(m_camera3d, m_primitives3d, inactiveGraph, m_currentMapId, emptySel, m_layers, 0.3f);
+            if (showInactive && inactiveGraph.IsLoaded()) {
+                inactiveCache.Update(inactiveGraph, m_currentMapId, emptySel, m_layers, 0.3f);
+                if (m_activeGraph == ActiveGraph::Road)
+                    drawWorldGraph = true;
+                else
+                    drawRoadGraph = true;
+            }
 
             // Render active graph with full selection on top
             auto& activeGraph = (m_activeGraph == ActiveGraph::Road) ? m_roadGraphData : m_graphData;
-            if (activeGraph.IsLoaded())
-                m_graphRenderer3d.Render(m_camera3d, m_primitives3d, activeGraph, m_currentMapId, m_selection, m_layers);
+            auto& activeCache = (m_activeGraph == ActiveGraph::Road) ? m_roadGraphCache : m_worldGraphCache;
+            if (activeGraph.IsLoaded()) {
+                activeCache.Update(activeGraph, m_currentMapId, m_selection, m_layers, 1.0f);
+                m_graphRenderer3d.RenderLabelsOnly(m_camera3d, activeGraph, m_currentMapId, m_layers);
+                if (m_activeGraph == ActiveGraph::Road)
+                    drawRoadGraph = true;
+                else
+                    drawWorldGraph = true;
+            }
         }
     }
 
@@ -1315,6 +1339,19 @@ void App::RenderFrame3D() {
     }
 
     m_primitives3d.Flush(&m_camera3d.viewProj._11);
+
+    // Draw cached graph edge VBs + instanced node circles
+    auto drawCachedGraph = [&](const GraphMeshCache& cache) {
+        if (cache.HasEdges())
+            m_primitives3d.DrawExternalVB(cache.GetVB(), cache.GetVertexCount(), &m_camera3d.viewProj._11);
+        const auto& nodes = cache.GetNodeInstances();
+        if (!nodes.empty())
+            m_primitives3d.DrawInstancedCircles(nodes.data(), static_cast<uint32_t>(nodes.size()), &m_camera3d.viewProj._11);
+    };
+    if (drawWorldGraph && m_worldGraphCache.IsValid())
+        drawCachedGraph(m_worldGraphCache);
+    if (drawRoadGraph && m_roadGraphCache.IsValid())
+        drawCachedGraph(m_roadGraphCache);
 
     auto tOver1 = m_profiler.Now();
     m_profiler.RecordLayer(FrameProfiler::Overlays, tOver0, tOver1);
@@ -1841,6 +1878,8 @@ void App::Shutdown() {
 
     m_navmeshRenderer.Shutdown();
     m_navmeshRenderer3d.Shutdown();
+    m_worldGraphCache.Shutdown();
+    m_roadGraphCache.Shutdown();
     m_primitives3d.Shutdown();
     m_groundPlane3d.Shutdown();
     m_terrainRenderer.Shutdown();

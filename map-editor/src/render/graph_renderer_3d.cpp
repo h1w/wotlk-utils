@@ -8,6 +8,15 @@
 #include <imgui.h>
 #include <cmath>
 
+// Frustum culling helper: returns true if point is inside (or within margin of) frustum
+static bool PointInFrustum(const float planes[6][4], float x, float y, float z) {
+    for (int i = 0; i < 6; ++i) {
+        float d = planes[i][0] * x + planes[i][1] * y + planes[i][2] * z + planes[i][3];
+        if (d < -50.0f) return false;  // 50-yard margin
+    }
+    return true;
+}
+
 namespace mapedit {
 
 // ---------------------------------------------------------------------------
@@ -54,6 +63,9 @@ void Graph3DRenderer::Render(const Camera3D& camera, Primitives3D& prims,
                               float dimAlpha) {
     auto* fgDL = ImGui::GetForegroundDrawList();
 
+    float frustum[6][4];
+    camera.GetFrustumPlanes(frustum);
+
     // Draw edges first so nodes render on top
     if (layers.showEdges) {
         for (size_t i = 0; i < graph.GetEdges().size(); ++i) {
@@ -64,6 +76,11 @@ void Graph3DRenderer::Render(const Camera3D& camera, Primitives3D& prims,
 
             // Skip if neither endpoint is on the current map
             if (from->mapId != mapId && to->mapId != mapId) continue;
+
+            // Frustum cull: skip if both endpoints outside frustum
+            if (!PointInFrustum(frustum, from->x, from->y, from->z) &&
+                !PointInFrustum(frustum, to->x, to->y, to->z))
+                continue;
 
             uint32_t color = ApplyDim(EdgeColorABGR(edge.type), dimAlpha);
             if (selection.IsEdgeSelected(i))
@@ -80,6 +97,10 @@ void Graph3DRenderer::Render(const Camera3D& camera, Primitives3D& prims,
     if (layers.showNodes) {
         for (const auto& node : graph.GetNodes()) {
             if (node.mapId != mapId) continue;
+
+            // Frustum cull
+            if (!PointInFrustum(frustum, node.x, node.y, node.z))
+                continue;
 
             uint32_t color = ApplyDim(NodeColorABGR(node.type), dimAlpha);
             float    radius = 2.1f;
@@ -102,6 +123,34 @@ void Graph3DRenderer::Render(const Camera3D& camera, Primitives3D& prims,
                                   node.name.c_str());
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RenderLabelsOnly — for use with cached geometry
+// ---------------------------------------------------------------------------
+
+void Graph3DRenderer::RenderLabelsOnly(const Camera3D& camera,
+                                        const WorldGraphData& graph, uint32_t mapId,
+                                        const LayerVisibility& layers) {
+    if (!layers.showNodes || !layers.showLabels) return;
+
+    auto* fgDL = ImGui::GetForegroundDrawList();
+
+    float frustum[6][4];
+    camera.GetFrustumPlanes(frustum);
+
+    for (const auto& node : graph.GetNodes()) {
+        if (node.mapId != mapId) continue;
+        if (node.name.empty()) continue;
+        if (!PointInFrustum(frustum, node.x, node.y, node.z)) continue;
+
+        float sx, sy;
+        if (camera.WorldToScreen(node.x, node.y, node.z + 1.5f, sx, sy)) {
+            fgDL->AddText(ImVec2(sx + 8.0f, sy - 6.0f),
+                          IM_COL32(220, 220, 220, 200),
+                          node.name.c_str());
         }
     }
 }
@@ -159,6 +208,9 @@ void Graph3DRenderer::RenderIssueOverlay(const Camera3D& camera, Primitives3D& p
     if (validation.componentCount <= 1 && validation.gaps.empty())
         return;
 
+    float frustum[6][4];
+    camera.GetFrustumPlanes(frustum);
+
     // Component coloring: only when multiple components exist
     if (validation.componentCount > 1) {
         // Color edges by component (use fromNode's component)
@@ -167,6 +219,11 @@ void Graph3DRenderer::RenderIssueOverlay(const Camera3D& camera, Primitives3D& p
             const auto* to = graph.GetNode(edge.toNode);
             if (!from || !to) continue;
             if (from->mapId != mapId && to->mapId != mapId) continue;
+
+            // Frustum cull
+            if (!PointInFrustum(frustum, from->x, from->y, from->z) &&
+                !PointInFrustum(frustum, to->x, to->y, to->z))
+                continue;
 
             auto itFrom = validation.nodeComponent.find(edge.fromNode);
             if (itFrom == validation.nodeComponent.end()) continue;
@@ -182,6 +239,10 @@ void Graph3DRenderer::RenderIssueOverlay(const Camera3D& camera, Primitives3D& p
         // Color nodes by component
         for (const auto& node : graph.GetNodes()) {
             if (node.mapId != mapId) continue;
+
+            // Frustum cull
+            if (!PointInFrustum(frustum, node.x, node.y, node.z))
+                continue;
 
             auto it = validation.nodeComponent.find(node.id);
             if (it == validation.nodeComponent.end()) continue;
@@ -202,6 +263,11 @@ void Graph3DRenderer::RenderIssueOverlay(const Camera3D& camera, Primitives3D& p
         const auto* nodeA = graph.GetNode(gap.nodeA);
         const auto* nodeB = graph.GetNode(gap.nodeB);
         if (!nodeA || !nodeB) continue;
+
+        // Frustum cull
+        if (!PointInFrustum(frustum, nodeA->x, nodeA->y, nodeA->z) &&
+            !PointInFrustum(frustum, nodeB->x, nodeB->y, nodeB->z))
+            continue;
 
         DrawDashedLine3D(prims,
                          nodeA->x, nodeA->y, nodeA->z + 0.7f,

@@ -130,8 +130,11 @@ void TerrainRenderer::WorkerLoop() {
                                                         wdt.mphdFlags);
                 if (adt.valid && !adt.texturePaths.empty()) {
                     m_compositor.SetBlpCache(&m_blpCache);
-                    result.textureAtlas = m_compositor.CompositeTileAtlas(adt, wdt.mphdFlags, *m_mpq);
-                    result.hasTexture = !result.textureAtlas.empty();
+                    auto bgra = m_compositor.CompositeTileAtlas(adt, wdt.mphdFlags, *m_mpq);
+                    if (!bgra.empty()) {
+                        result.compressedAtlas = CompressToBC1WithMips(bgra.data(), 1024, 1024);
+                        result.hasTexture = !result.compressedAtlas.bc1Data.empty();
+                    }
                 }
             }
         }
@@ -159,6 +162,52 @@ bool TerrainRenderer::Initialize(ID3D11Device* device, ID3D11DeviceContext* cont
         LOG(ERROR) << "[TerrainRenderer] Texture pipeline init failed";
         return false;
     }
+    // Create shared Texture2DArray for tile textures (256 slots, BC1, 11 mips for 1024x1024)
+    {
+        static constexpr uint32_t kTexArrayCapacity = 64;
+        static constexpr uint32_t kTexArrayMips = 11; // log2(1024) + 1
+
+        D3D11_TEXTURE2D_DESC td = {};
+        td.Width  = 1024;
+        td.Height = 1024;
+        td.MipLevels = kTexArrayMips;
+        td.ArraySize = kTexArrayCapacity;
+        td.Format    = DXGI_FORMAT_BC1_UNORM;
+        td.SampleDesc.Count = 1;
+        td.Usage     = D3D11_USAGE_DEFAULT;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+        HRESULT hr = device->CreateTexture2D(&td, nullptr, &m_texArray.texture);
+        if (FAILED(hr)) {
+            LOG(ERROR) << "[TerrainRenderer] Failed to create texture array: 0x" << std::hex << hr;
+            return false;
+        }
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = DXGI_FORMAT_BC1_UNORM;
+        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+        srvDesc.Texture2DArray.MostDetailedMip = 0;
+        srvDesc.Texture2DArray.MipLevels = kTexArrayMips;
+        srvDesc.Texture2DArray.FirstArraySlice = 0;
+        srvDesc.Texture2DArray.ArraySize = kTexArrayCapacity;
+
+        hr = device->CreateShaderResourceView(m_texArray.texture, &srvDesc, &m_texArray.srv);
+        if (FAILED(hr)) {
+            LOG(ERROR) << "[TerrainRenderer] Failed to create texture array SRV: 0x" << std::hex << hr;
+            m_texArray.texture->Release();
+            m_texArray.texture = nullptr;
+            return false;
+        }
+
+        m_texArray.capacity = kTexArrayCapacity;
+        m_texArray.mipCount = kTexArrayMips;
+        m_texArray.freeSlots.resize(kTexArrayCapacity);
+        for (uint32_t i = 0; i < kTexArrayCapacity; ++i)
+            m_texArray.freeSlots[i] = static_cast<int>(kTexArrayCapacity - 1 - i); // stack order
+
+        LOG(INFO) << "[TerrainRenderer] Texture array created: " << kTexArrayCapacity << " slots, BC1, " << kTexArrayMips << " mips";
+    }
+
     StartWorker();
     LOG(INFO) << "[TerrainRenderer] GPU pipeline ready (background loading enabled)";
     return true;
@@ -170,6 +219,7 @@ void TerrainRenderer::Shutdown() {
         ReleaseTileGpu(tile);
     m_gpuCache.clear();
     m_pending.clear();
+    m_texArray.Release();
     m_pipeline.Shutdown();
     m_texPipeline.Shutdown();
     m_device  = nullptr;
@@ -186,8 +236,10 @@ void TerrainRenderer::SetDataPath(const std::string& tcDataPath) {
 // ---------------------------------------------------------------------------
 
 void TerrainRenderer::ReleaseTileGpu(TileGpu& t) {
-    if (t.srv) { t.srv->Release(); t.srv = nullptr; }
-    if (t.tex) { t.tex->Release(); t.tex = nullptr; }
+    if (t.textureSlot >= 0) {
+        m_texArray.FreeSlot(t.textureSlot);
+        t.textureSlot = -1;
+    }
     if (t.vb) { t.vb->Release(); t.vb = nullptr; }
     if (t.ib) { t.ib->Release(); t.ib = nullptr; }
     t.hasTexture = false;
@@ -229,31 +281,39 @@ bool TerrainRenderer::UploadToGpu(const LoadResult& result) {
         }
     }
 
-    // Create texture atlas (1024x1024 BGRA) if available
-    if (result.hasTexture && result.textureAtlas.size() == 1024 * 1024 * 4) {
-        D3D11_TEXTURE2D_DESC td = {};
-        td.Width  = 1024;
-        td.Height = 1024;
-        td.MipLevels = 1;
-        td.ArraySize = 1;
-        td.Format    = DXGI_FORMAT_B8G8R8A8_UNORM;
-        td.SampleDesc.Count = 1;
-        td.Usage     = D3D11_USAGE_IMMUTABLE;
-        td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    // Upload BC1-compressed texture atlas into shared texture array
+    if (result.hasTexture && !result.compressedAtlas.bc1Data.empty() && m_texArray.texture) {
+        const auto& atlas = result.compressedAtlas;
+        int slot = m_texArray.AllocateSlot();
 
-        D3D11_SUBRESOURCE_DATA init = {};
-        init.pSysMem = result.textureAtlas.data();
-        init.SysMemPitch = 1024 * 4;
+        if (slot >= 0 && atlas.mipCount <= m_texArray.mipCount) {
+            uint32_t mw = atlas.width, mh = atlas.height;
+            for (uint32_t mip = 0; mip < atlas.mipCount; ++mip) {
+                UINT subresource = D3D11CalcSubresource(mip, static_cast<UINT>(slot), m_texArray.mipCount);
+                uint32_t blocksX = (std::max)(1u, (mw + 3) / 4);
+                uint32_t blocksY = (std::max)(1u, (mh + 3) / 4);
+                uint32_t rowPitch = blocksX * 8;  // BC1: 8 bytes per 4x4 block
 
-        HRESULT hr = m_device->CreateTexture2D(&td, &init, &gpu.tex);
-        if (SUCCEEDED(hr)) {
-            hr = m_device->CreateShaderResourceView(gpu.tex, nullptr, &gpu.srv);
-            if (SUCCEEDED(hr)) {
-                gpu.hasTexture = true;
-            } else {
-                gpu.tex->Release();
-                gpu.tex = nullptr;
+                D3D11_BOX box = {};
+                box.left   = 0;
+                box.top    = 0;
+                box.front  = 0;
+                box.right  = mw;
+                box.bottom = mh;
+                box.back   = 1;
+
+                m_context->UpdateSubresource(m_texArray.texture, subresource, &box,
+                                             atlas.bc1Data.data() + atlas.mipOffsets[mip],
+                                             rowPitch, 0);
+
+                mw = (std::max)(1u, mw / 2);
+                mh = (std::max)(1u, mh / 2);
             }
+            gpu.textureSlot = slot;
+            gpu.hasTexture = true;
+        } else if (slot >= 0) {
+            // Mip count mismatch — return slot
+            m_texArray.FreeSlot(slot);
         }
     }
 
@@ -553,42 +613,80 @@ void TerrainRenderer::Render(const Camera3D& camera,
     statDrawCalls = 0;
     statVertices  = 0;
 
-    // Bind sampler once (PS slot 0)
+    // Bind sampler + texture array once
     if (useTexPipeline) {
         ID3D11SamplerState* sam = m_texPipeline.GetSampler();
         ctx->PSSetSamplers(0, 1, &sam);
+
+        // Bind shared texture array SRV once for all tiles
+        if (m_texArray.srv) {
+            ctx->PSSetShaderResources(0, 1, &m_texArray.srv);
+        }
     }
+
+    // Partition visible tiles into procedural (single CB) and textured (per-tile CB)
+    struct VisibleTile { const TileGpu* tile; bool textured; };
+    std::vector<VisibleTile> visibleTiles;
+    visibleTiles.reserve(m_gpuCache.size());
 
     for (const auto& [key, tile] : m_gpuCache) {
         if (!tile.vb || !tile.ib || tile.indexCount == 0) continue;
         if (!FrustumIntersectsAABB(frustum, tile)) continue;
+        bool textured = texEnabled && tile.hasTexture && useTexPipeline && tile.textureSlot >= 0;
+        visibleTiles.push_back({ &tile, textured });
+    }
 
-        // Per-tile: set colorMode to 3 (texture) if tile has texture and textures enabled
-        bool tileTextured = texEnabled && tile.hasTexture && useTexPipeline;
-        cb.heightParams[2] = tileTextured ? 3.0f : static_cast<float>(colorMode);
+    // Bind CB once for all tiles
+    ctx->VSSetConstantBuffers(0, 1, &cbBuf);
+    ctx->PSSetConstantBuffers(0, 1, &cbBuf);
 
-        // Update CB
-        {
-            D3D11_MAPPED_SUBRESOURCE mapped = {};
-            if (SUCCEEDED(ctx->Map(cbBuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-                std::memcpy(mapped.pData, &cb, sizeof(cb));
-                ctx->Unmap(cbBuf, 0);
+    // Draw procedural tiles first (single CB update for batch)
+    {
+        cb.heightParams[2] = static_cast<float>(colorMode);
+        cb.tileParams[0] = 0.0f;
+        bool cbUpdated = false;
+
+        for (const auto& vt : visibleTiles) {
+            if (vt.textured) continue;
+
+            if (!cbUpdated) {
+                D3D11_MAPPED_SUBRESOURCE mapped = {};
+                if (SUCCEEDED(ctx->Map(cbBuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+                    std::memcpy(mapped.pData, &cb, sizeof(cb));
+                    ctx->Unmap(cbBuf, 0);
+                }
+                cbUpdated = true;
             }
-        }
-        ctx->VSSetConstantBuffers(0, 1, &cbBuf);
-        ctx->PSSetConstantBuffers(0, 1, &cbBuf);
 
-        // Bind texture SRV (or null)
-        if (useTexPipeline) {
-            ID3D11ShaderResourceView* srv = tileTextured ? tile.srv : nullptr;
-            ctx->PSSetShaderResources(0, 1, &srv);
+            ctx->IASetVertexBuffers(0, 1, &vt.tile->vb, &stride, &offset);
+            ctx->IASetIndexBuffer(vt.tile->ib, DXGI_FORMAT_R32_UINT, 0);
+            ctx->DrawIndexed(vt.tile->indexCount, 0, 0);
+            statDrawCalls++;
+            statVertices += vt.tile->indexCount;
         }
+    }
 
-        ctx->IASetVertexBuffers(0, 1, &tile.vb, &stride, &offset);
-        ctx->IASetIndexBuffer(tile.ib, DXGI_FORMAT_R32_UINT, 0);
-        ctx->DrawIndexed(tile.indexCount, 0, 0);
-        statDrawCalls++;
-        statVertices += tile.indexCount;
+    // Draw textured tiles (per-tile CB update for texture slot index only)
+    {
+        cb.heightParams[2] = 3.0f;
+        for (const auto& vt : visibleTiles) {
+            if (!vt.textured) continue;
+
+            cb.tileParams[0] = static_cast<float>(vt.tile->textureSlot);
+            {
+                D3D11_MAPPED_SUBRESOURCE mapped = {};
+                if (SUCCEEDED(ctx->Map(cbBuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+                    std::memcpy(mapped.pData, &cb, sizeof(cb));
+                    ctx->Unmap(cbBuf, 0);
+                }
+            }
+
+            ctx->IASetVertexBuffers(0, 1, &vt.tile->vb, &stride, &offset);
+            ctx->IASetIndexBuffer(vt.tile->ib, DXGI_FORMAT_R32_UINT, 0);
+            ctx->DrawIndexed(vt.tile->indexCount, 0, 0);
+            statDrawCalls++;
+            statVertices += vt.tile->indexCount;
+        }
     }
 
     // Unbind SRV to avoid warnings

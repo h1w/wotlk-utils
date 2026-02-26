@@ -13,6 +13,7 @@ cbuffer TerrainCB : register(b0) {
     float4 lightDir;      // xyz=direction, w=ambient
     float4 baseColor;     // RGBA
     float4 heightParams;  // x=minZ, y=maxZ, z=colorMode
+    float4 tileParams;    // x=textureSlot
 };
 
 struct VS_IN  { float3 pos : POSITION; float3 norm : NORMAL; };
@@ -42,6 +43,7 @@ cbuffer TerrainCB : register(b0) {
     float4 lightDir;
     float4 baseColor;
     float4 heightParams;
+    float4 tileParams;
 };
 
 struct PS_IN {

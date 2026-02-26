@@ -18,6 +18,7 @@
 #include "render/navmesh_renderer_3d.h"
 #include "render/primitives_3d.h"
 #include "render/graph_renderer_3d.h"
+#include "render/graph_mesh_cache.h"
 #include "render/route_renderer_3d.h"
 #include "render/path_renderer_3d.h"
 #include "render/grid_renderer_3d.h"
@@ -110,6 +111,8 @@ private:
     NavmeshRenderer3D m_navmeshRenderer3d;
     Primitives3D      m_primitives3d;
     Graph3DRenderer   m_graphRenderer3d;
+    GraphMeshCache    m_worldGraphCache;
+    GraphMeshCache    m_roadGraphCache;
     Route3DRenderer   m_routeRenderer3d;
     Path3DRenderer    m_pathRenderer3d;
     Grid3DRenderer    m_gridRenderer3d;

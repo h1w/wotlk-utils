@@ -42,6 +42,35 @@ float4 main(PS_IN i) : SV_TARGET {
 }
 )";
 
+// Instanced circle VS: unit circle vertex + per-instance transform
+static const char kInstancedVS[] = R"(
+cbuffer CB : register(b0) {
+    float4x4 viewProj;
+};
+
+struct VS_IN {
+    float2 localPos : POSITION;       // unit circle vertex (per-vertex)
+    float3 center   : INST_CENTER;    // world center (per-instance)
+    float  radius   : INST_RADIUS;    // circle radius (per-instance)
+    float4 color    : INST_COLOR;     // color (per-instance)
+};
+
+struct VS_OUT {
+    float4 pos : SV_POSITION;
+    float4 col : COLOR;
+};
+
+VS_OUT main(VS_IN i) {
+    VS_OUT o;
+    float3 worldPos = float3(i.center.x + i.localPos.x * i.radius,
+                              i.center.y + i.localPos.y * i.radius,
+                              i.center.z);
+    o.pos = mul(float4(worldPos, 1.0), viewProj);
+    o.col = i.color;
+    return o;
+}
+)";
+
 // ---- Initialize ---------------------------------------------------------
 
 bool Primitives3D::Initialize(ID3D11Device* device, ID3D11DeviceContext* context) {
@@ -187,13 +216,98 @@ bool Primitives3D::Initialize(ID3D11Device* device, ID3D11DeviceContext* context
     }
 
     m_lines.reserve(4096);
-    LOG(INFO) << "[Primitives3D] Initialized (max " << kMaxVertices << " vertices)";
+
+    // --- Instanced circle pipeline ---
+    {
+        // Compile instanced VS
+        ID3DBlob* instVsBlob = nullptr;
+        hr = D3DCompile(kInstancedVS, strlen(kInstancedVS), "InstancedCircleVS", nullptr, nullptr,
+                        "main", "vs_4_0", 0, 0, &instVsBlob, &err);
+        if (FAILED(hr)) {
+            if (err) {
+                LOG(ERROR) << "[Primitives3D] Instanced VS: " << (const char*)err->GetBufferPointer();
+                err->Release();
+            }
+            // Non-fatal: instanced circles won't be available
+        } else {
+            hr = device->CreateVertexShader(instVsBlob->GetBufferPointer(),
+                                            instVsBlob->GetBufferSize(),
+                                            nullptr, &m_instVS);
+            if (SUCCEEDED(hr)) {
+                // Input layout: per-vertex float2 + per-instance (float3+float+color)
+                D3D11_INPUT_ELEMENT_DESC instLayout[] = {
+                    { "POSITION",    0, DXGI_FORMAT_R32G32_FLOAT,       0,  0, D3D11_INPUT_PER_VERTEX_DATA,   0 },
+                    { "INST_CENTER", 0, DXGI_FORMAT_R32G32B32_FLOAT,    1,  0, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+                    { "INST_RADIUS", 0, DXGI_FORMAT_R32_FLOAT,          1, 12, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+                    { "INST_COLOR",  0, DXGI_FORMAT_R8G8B8A8_UNORM,     1, 16, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+                };
+                hr = device->CreateInputLayout(instLayout, 4,
+                                               instVsBlob->GetBufferPointer(),
+                                               instVsBlob->GetBufferSize(),
+                                               &m_instLayout);
+                if (FAILED(hr)) {
+                    LOG(ERROR) << "[Primitives3D] Instanced layout failed: 0x" << std::hex << hr;
+                    m_instVS->Release(); m_instVS = nullptr;
+                }
+            }
+            instVsBlob->Release();
+        }
+
+        // Static unit circle VB (kCircleSegments segments, LINELIST)
+        if (m_instVS) {
+            struct CircleVert { float x, y; };
+            CircleVert circleVerts[kCircleVerts];
+            const float step = 2.0f * 3.14159265358979f / static_cast<float>(kCircleSegments);
+            for (UINT s = 0; s < kCircleSegments; ++s) {
+                float a0 = step * static_cast<float>(s);
+                float a1 = step * static_cast<float>(s + 1);
+                circleVerts[s * 2 + 0] = { std::cos(a0), std::sin(a0) };
+                circleVerts[s * 2 + 1] = { std::cos(a1), std::sin(a1) };
+            }
+
+            D3D11_BUFFER_DESC cvbd = {};
+            cvbd.ByteWidth = sizeof(circleVerts);
+            cvbd.Usage     = D3D11_USAGE_IMMUTABLE;
+            cvbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            D3D11_SUBRESOURCE_DATA cvinit = {};
+            cvinit.pSysMem = circleVerts;
+            hr = device->CreateBuffer(&cvbd, &cvinit, &m_circleVB);
+            if (FAILED(hr)) {
+                LOG(ERROR) << "[Primitives3D] Circle VB failed";
+                m_instVS->Release(); m_instVS = nullptr;
+                m_instLayout->Release(); m_instLayout = nullptr;
+            }
+        }
+
+        // Dynamic instance buffer
+        if (m_instVS) {
+            D3D11_BUFFER_DESC ibd = {};
+            ibd.ByteWidth      = kMaxInstances * sizeof(NodeInstance);
+            ibd.Usage          = D3D11_USAGE_DYNAMIC;
+            ibd.BindFlags      = D3D11_BIND_VERTEX_BUFFER;
+            ibd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            hr = device->CreateBuffer(&ibd, nullptr, &m_instanceVB);
+            if (FAILED(hr)) {
+                LOG(ERROR) << "[Primitives3D] Instance VB failed";
+                m_instVS->Release(); m_instVS = nullptr;
+                m_instLayout->Release(); m_instLayout = nullptr;
+                m_circleVB->Release(); m_circleVB = nullptr;
+            }
+        }
+    }
+
+    LOG(INFO) << "[Primitives3D] Initialized (max " << kMaxVertices << " vertices"
+              << (m_instVS ? ", instancing enabled" : "") << ")";
     return true;
 }
 
 // ---- Shutdown -----------------------------------------------------------
 
 void Primitives3D::Shutdown() {
+    if (m_instanceVB) { m_instanceVB->Release(); m_instanceVB = nullptr; }
+    if (m_circleVB)   { m_circleVB->Release();   m_circleVB   = nullptr; }
+    if (m_instLayout) { m_instLayout->Release(); m_instLayout = nullptr; }
+    if (m_instVS)     { m_instVS->Release();     m_instVS     = nullptr; }
     if (m_dsState)    { m_dsState->Release();    m_dsState    = nullptr; }
     if (m_rastState)  { m_rastState->Release();  m_rastState  = nullptr; }
     if (m_blendState) { m_blendState->Release(); m_blendState = nullptr; }
@@ -300,6 +414,88 @@ void Primitives3D::Flush(const float viewProj[16]) {
     m_context->RSSetState(m_rastState);
 
     m_context->Draw(count, 0);
+}
+
+// ---- DrawInstancedCircles ------------------------------------------------
+
+void Primitives3D::DrawInstancedCircles(const NodeInstance* instances, uint32_t count,
+                                          const float viewProj[16]) {
+    if (!m_instVS || !m_context || !instances || count == 0)
+        return;
+    if (count > kMaxInstances) count = kMaxInstances;
+
+    // Update constant buffer
+    {
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+        HRESULT hr = m_context->Map(m_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (FAILED(hr)) return;
+        std::memcpy(mapped.pData, viewProj, 64);
+        m_context->Unmap(m_cb, 0);
+    }
+
+    // Upload instances
+    {
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+        HRESULT hr = m_context->Map(m_instanceVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (FAILED(hr)) return;
+        std::memcpy(mapped.pData, instances, count * sizeof(NodeInstance));
+        m_context->Unmap(m_instanceVB, 0);
+    }
+
+    // Bind pipeline
+    m_context->VSSetShader(m_instVS, nullptr, 0);
+    m_context->PSSetShader(m_ps, nullptr, 0);  // same PS as regular lines
+    m_context->IASetInputLayout(m_instLayout);
+    m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+
+    // Slot 0: unit circle VB (per-vertex), Slot 1: instance VB (per-instance)
+    ID3D11Buffer* vbs[2] = { m_circleVB, m_instanceVB };
+    UINT strides[2] = { sizeof(float) * 2, sizeof(NodeInstance) };
+    UINT offsets[2] = { 0, 0 };
+    m_context->IASetVertexBuffers(0, 2, vbs, strides, offsets);
+    m_context->VSSetConstantBuffers(0, 1, &m_cb);
+
+    float blendFactor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    m_context->OMSetBlendState(m_blendState, blendFactor, 0xFFFFFFFF);
+    m_context->OMSetDepthStencilState(m_dsState, 0);
+    m_context->RSSetState(m_rastState);
+
+    m_context->DrawInstanced(kCircleVerts, count, 0, 0);
+}
+
+// ---- DrawExternalVB -----------------------------------------------------
+
+void Primitives3D::DrawExternalVB(ID3D11Buffer* vb, uint32_t vertexCount,
+                                    const float viewProj[16]) {
+    if (!m_device || !m_context || !vb || vertexCount == 0)
+        return;
+
+    // Update constant buffer with VP matrix
+    {
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+        HRESULT hr = m_context->Map(m_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (FAILED(hr)) return;
+        std::memcpy(mapped.pData, viewProj, 64);
+        m_context->Unmap(m_cb, 0);
+    }
+
+    // Bind pipeline state (same as Flush)
+    m_context->VSSetShader(m_vs, nullptr, 0);
+    m_context->PSSetShader(m_ps, nullptr, 0);
+    m_context->IASetInputLayout(m_layout);
+    m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+
+    UINT stride = sizeof(LineVertex);
+    UINT offset = 0;
+    m_context->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
+    m_context->VSSetConstantBuffers(0, 1, &m_cb);
+
+    float blendFactor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    m_context->OMSetBlendState(m_blendState, blendFactor, 0xFFFFFFFF);
+    m_context->OMSetDepthStencilState(m_dsState, 0);
+    m_context->RSSetState(m_rastState);
+
+    m_context->Draw(vertexCount, 0);
 }
 
 } // namespace mapedit

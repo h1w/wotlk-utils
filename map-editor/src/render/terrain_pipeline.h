@@ -16,8 +16,9 @@ struct TerrainCB {
     float viewProj[16];     // 64 bytes - Transposed VP matrix (column-major HLSL, matching navmesh)
     float lightDir[4];      // 16 bytes - directional light direction (xyz), ambient (w)
     float baseColor[4];     // 16 bytes - terrain fill color RGBA
-    float heightParams[4];  // 16 bytes - [0]=minZ, [1]=maxZ, [2]=colorMode, [3]=unused
-};                           // 112 bytes
+    float heightParams[4];  // 16 bytes - [0]=minZ, [1]=maxZ, [2]=colorMode, [3]=smooth/wall
+    float tileParams[4];    // 16 bytes - [0]=textureSlot (array index)
+};                           // 128 bytes
 
 class TerrainPipeline {
 public:

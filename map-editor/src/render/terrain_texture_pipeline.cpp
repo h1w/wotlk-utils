@@ -19,6 +19,7 @@ cbuffer TerrainCB : register(b0) {
     float4 lightDir;      // xyz=direction, w=ambient
     float4 baseColor;     // RGBA
     float4 heightParams;  // x=minZ, y=maxZ, z=colorMode
+    float4 tileParams;    // x=textureSlot
 };
 
 struct VS_IN  { float3 pos : POSITION; float3 norm : NORMAL; float2 uv : TEXCOORD0; };
@@ -49,10 +50,11 @@ cbuffer TerrainCB : register(b0) {
     float4 lightDir;
     float4 baseColor;
     float4 heightParams;
+    float4 tileParams;
 };
 
-Texture2D    texAtlas : register(t0);
-SamplerState samLinear : register(s0);
+Texture2DArray texAtlas : register(t0);
+SamplerState   samLinear : register(s0);
 
 struct PS_IN {
     float4 clipPos  : SV_POSITION;
@@ -86,7 +88,7 @@ float4 main(PS_IN i) : SV_TARGET {
 
     if (mode == 3) {
         // Texture mode: sample atlas
-        color = texAtlas.Sample(samLinear, i.uv).rgb;
+        color = texAtlas.Sample(samLinear, float3(i.uv, tileParams.x)).rgb;
     }
     else if (mode == 1) {
         float t = saturate((i.worldPos.z - heightParams.x) /

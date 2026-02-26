@@ -18,6 +18,11 @@ public:
                 const MultiSelection& selection, const LayerVisibility& layers,
                 float dimAlpha = 1.0f);
 
+    // Render only node labels (for use with cached geometry)
+    void RenderLabelsOnly(const Camera3D& camera,
+                          const WorldGraphData& graph, uint32_t mapId,
+                          const LayerVisibility& layers);
+
     // Render issue overlay (component coloring + gap dashed lines)
     void RenderIssueOverlay(const Camera3D& camera, Primitives3D& prims,
                             const WorldGraphData& graph, uint32_t mapId,

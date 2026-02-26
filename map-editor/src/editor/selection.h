@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <functional>
 #include <unordered_set>
 
 namespace mapedit {
@@ -18,6 +19,16 @@ struct MultiSelection {
     bool IsNodeSelected(uint32_t id) const { return nodes.count(id) > 0; }
     bool IsEdgeSelected(size_t idx)  const { return edges.count(idx) > 0; }
     size_t Count() const { return nodes.size() + edges.size(); }
+
+    // Hash for dirty-checking (changes when selection changes)
+    size_t GetHash() const {
+        size_t h = nodes.size() * 2654435761u;
+        for (uint32_t id : nodes)
+            h ^= std::hash<uint32_t>{}(id) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        for (size_t idx : edges)
+            h ^= std::hash<size_t>{}(idx) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        return h;
+    }
 
     // --- Backwards compat (single selection) ---
     bool IsSingleNode() const { return nodes.size() == 1 && edges.empty(); }

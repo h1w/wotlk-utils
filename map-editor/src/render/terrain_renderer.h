@@ -19,6 +19,7 @@
 #include "../data/terrain_mesh.h"
 #include "../data/adt_texture_parser.h"
 #include "../data/terrain_texture_compositor.h"
+#include "../data/bc1_compressor.h"
 
 namespace mapedit {
 
@@ -61,10 +62,34 @@ private:
         float minX = 0, minY = 0, minZ = 0;
         float maxX = 0, maxY = 0, maxZ = 0;
         int decimation = 0;   // LOD level this tile was loaded at
-        // Texture atlas (created from CPU composite)
-        ID3D11Texture2D*          tex = nullptr;
-        ID3D11ShaderResourceView* srv = nullptr;
+        int textureSlot = -1; // index into texture array (-1 = no texture)
         bool hasTexture = false;
+    };
+
+    // Shared Texture2DArray for all tile textures
+    struct TextureAtlasArray {
+        ID3D11Texture2D*          texture = nullptr;
+        ID3D11ShaderResourceView* srv = nullptr;
+        uint32_t capacity = 0;
+        uint32_t mipCount = 0;
+        std::vector<int> freeSlots;
+
+        int AllocateSlot() {
+            if (freeSlots.empty()) return -1;
+            int slot = freeSlots.back();
+            freeSlots.pop_back();
+            return slot;
+        }
+        void FreeSlot(int slot) {
+            if (slot >= 0)
+                freeSlots.push_back(slot);
+        }
+        void Release() {
+            if (srv)     { srv->Release();     srv = nullptr; }
+            if (texture) { texture->Release(); texture = nullptr; }
+            freeSlots.clear();
+            capacity = 0;
+        }
     };
 
     using TileKey = std::pair<int, int>;
@@ -89,8 +114,8 @@ private:
         float minX, minY, minZ;
         float maxX, maxY, maxZ;
         bool valid;  // false = no data for this tile
-        // Texture atlas (1024x1024 BGRA, from CPU composite)
-        std::vector<uint8_t> textureAtlas;
+        // BC1-compressed texture atlas with mip chain
+        CompressedAtlas compressedAtlas;
         bool hasTexture = false;
     };
 
@@ -111,6 +136,7 @@ private:
     TerrainTexturePipeline    m_texPipeline;     // textured terrain
 
     std::map<TileKey, TileGpu> m_gpuCache;
+    TextureAtlasArray m_texArray;
     uint32_t m_currentMapId = UINT32_MAX;
 
     // Global height range across all loaded tiles (for height gradient)

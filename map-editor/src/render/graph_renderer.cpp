@@ -68,6 +68,12 @@ void GraphRenderer::Render(const Canvas& canvas, const WorldGraphData& graph,
             // Skip if neither endpoint is on current map
             if (from->mapId != mapId && to->mapId != mapId) continue;
 
+            // AABB viewport cull
+            if (from->x < minX && to->x < minX) continue;
+            if (from->x > maxX && to->x > maxX) continue;
+            if (from->y < minY && to->y < minY) continue;
+            if (from->y > maxY && to->y > maxY) continue;
+
             float sx1, sy1, sx2, sy2;
             canvas.WorldToScreen(from->x, from->y, sx1, sy1);
             canvas.WorldToScreen(to->x, to->y, sx2, sy2);
@@ -134,6 +140,12 @@ void GraphRenderer::RenderRoadOverlay(const Canvas& canvas, const WorldGraphData
         const auto* to   = roadGraph.GetNode(edge.toNode);
         if (!from || !to) continue;
         if (from->mapId != mapId && to->mapId != mapId) continue;
+
+        // AABB viewport cull
+        if (from->x < minX && to->x < minX) continue;
+        if (from->x > maxX && to->x > maxX) continue;
+        if (from->y < minY && to->y < minY) continue;
+        if (from->y > maxY && to->y > maxY) continue;
 
         float sx1, sy1, sx2, sy2;
         canvas.WorldToScreen(from->x, from->y, sx1, sy1);
@@ -207,6 +219,9 @@ void GraphRenderer::RenderIssueOverlay(const Canvas& canvas, const WorldGraphDat
 
     auto* dl = BeginGraphOverlay("##IssueOverlay", canvas);
 
+    float minX, maxX, minY, maxY;
+    canvas.GetViewBounds(minX, maxX, minY, maxY);
+
     // Component coloring: only when multiple components exist
     if (validation.componentCount > 1) {
         // Color edges by component (use fromNode's component)
@@ -215,6 +230,12 @@ void GraphRenderer::RenderIssueOverlay(const Canvas& canvas, const WorldGraphDat
             const auto* to = graph.GetNode(edge.toNode);
             if (!from || !to) continue;
             if (from->mapId != mapId && to->mapId != mapId) continue;
+
+            // AABB viewport cull
+            if (from->x < minX && to->x < minX) continue;
+            if (from->x > maxX && to->x > maxX) continue;
+            if (from->y < minY && to->y < minY) continue;
+            if (from->y > maxY && to->y > maxY) continue;
 
             auto itFrom = validation.nodeComponent.find(edge.fromNode);
             auto itTo = validation.nodeComponent.find(edge.toNode);
@@ -233,8 +254,6 @@ void GraphRenderer::RenderIssueOverlay(const Canvas& canvas, const WorldGraphDat
         }
 
         // Color nodes by component
-        float minX, maxX, minY, maxY;
-        canvas.GetViewBounds(minX, maxX, minY, maxY);
 
         for (const auto& node : graph.GetNodes()) {
             if (node.mapId != mapId) continue;

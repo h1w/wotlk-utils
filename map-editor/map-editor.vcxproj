@@ -148,6 +148,8 @@ copy /Y "C:\vcpkg\installed\x64-windows\bin\StormLib.dll" "$(OutDir)StormLib.dll
     <ClInclude Include="src\data\adt_texture_parser.h" />
     <ClInclude Include="src\data\mcal_decoder.h" />
     <ClInclude Include="src\data\terrain_texture_compositor.h" />
+    <ClInclude Include="src\data\bc1_compressor.h" />
+    <ClInclude Include="src\third_party\stb_dxt.h" />
     <ClInclude Include="src\render\terrain_pipeline.h" />
     <ClInclude Include="src\render\terrain_renderer.h" />
     <ClInclude Include="src\render\terrain_texture_pipeline.h" />
@@ -156,6 +158,7 @@ copy /Y "C:\vcpkg\installed\x64-windows\bin\StormLib.dll" "$(OutDir)StormLib.dll
     <ClInclude Include="src\data\wmo_portal_loader.h" />
     <ClInclude Include="src\data\wmo_visual_loader.h" />
     <ClInclude Include="src\render\building_renderer.h" />
+    <ClInclude Include="src\render\graph_mesh_cache.h" />
     <ClInclude Include="src\render\frame_profiler.h" />
   </ItemGroup>
   <ItemGroup>
@@ -209,6 +212,7 @@ copy /Y "C:\vcpkg\installed\x64-windows\bin\StormLib.dll" "$(OutDir)StormLib.dll
     <ClCompile Include="src\data\adt_texture_parser.cpp" />
     <ClCompile Include="src\data\mcal_decoder.cpp" />
     <ClCompile Include="src\data\terrain_texture_compositor.cpp" />
+    <ClCompile Include="src\data\bc1_compressor.cpp" />
     <ClCompile Include="src\render\terrain_pipeline.cpp" />
     <ClCompile Include="src\render\terrain_renderer.cpp" />
     <ClCompile Include="src\render\terrain_texture_pipeline.cpp" />
@@ -217,6 +221,7 @@ copy /Y "C:\vcpkg\installed\x64-windows\bin\StormLib.dll" "$(OutDir)StormLib.dll
     <ClCompile Include="src\data\wmo_portal_loader.cpp" />
     <ClCompile Include="src\data\wmo_visual_loader.cpp" />
     <ClCompile Include="src\render\building_renderer.cpp" />
+    <ClCompile Include="src\render\graph_mesh_cache.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -27,6 +27,20 @@ public:
     // Flush accumulated geometry with given VP matrix (row-major float[16])
     void Flush(const float viewProj[16]);
 
+    // Draw an external static vertex buffer (same LineVertex format)
+    void DrawExternalVB(ID3D11Buffer* vb, uint32_t vertexCount, const float viewProj[16]);
+
+    // Instanced node circle data (one per visible node)
+    struct NodeInstance {
+        float    x, y, z;    // center position
+        float    radius;     // circle radius
+        uint32_t color;      // ABGR packed
+    };
+
+    // Draw instanced node circles. Instances should be pre-filled by caller.
+    void DrawInstancedCircles(const NodeInstance* instances, uint32_t count,
+                               const float viewProj[16]);
+
 private:
     struct LineVertex {
         float    x, y, z;
@@ -46,6 +60,15 @@ private:
 
     std::vector<LineVertex> m_lines; // accumulated this frame
     static constexpr UINT kMaxVertices = 524288; // 512K verts (8 MB GPU buffer)
+
+    // Instanced circle rendering
+    ID3D11Buffer*       m_circleVB   = nullptr; // static unit circle (16 segments)
+    ID3D11Buffer*       m_instanceVB = nullptr; // dynamic per-frame instance data
+    ID3D11VertexShader* m_instVS     = nullptr;
+    ID3D11InputLayout*  m_instLayout = nullptr;
+    static constexpr UINT kCircleSegments   = 16;
+    static constexpr UINT kCircleVerts      = kCircleSegments * 2; // LINELIST
+    static constexpr UINT kMaxInstances     = 8192;
 };
 
 } // namespace mapedit
