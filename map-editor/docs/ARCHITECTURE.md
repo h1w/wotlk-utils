@@ -46,6 +46,7 @@ map-editor/src/
         graph_editor.h / .cpp   Full graph editor: draw/edge/split modes, context menu, drag,
                                 lasso/box selection, merge, straighten, auto-connect, validate.
                                 EditorProjection abstraction enables same code for 2D and 3D.
+        graph_validator.h/.cpp  Graph validation (disconnected components, gaps, dead-ends, etc.)
         route_editor.h / .cpp   Route waypoint placement + drag
         undo_redo.h / .cpp      Snapshot-based undo/redo (100 levels, separate stacks per graph)
 
@@ -75,6 +76,7 @@ map-editor/src/
         main_menu.h / .cpp          File/Edit/View/Map menu bar
         property_panel.h / .cpp     Inspector for selected objects
         layer_panel.h / .cpp        Layer visibility + background mode
+        issue_panel.h / .cpp        Graph issues panel (validation overlay, gap filter, type toggles)
         status_bar.h / .cpp         Cursor coords, zoom, map name
         log_window.h / .cpp         glog-integrated log viewer
         compass.h / .cpp            Compass rose overlay (2D static / 3D rotating)
@@ -196,7 +198,7 @@ Virtual player marker for 3D mode. Supports Ctrl+Click teleport, Shift+Click pat
 
 ### Settings Persistence (`data/app_settings.cpp`)
 
-JSON file (`app_settings.json`) stores: directories, last map, layer visibility, background mode/opacity, window dimensions, terrain/building layer toggles. Loaded on startup, saved on exit.
+JSON file (`map_editor_settings.json`) stores: directories, last map, layer visibility, background mode/opacity, window dimensions, terrain/building layer toggles, issue panel state (graph mode, view mode, panel open/closed, gap distance slider, overlay toggle, type filter toggles). Loaded on startup, saved on exit.
 
 ### Exit Confirmation (`app.cpp`)
 

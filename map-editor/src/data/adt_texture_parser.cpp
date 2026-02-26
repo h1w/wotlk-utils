@@ -317,7 +317,7 @@ AdtTextureData AdtTextureParser::Parse(const std::string& mapName, int tileX, in
     }
 
     result.valid = true;
-    LOG(INFO) << "[AdtTextureParser] Parsed " << mapName << "_" << tileY << "_" << tileX
+    DLOG(INFO) << "[AdtTextureParser] Parsed " << mapName << "_" << tileY << "_" << tileX
               << ": " << result.texturePaths.size() << " textures";
     return result;
 }

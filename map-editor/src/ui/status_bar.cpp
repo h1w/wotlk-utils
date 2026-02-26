@@ -1,4 +1,5 @@
 #include "status_bar.h"
+#include "issue_panel.h"
 #include "../canvas/canvas.h"
 #include "../camera/camera3d.h"
 #include "../data/terrain_height_sampler.h"
@@ -25,7 +26,7 @@ static void FormatHeight(char* buf, size_t bufSize, TerrainHeightSampler* sample
 }
 
 void StatusBar::Render(const Canvas& canvas, uint32_t mapId, const char* mapName,
-                       TerrainHeightSampler* heightSampler) {
+                       TerrainHeightSampler* heightSampler, IssuePanel* issuePanel) {
     float barHeight = 28.0f;
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y + vp->WorkSize.y - barHeight));
@@ -50,12 +51,15 @@ void StatusBar::Render(const Canvas& canvas, uint32_t mapId, const char* mapName
     ImGui::Text("Mode: 2D  |  Map: %s (%u)  |  Cursor: (%.1f, %.1f)  |  Tile: [%d, %d]  |  Zoom: %.3f  |  %s",
                 mapName ? mapName : "None", mapId, wx, wy, tileX, tileY, canvas.zoom, hBuf);
 
+    if (issuePanel)
+        issuePanel->RenderIndicator();
+
     ImGui::End();
     ImGui::PopStyleVar();
 }
 
 void StatusBar::Render3D(const Camera3D& camera, uint32_t mapId, const char* mapName,
-                         TerrainHeightSampler* heightSampler) {
+                         TerrainHeightSampler* heightSampler, IssuePanel* issuePanel) {
     float barHeight = 28.0f;
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y + vp->WorkSize.y - barHeight));
@@ -117,6 +121,9 @@ void StatusBar::Render3D(const Camera3D& camera, uint32_t mapId, const char* map
                     camera.pitch * 180.0f / 3.14159f,
                     hBuf);
     }
+
+    if (issuePanel)
+        issuePanel->RenderIndicator();
 
     ImGui::End();
     ImGui::PopStyleVar();

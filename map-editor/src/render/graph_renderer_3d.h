@@ -8,6 +8,7 @@ class Primitives3D;
 class WorldGraphData;
 struct MultiSelection;
 struct LayerVisibility;
+struct ValidationResult;
 
 class Graph3DRenderer {
 public:
@@ -16,6 +17,12 @@ public:
                 const WorldGraphData& graph, uint32_t mapId,
                 const MultiSelection& selection, const LayerVisibility& layers,
                 float dimAlpha = 1.0f);
+
+    // Render issue overlay (component coloring + gap dashed lines)
+    void RenderIssueOverlay(const Camera3D& camera, Primitives3D& prims,
+                            const WorldGraphData& graph, uint32_t mapId,
+                            const ValidationResult& validation,
+                            float gapMaxDistance);
 };
 
 } // namespace mapedit

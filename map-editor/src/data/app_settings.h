@@ -43,6 +43,18 @@ struct AppSettings {
     bool showBuildingObjects = false;
     bool enablePortalCulling = true;
 
+    // Issue panel
+    int   issueGraphMode      = 0;     // 0=World, 1=Road
+    int   issueViewMode       = 0;     // 0=Active, 1=Dismissed
+    bool  issuePanelOpen      = false;
+    float issueGapMaxDistance  = 20.0f;
+    bool  issueShowOverlay    = true;
+    bool  issueShowDisconnected = true;
+    bool  issueShowDeadEnds   = true;
+    bool  issueShowOrphans    = true;
+    bool  issueShowDuplicates = true;
+    bool  issueShowZeroLength = true;
+
     // Performance / view
     int  viewMode      = 0;     // 0=2D, 1=3D
     bool vsync         = false;

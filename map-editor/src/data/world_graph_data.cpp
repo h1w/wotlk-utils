@@ -159,6 +159,7 @@ uint32_t WorldGraphData::AddNode(const WorldNode& node) {
     m_nodeIndex[n.id] = m_nodes.size();
     m_nodes.push_back(std::move(n));
     m_dirty = true;
+    ++m_version;
     return m_nodes.back().id;
 }
 
@@ -177,6 +178,7 @@ void WorldGraphData::RemoveNode(uint32_t id) {
 
     RebuildIndex();
     m_dirty = true;
+    ++m_version;
 }
 
 WorldNode* WorldGraphData::GetNode(uint32_t id) {
@@ -194,6 +196,7 @@ const WorldNode* WorldGraphData::GetNode(uint32_t id) const {
 size_t WorldGraphData::AddEdge(const WorldEdge& edge) {
     m_edges.push_back(edge);
     m_dirty = true;
+    ++m_version;
     return m_edges.size() - 1;
 }
 
@@ -201,6 +204,7 @@ void WorldGraphData::RemoveEdge(size_t index) {
     if (index >= m_edges.size()) return;
     m_edges.erase(m_edges.begin() + index);
     m_dirty = true;
+    ++m_version;
 }
 
 void WorldGraphData::SetState(std::vector<WorldNode> nodes, std::vector<WorldEdge> edges) {
@@ -213,6 +217,7 @@ void WorldGraphData::SetState(std::vector<WorldNode> nodes, std::vector<WorldEdg
     }
     RebuildIndex();
     m_dirty = true;
+    ++m_version;
 }
 
 void WorldGraphData::RebuildIndex() {

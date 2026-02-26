@@ -6,6 +6,7 @@ namespace mapedit {
 struct Canvas;
 class WorldGraphData;
 struct MultiSelection;
+struct ValidationResult;
 
 struct LayerVisibility {
     bool showNodes = true;
@@ -42,6 +43,10 @@ public:
 
     void RenderRoadOverlay(const Canvas& canvas, const WorldGraphData& roadGraph,
                            uint32_t mapId);
+
+    void RenderIssueOverlay(const Canvas& canvas, const WorldGraphData& graph,
+                            uint32_t mapId, const ValidationResult& validation,
+                            float gapMaxDistance);
 };
 
 } // namespace mapedit

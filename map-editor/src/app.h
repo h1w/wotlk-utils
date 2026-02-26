@@ -34,10 +34,12 @@
 #include "navmesh/pathfinder.h"
 #include "editor/selection.h"
 #include "editor/graph_editor.h"
+#include "editor/graph_validator.h"
 #include "editor/route_editor.h"
 #include "editor/undo_redo.h"
 #include "data/app_settings.h"
 #include "ui/status_bar.h"
+#include "ui/issue_panel.h"
 #include "ui/property_panel.h"
 #include "ui/layer_panel.h"
 #include "ui/main_menu.h"
@@ -131,6 +133,14 @@ private:
     UndoRedo        m_roadUndoRedo;
     ActiveGraph     m_activeGraph = ActiveGraph::ReadOnly;
 
+    // Graph validation (per-graph)
+    GraphValidator   m_graphValidator;
+    ValidationResult m_worldValidation;
+    ValidationResult m_roadValidation;
+    uint32_t         m_lastWorldVersion = 0;
+    uint32_t         m_lastRoadVersion = 0;
+    uint32_t         m_lastValidationMapId = 0xFFFFFFFF;
+
     // Data
     WorldGraphData  m_graphData;
     WorldGraphData  m_roadGraphData;
@@ -138,6 +148,7 @@ private:
 
     // UI
     StatusBar       m_statusBar;
+    IssuePanel      m_issuePanel;
     PropertyPanel   m_propertyPanel;
     LayerPanel      m_layerPanel;
     MainMenu        m_mainMenu;

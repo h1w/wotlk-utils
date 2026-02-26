@@ -126,9 +126,11 @@ copy /Y "C:\vcpkg\installed\x64-windows\bin\StormLib.dll" "$(OutDir)StormLib.dll
     <ClInclude Include="src\navmesh\pathfinder.h" />
     <ClInclude Include="src\editor\selection.h" />
     <ClInclude Include="src\editor\graph_editor.h" />
+    <ClInclude Include="src\editor\graph_validator.h" />
     <ClInclude Include="src\editor\route_editor.h" />
     <ClInclude Include="src\editor\undo_redo.h" />
     <ClInclude Include="src\ui\status_bar.h" />
+    <ClInclude Include="src\ui\issue_panel.h" />
     <ClInclude Include="src\ui\property_panel.h" />
     <ClInclude Include="src\ui\layer_panel.h" />
     <ClInclude Include="src\ui\log_window.h" />
@@ -185,9 +187,11 @@ copy /Y "C:\vcpkg\installed\x64-windows\bin\StormLib.dll" "$(OutDir)StormLib.dll
     <ClCompile Include="src\navmesh\pathfinder.cpp" />
     <ClCompile Include="src\editor\selection.cpp" />
     <ClCompile Include="src\editor\graph_editor.cpp" />
+    <ClCompile Include="src\editor\graph_validator.cpp" />
     <ClCompile Include="src\editor\route_editor.cpp" />
     <ClCompile Include="src\editor\undo_redo.cpp" />
     <ClCompile Include="src\ui\status_bar.cpp" />
+    <ClCompile Include="src\ui\issue_panel.cpp" />
     <ClCompile Include="src\ui\property_panel.cpp" />
     <ClCompile Include="src\ui\layer_panel.cpp" />
     <ClCompile Include="src\ui\log_window.cpp" />

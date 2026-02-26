@@ -61,7 +61,9 @@ public:
 
     bool IsDirty() const { return m_dirty; }
     void ClearDirty() { m_dirty = false; }
-    void MarkDirty() { m_dirty = true; }
+    void MarkDirty() { m_dirty = true; ++m_version; }
+
+    uint32_t GetVersion() const { return m_version; }
 
     bool IsLoaded() const { return m_loaded; }
     const std::string& GetFilePath() const { return m_filePath; }
@@ -71,6 +73,7 @@ private:
     std::vector<WorldEdge> m_edges;
     std::unordered_map<uint32_t, size_t> m_nodeIndex;
     uint32_t m_nextId = 1;
+    uint32_t m_version = 0;
     bool m_dirty = false;
     bool m_loaded = false;
     std::string m_filePath;

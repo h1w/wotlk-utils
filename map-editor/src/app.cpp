@@ -148,7 +148,26 @@ bool App::Initialize(HINSTANCE hInstance) {
     m_fpsLimit     = m_settings.fpsLimit;
     m_showProfiler = m_settings.showProfiler;
 
+    // Restore issue panel state
+    m_issuePanel.SetGraphMode(m_settings.issueGraphMode == 1 ? IssueGraphMode::Road : IssueGraphMode::World);
+    m_issuePanel.SetViewMode(m_settings.issueViewMode == 1 ? IssueViewMode::Dismissed : IssueViewMode::Active);
+    m_issuePanel.SetPopupOpen(m_settings.issuePanelOpen);
+    m_issuePanel.SetGapMaxDistance(m_settings.issueGapMaxDistance);
+    m_issuePanel.SetShowIssueOverlay(m_settings.issueShowOverlay);
+    m_issuePanel.SetShowDisconnected(m_settings.issueShowDisconnected);
+    m_issuePanel.SetShowDeadEnds(m_settings.issueShowDeadEnds);
+    m_issuePanel.SetShowOrphans(m_settings.issueShowOrphans);
+    m_issuePanel.SetShowDuplicates(m_settings.issueShowDuplicates);
+    m_issuePanel.SetShowZeroLength(m_settings.issueShowZeroLength);
+
     m_graphEditor.SetHeightSampler(&m_heightSampler);
+
+    // Load dismissed graph issues
+    {
+        namespace fs = std::filesystem;
+        fs::path settingsDir = fs::path(AppSettings::GetSettingsPath()).parent_path();
+        m_issuePanel.LoadDismissed((settingsDir / "dismissed_issues.json").string());
+    }
 
     LOG(INFO) << "[App] Initialized";
     return true;
@@ -814,6 +833,45 @@ void App::RenderFrame2D() {
             m_canvas.ProcessInput();
     }
 
+    // === Graph validation (rerun on version change or map switch) ===
+    {
+        uint32_t worldVer = m_graphData.GetVersion();
+        uint32_t roadVer = m_roadGraphData.GetVersion();
+        bool mapChanged = m_currentMapId != m_lastValidationMapId;
+
+        if (worldVer != m_lastWorldVersion || mapChanged) {
+            if (m_graphData.IsLoaded()) {
+                m_worldValidation = m_graphValidator.Validate(m_graphData, m_currentMapId);
+                int worldTotal = m_graphValidator.CountTotalIssues(m_graphData);
+                m_issuePanel.SetWorldIssues(m_worldValidation.issues, worldTotal);
+            } else {
+                m_worldValidation = {};
+                m_issuePanel.SetWorldIssues({}, 0);
+            }
+            m_lastWorldVersion = worldVer;
+        }
+
+        if (roadVer != m_lastRoadVersion || mapChanged) {
+            if (m_roadGraphData.IsLoaded()) {
+                m_roadValidation = m_graphValidator.Validate(m_roadGraphData, m_currentMapId);
+                int roadTotal = m_graphValidator.CountTotalIssues(m_roadGraphData);
+                m_issuePanel.SetRoadIssues(m_roadValidation.issues, roadTotal);
+            } else {
+                m_roadValidation = {};
+                m_issuePanel.SetRoadIssues({}, 0);
+            }
+            m_lastRoadVersion = roadVer;
+        }
+
+        if (mapChanged) {
+            const char* mapName = "No Map";
+            if (auto* mi = FindMap(m_currentMapId))
+                mapName = mi->name;
+            m_issuePanel.SetMapInfo(mapName, m_currentMapId);
+            m_lastValidationMapId = m_currentMapId;
+        }
+    }
+
     // === Update tile cache viewport (zoom gates rendering) ===
     if (m_layers.showNavmesh && m_tileCache.GetNavMesh() && m_canvas.zoom >= m_layers.navmeshMinZoom) {
         m_tileCache.SetMaxTiles(m_layers.navmeshMaxTiles);
@@ -858,6 +916,15 @@ void App::RenderFrame2D() {
             if (m_layers.showRoadGraph && m_roadGraphData.IsLoaded())
                 m_graphRenderer.Render(m_canvas, m_roadGraphData, m_currentMapId, m_selection, m_layers);
         }
+    }
+
+    // Graph issue overlay (component coloring + gap markers)
+    if (m_issuePanel.GetShowIssueOverlay()) {
+        bool showWorld = (m_issuePanel.GetGraphMode() == IssueGraphMode::World);
+        auto& overlayGraph = showWorld ? m_graphData : m_roadGraphData;
+        auto& overlayValidation = showWorld ? m_worldValidation : m_roadValidation;
+        if (overlayValidation.componentCount > 1 && overlayGraph.IsLoaded())
+            m_graphRenderer.RenderIssueOverlay(m_canvas, overlayGraph, m_currentMapId, overlayValidation, m_issuePanel.GetGapMaxDistance());
     }
 
     // Routes
@@ -1028,7 +1095,28 @@ void App::RenderFrame2D() {
     const char* mapName = "No Map";
     if (auto* mi = FindMap(m_currentMapId))
         mapName = mi->name;
-    m_statusBar.Render(m_canvas, m_currentMapId, mapName, &m_heightSampler);
+    m_statusBar.Render(m_canvas, m_currentMapId, mapName, &m_heightSampler, &m_issuePanel);
+
+    // === Issue panel popup ===
+    {
+        auto action = m_issuePanel.RenderPopup();
+        if (action.type == IssuePanel::Action::GoTo) {
+            m_canvas.centerX = action.worldX;
+            m_canvas.centerY = action.worldY;
+            // Also select the nodes if any
+            if (!action.nodeIds.empty()) {
+                m_selection.Clear();
+                for (uint32_t id : action.nodeIds)
+                    m_selection.SelectNode(id);
+            }
+        } else if (action.type == IssuePanel::Action::Select) {
+            m_selection.Clear();
+            for (uint32_t id : action.nodeIds)
+                m_selection.SelectNode(id);
+            for (size_t idx : action.edgeIndices)
+                m_selection.SelectEdge(idx);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1167,6 +1255,15 @@ void App::RenderFrame3D() {
         }
     }
 
+    // 3D issue overlay (component coloring + gap markers)
+    if (m_issuePanel.GetShowIssueOverlay()) {
+        bool showWorld = (m_issuePanel.GetGraphMode() == IssueGraphMode::World);
+        auto& overlayGraph = showWorld ? m_graphData : m_roadGraphData;
+        auto& overlayValidation = showWorld ? m_worldValidation : m_roadValidation;
+        if (overlayValidation.componentCount > 1 && overlayGraph.IsLoaded())
+            m_graphRenderer3d.RenderIssueOverlay(m_camera3d, m_primitives3d, overlayGraph, m_currentMapId, overlayValidation, m_issuePanel.GetGapMaxDistance());
+    }
+
     if (m_layers.showRoutes)
         m_routeRenderer3d.Render(m_camera3d, m_primitives3d, m_routeData, m_routeEditor, m_currentMapId);
 
@@ -1243,6 +1340,45 @@ void App::RenderFrame3D() {
             EditorProjection3D proj3d;
             proj3d.camera = &m_camera3d;
             m_graphEditor.ProcessInput(proj3d, activeGraph, m_selection, m_currentMapId, activeUndoCtx);
+        }
+    }
+
+    // === Graph validation (3D mode) ===
+    {
+        uint32_t worldVer = m_graphData.GetVersion();
+        uint32_t roadVer = m_roadGraphData.GetVersion();
+        bool mapChanged = m_currentMapId != m_lastValidationMapId;
+
+        if (worldVer != m_lastWorldVersion || mapChanged) {
+            if (m_graphData.IsLoaded()) {
+                m_worldValidation = m_graphValidator.Validate(m_graphData, m_currentMapId);
+                int worldTotal = m_graphValidator.CountTotalIssues(m_graphData);
+                m_issuePanel.SetWorldIssues(m_worldValidation.issues, worldTotal);
+            } else {
+                m_worldValidation = {};
+                m_issuePanel.SetWorldIssues({}, 0);
+            }
+            m_lastWorldVersion = worldVer;
+        }
+
+        if (roadVer != m_lastRoadVersion || mapChanged) {
+            if (m_roadGraphData.IsLoaded()) {
+                m_roadValidation = m_graphValidator.Validate(m_roadGraphData, m_currentMapId);
+                int roadTotal = m_graphValidator.CountTotalIssues(m_roadGraphData);
+                m_issuePanel.SetRoadIssues(m_roadValidation.issues, roadTotal);
+            } else {
+                m_roadValidation = {};
+                m_issuePanel.SetRoadIssues({}, 0);
+            }
+            m_lastRoadVersion = roadVer;
+        }
+
+        if (mapChanged) {
+            const char* mapName = "No Map";
+            if (auto* mi = FindMap(m_currentMapId))
+                mapName = mi->name;
+            m_issuePanel.SetMapInfo(mapName, m_currentMapId);
+            m_lastValidationMapId = m_currentMapId;
         }
     }
 
@@ -1461,7 +1597,27 @@ void App::RenderFrame3D() {
     const char* mapName = "No Map";
     if (auto* mi = FindMap(m_currentMapId))
         mapName = mi->name;
-    m_statusBar.Render3D(m_camera3d, m_currentMapId, mapName, &m_heightSampler);
+    m_statusBar.Render3D(m_camera3d, m_currentMapId, mapName, &m_heightSampler, &m_issuePanel);
+
+    // === Issue panel popup (3D) ===
+    {
+        auto action = m_issuePanel.RenderPopup();
+        if (action.type == IssuePanel::Action::GoTo) {
+            m_camera3d.targetX = action.worldX;
+            m_camera3d.targetY = action.worldY;
+            if (!action.nodeIds.empty()) {
+                m_selection.Clear();
+                for (uint32_t id : action.nodeIds)
+                    m_selection.SelectNode(id);
+            }
+        } else if (action.type == IssuePanel::Action::Select) {
+            m_selection.Clear();
+            for (uint32_t id : action.nodeIds)
+                m_selection.SelectNode(id);
+            for (size_t idx : action.edgeIndices)
+                m_selection.SelectEdge(idx);
+        }
+    }
 }
 
 void App::RenderMapSelector() {
@@ -1676,6 +1832,13 @@ void App::RenderMapSelector() {
 void App::Shutdown() {
     SaveSettings();
 
+    // Save dismissed graph issues
+    {
+        namespace fs = std::filesystem;
+        fs::path settingsDir = fs::path(AppSettings::GetSettingsPath()).parent_path();
+        m_issuePanel.SaveDismissed((settingsDir / "dismissed_issues.json").string());
+    }
+
     m_navmeshRenderer.Shutdown();
     m_navmeshRenderer3d.Shutdown();
     m_primitives3d.Shutdown();
@@ -1743,6 +1906,18 @@ void App::SaveSettings() {
     m_settings.showBuildings = m_layers.showBuildings;
     m_settings.showBuildingObjects = m_layers.showBuildingObjects;
     m_settings.enablePortalCulling = m_layers.enablePortalCulling;
+
+    // Issue panel state
+    m_settings.issueGraphMode       = (m_issuePanel.GetGraphMode() == IssueGraphMode::Road) ? 1 : 0;
+    m_settings.issueViewMode        = (m_issuePanel.GetViewMode() == IssueViewMode::Dismissed) ? 1 : 0;
+    m_settings.issuePanelOpen       = m_issuePanel.IsPopupOpen();
+    m_settings.issueGapMaxDistance   = m_issuePanel.GetGapMaxDistance();
+    m_settings.issueShowOverlay     = m_issuePanel.GetShowIssueOverlay();
+    m_settings.issueShowDisconnected = m_issuePanel.GetShowDisconnected();
+    m_settings.issueShowDeadEnds    = m_issuePanel.GetShowDeadEnds();
+    m_settings.issueShowOrphans     = m_issuePanel.GetShowOrphans();
+    m_settings.issueShowDuplicates  = m_issuePanel.GetShowDuplicates();
+    m_settings.issueShowZeroLength  = m_issuePanel.GetShowZeroLength();
 
     // Performance / view settings
     m_settings.viewMode     = (m_viewMode == ViewMode::Mode3D) ? 1 : 0;

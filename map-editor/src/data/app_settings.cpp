@@ -76,6 +76,21 @@ bool AppSettings::Load() {
         enablePortalCulling = layers.value("portal_culling", true);
     }
 
+    // Issue panel
+    if (doc.contains("issue_panel") && doc["issue_panel"].is_object()) {
+        const auto& ip = doc["issue_panel"];
+        issueGraphMode       = ip.value("graph_mode", 0);
+        issueViewMode        = ip.value("view_mode", 0);
+        issuePanelOpen       = ip.value("panel_open", false);
+        issueGapMaxDistance   = ip.value("gap_max_distance", 20.0f);
+        issueShowOverlay     = ip.value("show_overlay", true);
+        issueShowDisconnected = ip.value("show_disconnected", true);
+        issueShowDeadEnds    = ip.value("show_dead_ends", true);
+        issueShowOrphans     = ip.value("show_orphans", true);
+        issueShowDuplicates  = ip.value("show_duplicates", true);
+        issueShowZeroLength  = ip.value("show_zero_length", true);
+    }
+
     // Performance / view
     viewMode     = doc.value("view_mode", 0);
     vsync        = doc.value("vsync", false);
@@ -132,6 +147,19 @@ bool AppSettings::Save() const {
         {"buildings", showBuildings},
         {"building_objects", showBuildingObjects},
         {"portal_culling", enablePortalCulling},
+    };
+
+    doc["issue_panel"] = {
+        {"graph_mode",       issueGraphMode},
+        {"view_mode",        issueViewMode},
+        {"panel_open",       issuePanelOpen},
+        {"gap_max_distance", issueGapMaxDistance},
+        {"show_overlay",     issueShowOverlay},
+        {"show_disconnected", issueShowDisconnected},
+        {"show_dead_ends",   issueShowDeadEnds},
+        {"show_orphans",     issueShowOrphans},
+        {"show_duplicates",  issueShowDuplicates},
+        {"show_zero_length", issueShowZeroLength},
     };
 
     doc["view_mode"]     = viewMode;
