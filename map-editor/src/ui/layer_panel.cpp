@@ -64,6 +64,9 @@ void LayerPanel::Render(LayerVisibility& layers, MapBackgroundMode& bgMode,
             ImGui::Checkbox("Smooth", &layers.terrainSmooth);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Push terrain slightly below navmesh to remove\nbumps where terrain pokes through.");
+            ImGui::Checkbox("Textures", &layers.showTerrainTextures);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Overlay game textures on terrain.\nRequires WoW Data directory (MPQ).");
             ImGui::Unindent(20.0f);
         }
         ImGui::Checkbox("Buildings", &layers.showBuildings);

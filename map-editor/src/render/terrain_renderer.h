@@ -14,12 +14,16 @@
 #include <vector>
 
 #include "terrain_pipeline.h"
+#include "terrain_texture_pipeline.h"
 #include "../data/terrain_loader.h"
 #include "../data/terrain_mesh.h"
+#include "../data/adt_texture_parser.h"
+#include "../data/terrain_texture_compositor.h"
 
 namespace mapedit {
 
 struct Camera3D;
+class MpqArchiveSet;
 
 class TerrainRenderer {
 public:
@@ -27,6 +31,11 @@ public:
     void Shutdown();
 
     void SetDataPath(const std::string& tcDataPath);
+
+    // MPQ archive for ADT texture loading (set from App before UpdateViewport)
+    void SetMpqArchive(MpqArchiveSet* mpq);
+    void SetMapName(const std::string& name);
+    void SetTexturesEnabled(bool enabled);
 
     // Update which terrain tiles should be loaded based on 3D camera position.
     void UpdateViewport(uint32_t mapId, float targetX, float targetY,
@@ -52,6 +61,10 @@ private:
         float minX = 0, minY = 0, minZ = 0;
         float maxX = 0, maxY = 0, maxZ = 0;
         int decimation = 0;   // LOD level this tile was loaded at
+        // Texture atlas (created from CPU composite)
+        ID3D11Texture2D*          tex = nullptr;
+        ID3D11ShaderResourceView* srv = nullptr;
+        bool hasTexture = false;
     };
 
     using TileKey = std::pair<int, int>;
@@ -62,6 +75,9 @@ private:
         int tileX, tileY;
         int decimation;
         std::string dataPath;
+        // Texture loading context
+        bool loadTextures = false;
+        std::string mapName;
     };
 
     struct LoadResult {
@@ -73,6 +89,9 @@ private:
         float minX, minY, minZ;
         float maxX, maxY, maxZ;
         bool valid;  // false = no data for this tile
+        // Texture atlas (1024x1024 BGRA, from CPU composite)
+        std::vector<uint8_t> textureAtlas;
+        bool hasTexture = false;
     };
 
     // Upload a completed result to GPU
@@ -88,7 +107,8 @@ private:
 
     ID3D11Device*        m_device = nullptr;
     ID3D11DeviceContext* m_context = nullptr;
-    TerrainPipeline      m_pipeline;
+    TerrainPipeline           m_pipeline;       // procedural (buildings share this)
+    TerrainTexturePipeline    m_texPipeline;     // textured terrain
 
     std::map<TileKey, TileGpu> m_gpuCache;
     uint32_t m_currentMapId = UINT32_MAX;
@@ -100,6 +120,15 @@ private:
     // Data path (protected by mutex for worker thread)
     std::mutex m_pathMutex;
     std::string m_dataPath;
+
+    // Texture loading context (protected by m_texMutex for worker thread)
+    std::mutex m_texMutex;
+    MpqArchiveSet* m_mpq = nullptr;
+    std::string m_mapName;
+    bool m_texturesEnabled = false;
+    AdtTextureParser m_adtParser;
+    BlpTextureCache  m_blpCache;
+    TerrainTextureCompositor m_compositor;
 
     // Worker thread
     std::thread m_worker;

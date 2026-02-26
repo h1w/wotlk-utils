@@ -70,6 +70,7 @@ bool AppSettings::Load() {
         showTerrain = layers.value("terrain", true);
         terrainColorMode = layers.value("terrain_color_mode", 0);
         terrainSmooth = layers.value("terrain_smooth", false);
+        showTerrainTextures = layers.value("terrain_textures", false);
         showBuildings = layers.value("buildings", true);
         showBuildingObjects = layers.value("building_objects", false);
         enablePortalCulling = layers.value("portal_culling", true);
@@ -127,6 +128,7 @@ bool AppSettings::Save() const {
         {"terrain", showTerrain},
         {"terrain_color_mode", terrainColorMode},
         {"terrain_smooth", terrainSmooth},
+        {"terrain_textures", showTerrainTextures},
         {"buildings", showBuildings},
         {"building_objects", showBuildingObjects},
         {"portal_culling", enablePortalCulling},

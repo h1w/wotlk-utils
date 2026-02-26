@@ -1,5 +1,6 @@
 #include "terrain_renderer.h"
 #include "../camera/camera3d.h"
+#include "../mpq/mpq_archive.h"
 
 #include <glog/logging.h>
 
@@ -36,6 +37,29 @@ int TerrainRenderer::SelectLOD(float tileDist) {
     if (tileDist < 2.0f)  return 1;   // close: full resolution
     if (tileDist < 5.0f)  return 2;   // mid: half resolution
     return 4;                           // far: quarter resolution
+}
+
+// ---------------------------------------------------------------------------
+// MPQ / texture configuration
+// ---------------------------------------------------------------------------
+
+void TerrainRenderer::SetMpqArchive(MpqArchiveSet* mpq) {
+    std::lock_guard<std::mutex> lock(m_texMutex);
+    if (m_mpq != mpq) {
+        m_mpq = mpq;
+        if (mpq)
+            m_adtParser.Initialize(mpq);
+    }
+}
+
+void TerrainRenderer::SetMapName(const std::string& name) {
+    std::lock_guard<std::mutex> lock(m_texMutex);
+    m_mapName = name;
+}
+
+void TerrainRenderer::SetTexturesEnabled(bool enabled) {
+    std::lock_guard<std::mutex> lock(m_texMutex);
+    m_texturesEnabled = enabled;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +121,21 @@ void TerrainRenderer::WorkerLoop() {
             }
         }
 
+        // --- Texture compositing (if requested) ---
+        if (result.valid && req.loadTextures && !req.mapName.empty()) {
+            std::lock_guard<std::mutex> lock(m_texMutex);
+            if (m_mpq && m_mpq->IsOpen()) {
+                WdtInfo wdt = m_adtParser.ReadWdtMphd(req.mapName);
+                AdtTextureData adt = m_adtParser.Parse(req.mapName, req.tileX, req.tileY,
+                                                        wdt.mphdFlags);
+                if (adt.valid && !adt.texturePaths.empty()) {
+                    m_compositor.SetBlpCache(&m_blpCache);
+                    result.textureAtlas = m_compositor.CompositeTileAtlas(adt, wdt.mphdFlags, *m_mpq);
+                    result.hasTexture = !result.textureAtlas.empty();
+                }
+            }
+        }
+
         // Post result (even invalid ones, so main thread stops waiting)
         {
             std::lock_guard<std::mutex> lock(m_resMutex);
@@ -116,6 +155,10 @@ bool TerrainRenderer::Initialize(ID3D11Device* device, ID3D11DeviceContext* cont
         LOG(ERROR) << "[TerrainRenderer] Pipeline init failed";
         return false;
     }
+    if (!m_texPipeline.Initialize(device)) {
+        LOG(ERROR) << "[TerrainRenderer] Texture pipeline init failed";
+        return false;
+    }
     StartWorker();
     LOG(INFO) << "[TerrainRenderer] GPU pipeline ready (background loading enabled)";
     return true;
@@ -128,6 +171,7 @@ void TerrainRenderer::Shutdown() {
     m_gpuCache.clear();
     m_pending.clear();
     m_pipeline.Shutdown();
+    m_texPipeline.Shutdown();
     m_device  = nullptr;
     m_context = nullptr;
 }
@@ -142,8 +186,11 @@ void TerrainRenderer::SetDataPath(const std::string& tcDataPath) {
 // ---------------------------------------------------------------------------
 
 void TerrainRenderer::ReleaseTileGpu(TileGpu& t) {
+    if (t.srv) { t.srv->Release(); t.srv = nullptr; }
+    if (t.tex) { t.tex->Release(); t.tex = nullptr; }
     if (t.vb) { t.vb->Release(); t.vb = nullptr; }
     if (t.ib) { t.ib->Release(); t.ib = nullptr; }
+    t.hasTexture = false;
 }
 
 bool TerrainRenderer::UploadToGpu(const LoadResult& result) {
@@ -179,6 +226,34 @@ bool TerrainRenderer::UploadToGpu(const LoadResult& result) {
         if (FAILED(m_device->CreateBuffer(&desc, &init, &gpu.ib))) {
             gpu.vb->Release();
             return false;
+        }
+    }
+
+    // Create texture atlas (1024x1024 BGRA) if available
+    if (result.hasTexture && result.textureAtlas.size() == 1024 * 1024 * 4) {
+        D3D11_TEXTURE2D_DESC td = {};
+        td.Width  = 1024;
+        td.Height = 1024;
+        td.MipLevels = 1;
+        td.ArraySize = 1;
+        td.Format    = DXGI_FORMAT_B8G8R8A8_UNORM;
+        td.SampleDesc.Count = 1;
+        td.Usage     = D3D11_USAGE_IMMUTABLE;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+        D3D11_SUBRESOURCE_DATA init = {};
+        init.pSysMem = result.textureAtlas.data();
+        init.SysMemPitch = 1024 * 4;
+
+        HRESULT hr = m_device->CreateTexture2D(&td, &init, &gpu.tex);
+        if (SUCCEEDED(hr)) {
+            hr = m_device->CreateShaderResourceView(gpu.tex, nullptr, &gpu.srv);
+            if (SUCCEEDED(hr)) {
+                gpu.hasTexture = true;
+            } else {
+                gpu.tex->Release();
+                gpu.tex = nullptr;
+            }
         }
     }
 
@@ -335,6 +410,15 @@ void TerrainRenderer::UpdateViewport(uint32_t mapId, float targetX, float target
         currentPath = m_dataPath;
     }
 
+    // Texture loading context snapshot
+    bool texEnabled = false;
+    std::string mapName;
+    {
+        std::lock_guard<std::mutex> lock(m_texMutex);
+        texEnabled = m_texturesEnabled && m_mpq != nullptr;
+        mapName = m_mapName;
+    }
+
     int queued = 0;
     static constexpr int kMaxQueuesPerFrame = 8;
     for (const auto& td : desired) {
@@ -352,8 +436,10 @@ void TerrainRenderer::UpdateViewport(uint32_t mapId, float targetX, float target
         // Skip if cache already has equal or better LOD
         auto cacheIt = m_gpuCache.find(key);
         if (cacheIt != m_gpuCache.end()) {
+            bool needsTexture = texEnabled && !cacheIt->second.hasTexture && td.dist < 9.0f;
             if (cacheIt->second.decimation > 0 &&
-                cacheIt->second.decimation <= lod)
+                cacheIt->second.decimation <= lod &&
+                !needsTexture)
                 continue;
             // Empty sentinel (decimation=0) means no data — skip
             if (cacheIt->second.decimation == 0 && cacheIt->second.vb == nullptr)
@@ -366,6 +452,8 @@ void TerrainRenderer::UpdateViewport(uint32_t mapId, float targetX, float target
         req.tileY = td.ty;
         req.decimation = lod;
         req.dataPath = currentPath;
+        req.loadTextures = texEnabled && td.dist < 9.0f;  // only close tiles
+        req.mapName = mapName;
 
         {
             std::lock_guard<std::mutex> lock(m_reqMutex);
@@ -388,6 +476,13 @@ void TerrainRenderer::Render(const Camera3D& camera,
     if (!m_pipeline.IsReady() || !m_device || !m_context) return;
     if (m_gpuCache.empty()) return;
 
+    // Check if textures are enabled
+    bool texEnabled;
+    {
+        std::lock_guard<std::mutex> lock(m_texMutex);
+        texEnabled = m_texturesEnabled;
+    }
+
     ID3D11DeviceContext* ctx = m_context;
 
     ctx->OMSetRenderTargets(1, &rtv, dsv);
@@ -402,16 +497,32 @@ void TerrainRenderer::Render(const Camera3D& camera,
     ctx->RSSetViewports(1, &vp);
 
     ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ctx->VSSetShader(m_pipeline.GetVS(), nullptr, 0);
-    ctx->PSSetShader(m_pipeline.GetPS(), nullptr, 0);
-    ctx->IASetInputLayout(m_pipeline.GetLayout());
 
-    float bf[4] = {0, 0, 0, 0};
-    ctx->OMSetBlendState(m_pipeline.GetBlendState(), bf, 0xFFFFFFFF);
-    ctx->RSSetState(m_pipeline.GetRastState());
-    ctx->OMSetDepthStencilState(m_pipeline.GetDSState(), 0);
+    // Use textured pipeline for terrain (handles both textured and procedural)
+    bool useTexPipeline = m_texPipeline.IsReady();
+    auto& pipe = useTexPipeline
+        ? static_cast<TerrainTexturePipeline&>(m_texPipeline)
+        : m_texPipeline;  // fallback — won't happen if init succeeds
 
-    // Constant buffer
+    if (useTexPipeline) {
+        ctx->VSSetShader(m_texPipeline.GetVS(), nullptr, 0);
+        ctx->PSSetShader(m_texPipeline.GetPS(), nullptr, 0);
+        ctx->IASetInputLayout(m_texPipeline.GetLayout());
+        float bf[4] = {0, 0, 0, 0};
+        ctx->OMSetBlendState(m_texPipeline.GetBlendState(), bf, 0xFFFFFFFF);
+        ctx->RSSetState(m_texPipeline.GetRastState());
+        ctx->OMSetDepthStencilState(m_texPipeline.GetDSState(), 0);
+    } else {
+        ctx->VSSetShader(m_pipeline.GetVS(), nullptr, 0);
+        ctx->PSSetShader(m_pipeline.GetPS(), nullptr, 0);
+        ctx->IASetInputLayout(m_pipeline.GetLayout());
+        float bf[4] = {0, 0, 0, 0};
+        ctx->OMSetBlendState(m_pipeline.GetBlendState(), bf, 0xFFFFFFFF);
+        ctx->RSSetState(m_pipeline.GetRastState());
+        ctx->OMSetDepthStencilState(m_pipeline.GetDSState(), 0);
+    }
+
+    // Constant buffer (common for all tiles — per-tile colorMode override below)
     TerrainCB cb = {};
     std::memcpy(cb.viewProj, &camera.viewProj, sizeof(float) * 16);
 
@@ -425,23 +536,13 @@ void TerrainRenderer::Render(const Camera3D& camera,
     cb.baseColor[0] = 0.45f;
     cb.baseColor[1] = 0.45f;
     cb.baseColor[2] = 0.48f;
-    cb.baseColor[3] = smoothTerrain ? -1.0f : 0.0f;  // Z offset to push terrain below navmesh
+    cb.baseColor[3] = smoothTerrain ? -1.0f : 0.0f;
 
     cb.heightParams[0] = m_globalMinZ;
     cb.heightParams[1] = m_globalMaxZ;
-    cb.heightParams[2] = static_cast<float>(colorMode);
-    cb.heightParams[3] = smoothTerrain ? -1.0f : -2.0f;  // -1=smooth normals, -2=flat normals
+    cb.heightParams[3] = smoothTerrain ? -1.0f : -2.0f;
 
-    ID3D11Buffer* cbBuf = m_pipeline.GetCB();
-    {
-        D3D11_MAPPED_SUBRESOURCE mapped = {};
-        if (SUCCEEDED(ctx->Map(cbBuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-            std::memcpy(mapped.pData, &cb, sizeof(cb));
-            ctx->Unmap(cbBuf, 0);
-        }
-    }
-    ctx->VSSetConstantBuffers(0, 1, &cbBuf);
-    ctx->PSSetConstantBuffers(0, 1, &cbBuf);
+    ID3D11Buffer* cbBuf = useTexPipeline ? m_texPipeline.GetCB() : m_pipeline.GetCB();
 
     float frustum[6][4];
     camera.GetFrustumPlanes(frustum);
@@ -452,15 +553,48 @@ void TerrainRenderer::Render(const Camera3D& camera,
     statDrawCalls = 0;
     statVertices  = 0;
 
+    // Bind sampler once (PS slot 0)
+    if (useTexPipeline) {
+        ID3D11SamplerState* sam = m_texPipeline.GetSampler();
+        ctx->PSSetSamplers(0, 1, &sam);
+    }
+
     for (const auto& [key, tile] : m_gpuCache) {
         if (!tile.vb || !tile.ib || tile.indexCount == 0) continue;
         if (!FrustumIntersectsAABB(frustum, tile)) continue;
+
+        // Per-tile: set colorMode to 3 (texture) if tile has texture and textures enabled
+        bool tileTextured = texEnabled && tile.hasTexture && useTexPipeline;
+        cb.heightParams[2] = tileTextured ? 3.0f : static_cast<float>(colorMode);
+
+        // Update CB
+        {
+            D3D11_MAPPED_SUBRESOURCE mapped = {};
+            if (SUCCEEDED(ctx->Map(cbBuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+                std::memcpy(mapped.pData, &cb, sizeof(cb));
+                ctx->Unmap(cbBuf, 0);
+            }
+        }
+        ctx->VSSetConstantBuffers(0, 1, &cbBuf);
+        ctx->PSSetConstantBuffers(0, 1, &cbBuf);
+
+        // Bind texture SRV (or null)
+        if (useTexPipeline) {
+            ID3D11ShaderResourceView* srv = tileTextured ? tile.srv : nullptr;
+            ctx->PSSetShaderResources(0, 1, &srv);
+        }
 
         ctx->IASetVertexBuffers(0, 1, &tile.vb, &stride, &offset);
         ctx->IASetIndexBuffer(tile.ib, DXGI_FORMAT_R32_UINT, 0);
         ctx->DrawIndexed(tile.indexCount, 0, 0);
         statDrawCalls++;
         statVertices += tile.indexCount;
+    }
+
+    // Unbind SRV to avoid warnings
+    if (useTexPipeline) {
+        ID3D11ShaderResourceView* nullSrv = nullptr;
+        ctx->PSSetShaderResources(0, 1, &nullSrv);
     }
 
     ctx->OMSetRenderTargets(1, &rtv, nullptr);

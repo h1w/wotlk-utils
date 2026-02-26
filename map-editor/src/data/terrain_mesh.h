@@ -10,6 +10,7 @@ struct TerrainTileData;
 struct TerrainVertex {
     float x, y, z;     // WoW world coordinates
     float nx, ny, nz;  // Normal vector (for lighting)
+    float u, v;         // UV for texture atlas (0-1 across tile)
 };
 
 struct TerrainMesh {

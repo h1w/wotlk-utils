@@ -86,6 +86,8 @@ void GenerateTerrainMesh(const TerrainTileData& tile, int tileX, int tileY,
             v.y = tileOriginY - srcCol * CELL_SIZE;
             v.z = tile.v9[srcRow * 129 + srcCol];
             v.nx = v.ny = 0.0f; v.nz = 1.0f;
+            v.u = (tileOriginY - v.y) / TILE_SIZE;  // 0=west edge, 1=east edge
+            v.v = (tileOriginX - v.x) / TILE_SIZE;  // 0=north edge, 1=south edge
             out.vertices.push_back(v);
         }
     }
@@ -111,6 +113,8 @@ void GenerateTerrainMesh(const TerrainTileData& tile, int tileX, int tileY,
             v.y = tileOriginY - centerCol * CELL_SIZE;
             v.z = avgZ;
             v.nx = v.ny = 0.0f; v.nz = 1.0f;
+            v.u = (tileOriginY - v.y) / TILE_SIZE;
+            v.v = (tileOriginX - v.x) / TILE_SIZE;
             out.vertices.push_back(v);
         }
     }

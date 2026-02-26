@@ -1,4 +1,5 @@
 #include "app.h"
+#include "data/adt_texture_parser.h"
 
 #include <imgui.h>
 #include <imgui_impl_win32.h>
@@ -136,6 +137,7 @@ bool App::Initialize(HINSTANCE hInstance) {
     m_layers.showTerrain = m_settings.showTerrain;
     m_layers.terrainColorMode = m_settings.terrainColorMode;
     m_layers.terrainSmooth = m_settings.terrainSmooth;
+    m_layers.showTerrainTextures = m_settings.showTerrainTextures;
     m_layers.showBuildings = m_settings.showBuildings;
     m_layers.showBuildingObjects = m_settings.showBuildingObjects;
     m_layers.enablePortalCulling = m_settings.enablePortalCulling;
@@ -1083,6 +1085,25 @@ void App::RenderFrame3D() {
     if (m_layers.showTerrain && m_mmapDirSet && m_rtv && m_dsv) {
         m_terrainRenderer.colorMode = m_layers.terrainColorMode;
         m_terrainRenderer.smoothTerrain = m_layers.terrainSmooth;
+        m_terrainRenderer.SetMpqArchive(m_wowDirSet ? &m_mpq : nullptr);
+        m_terrainRenderer.SetTexturesEnabled(m_layers.showTerrainTextures);
+        // Resolve map name for ADT texture loading
+        {
+            static uint32_t lastMapIdForName = UINT32_MAX;
+            static std::string cachedMapName;
+            if (m_currentMapId != lastMapIdForName) {
+                // Lazy init: parser needs MPQ
+                if (m_wowDirSet) {
+                    AdtTextureParser parser;
+                    parser.Initialize(&m_mpq);
+                    cachedMapName = parser.GetMapName(m_currentMapId);
+                } else {
+                    cachedMapName.clear();
+                }
+                lastMapIdForName = m_currentMapId;
+            }
+            m_terrainRenderer.SetMapName(cachedMapName);
+        }
         m_terrainRenderer.UpdateViewport(m_currentMapId,
                                           m_camera3d.targetX, m_camera3d.targetY,
                                           m_camera3d.distance);
@@ -1718,6 +1739,7 @@ void App::SaveSettings() {
     m_settings.showTerrain = m_layers.showTerrain;
     m_settings.terrainColorMode = m_layers.terrainColorMode;
     m_settings.terrainSmooth = m_layers.terrainSmooth;
+    m_settings.showTerrainTextures = m_layers.showTerrainTextures;
     m_settings.showBuildings = m_layers.showBuildings;
     m_settings.showBuildingObjects = m_layers.showBuildingObjects;
     m_settings.enablePortalCulling = m_layers.enablePortalCulling;
