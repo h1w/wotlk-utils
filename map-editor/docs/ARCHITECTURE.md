@@ -46,6 +46,8 @@ map-editor/src/
         graph_editor.h / .cpp   Full graph editor: draw/edge/split modes, context menu, drag,
                                 lasso/box selection, merge, straighten, auto-connect, validate.
                                 EditorProjection abstraction enables same code for 2D and 3D.
+                                3D node placement uses ray-terrain intersection (ray marching
+                                + binary search against TerrainHeightSampler).
         graph_validator.h/.cpp  Graph validation (disconnected components, gaps, dead-ends, etc.)
         route_editor.h / .cpp   Route waypoint placement + drag
         undo_redo.h / .cpp      Snapshot-based undo/redo (100 levels, separate stacks per graph)
@@ -176,7 +178,7 @@ Opaque blend, depth write ON, back-face cull. Renders before navmesh so navmesh 
 
 CPU-side point-query for terrain height at any WoW coordinate. Uses `TerrainLoader` to read `.map` files with an LRU tile cache (64 tiles, ~8.5 MB). Barycentric interpolation in the triangle-fan grid (4 triangles per cell from V8 center to V9 corners) matches the GPU mesh exactly.
 
-Used by `GraphEditor` to auto-assign Z when creating/splitting nodes, and by the **Tools > Assign Terrain Heights** menu action to batch-update all nodes in the active graph. This solves the road graph `z=0` problem — nodes extracted from 2D alpha-map texture analysis have no elevation data and need height sampling from terrain data to render correctly in 3D.
+Used by `GraphEditor` to auto-assign Z when creating/splitting nodes, and by the **Tools > Assign Terrain Heights** menu action to batch-update all nodes in the active graph. This solves the road graph `z=0` problem — nodes extracted from 2D alpha-map texture analysis have no elevation data and need height sampling from terrain data to render correctly in 3D. Also used by `EditorProjection3D::ScreenToWorldOnTerrain` for ray-terrain intersection (ray marching + binary search) to accurately place nodes on sloped terrain in 3D mode.
 
 ### Building Rendering (`render/building_renderer.cpp`)
 

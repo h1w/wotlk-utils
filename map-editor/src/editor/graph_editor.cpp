@@ -39,6 +39,10 @@ bool EditorProjection3D::WorldToScreen(float wx, float wy, float wz,
     return camera->WorldToScreen(wx, wy, wz, sx, sy);
 }
 
+float EditorProjection3D::GetDefaultRefZ() const {
+    return camera ? camera->targetZ : 0.0f;
+}
+
 bool EditorProjection3D::ScreenToWorldXY(float sx, float sy, float refZ,
                                           float& wx, float& wy) const {
     float ox, oy, oz, dx, dy, dz;
@@ -51,6 +55,58 @@ bool EditorProjection3D::ScreenToWorldXY(float sx, float sy, float refZ,
     wx = ox + dx * t;
     wy = oy + dy * t;
     return true;
+}
+
+bool EditorProjection3D::ScreenToWorldOnTerrain(float sx, float sy,
+                                                 float& wx, float& wy) const {
+    if (!heightSampler)
+        return ScreenToWorldXY(sx, sy, GetDefaultRefZ(), wx, wy);
+
+    float ox, oy, oz, dx, dy, dz;
+    camera->ScreenToRay(sx, sy, ox, oy, oz, dx, dy, dz);
+    if (std::fabs(dz) < 0.0001f) return false;
+
+    // Ray-terrain intersection: step along ray, find where it crosses terrain surface
+    const float tMin = camera->nearPlane;
+    const float tMax = camera->farPlane;
+    const int STEPS = 256;
+    float dt = (tMax - tMin) / STEPS;
+
+    float prevT = tMin;
+    float rx = ox + dx * prevT, ry = oy + dy * prevT, rz = oz + dz * prevT;
+    auto h0 = heightSampler->SampleHeight(mapId, rx, ry);
+    float prevDiff = h0.has_value() ? (rz - h0.value()) : 1.0f;
+
+    for (int i = 1; i <= STEPS; ++i) {
+        float t = tMin + dt * i;
+        rx = ox + dx * t;
+        ry = oy + dy * t;
+        rz = oz + dz * t;
+        auto h = heightSampler->SampleHeight(mapId, rx, ry);
+        if (!h.has_value()) { prevT = t; continue; }
+        float diff = rz - h.value();
+
+        if (prevDiff >= 0.0f && diff < 0.0f) {
+            // Ray crossed terrain — binary search for exact intersection
+            float lo = prevT, hi = t;
+            for (int j = 0; j < 16; ++j) {
+                float mid = (lo + hi) * 0.5f;
+                float mz = oz + dz * mid;
+                auto mh = heightSampler->SampleHeight(mapId, ox + dx * mid, oy + dy * mid);
+                if (!mh.has_value()) { lo = mid; continue; }
+                if (mz > mh.value()) lo = mid; else hi = mid;
+            }
+            float finalT = (lo + hi) * 0.5f;
+            wx = ox + dx * finalT;
+            wy = oy + dy * finalT;
+            return true;
+        }
+        prevDiff = diff;
+        prevT = t;
+    }
+
+    // No terrain crossing found — fallback to flat plane at targetZ
+    return ScreenToWorldXY(sx, sy, GetDefaultRefZ(), wx, wy);
 }
 
 bool EditorProjection3D::IsInViewport(float sx, float sy) const {
@@ -941,14 +997,8 @@ bool GraphEditor::ProcessInput(const EditorProjection& proj, WorldGraphData& gra
                 m_drawLastNode = hitNode;
                 selection.SetSingleNode(hitNode);
             } else {
-                // Compute world XY. For 3D, use camera targetZ or last node's Z as reference.
-                float drawRefZ = 0.0f;
-                if (m_drawLastNode != 0) {
-                    auto* ln = graph.GetNode(m_drawLastNode);
-                    if (ln) drawRefZ = ln->z;
-                }
                 float wx, wy;
-                if (!proj.ScreenToWorldXY(mx, my, drawRefZ, wx, wy))
+                if (!proj.ScreenToWorldOnTerrain(mx, my, wx, wy))
                     return false;
 
                 // If chain is active and click lands on an edge, auto-split and connect
@@ -1091,13 +1141,7 @@ bool GraphEditor::ProcessInput(const EditorProjection& proj, WorldGraphData& gra
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && (!proj.Is3D() || shiftDown)) {
         m_contextHitNode = HitTestNode(proj, graph, mapId, mx, my);
         m_contextHitEdge = HitTestEdge(proj, graph, mapId, mx, my);
-        // Compute world XY for "Add Node Here" — use camera targetZ as fallback
-        float refZ = 0.0f;
-        if (m_contextHitNode) {
-            auto* n = graph.GetNode(m_contextHitNode);
-            if (n) refZ = n->z;
-        }
-        proj.ScreenToWorldXY(mx, my, refZ, m_contextMenuWx, m_contextMenuWy);
+        proj.ScreenToWorldOnTerrain(mx, my, m_contextMenuWx, m_contextMenuWy);
         m_wantOpenContextMenu = true;
     }
 
@@ -1183,7 +1227,7 @@ bool GraphEditor::ProcessInput(const EditorProjection& proj, WorldGraphData& gra
     // Double-click to add node
     if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !m_edgeMode) {
         float wx, wy;
-        if (!proj.ScreenToWorldXY(mx, my, 0.0f, wx, wy))
+        if (!proj.ScreenToWorldOnTerrain(mx, my, wx, wy))
             return false;
 
         undo.Snapshot("Add Node");

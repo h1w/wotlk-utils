@@ -1376,6 +1376,8 @@ void App::RenderFrame3D() {
         if (activeGraph.IsLoaded() && m_layers.showNodes) {
             EditorProjection3D proj3d;
             proj3d.camera = &m_camera3d;
+            proj3d.heightSampler = &m_heightSampler;
+            proj3d.mapId = m_currentMapId;
             m_graphEditor.ProcessInput(proj3d, activeGraph, m_selection, m_currentMapId, activeUndoCtx);
         }
     }

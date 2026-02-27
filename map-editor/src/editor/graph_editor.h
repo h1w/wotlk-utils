@@ -34,6 +34,16 @@ struct EditorProjection {
     // True when projecting through a 3D camera (affects input modifiers)
     virtual bool Is3D() const { return false; }
 
+    // Default Z for ray-plane intersection (3D: camera targetZ, 2D: 0)
+    virtual float GetDefaultRefZ() const { return 0.0f; }
+
+    // Pick point on terrain surface (ray-terrain intersection).
+    // Falls back to ScreenToWorldXY with default refZ if no terrain data.
+    virtual bool ScreenToWorldOnTerrain(float sx, float sy,
+                                        float& wx, float& wy) const {
+        return ScreenToWorldXY(sx, sy, GetDefaultRefZ(), wx, wy);
+    }
+
     virtual ~EditorProjection() = default;
 };
 
@@ -51,6 +61,8 @@ struct EditorProjection2D : EditorProjection {
 // 3D implementation (wraps Camera3D)
 struct EditorProjection3D : EditorProjection {
     const Camera3D* camera = nullptr;
+    TerrainHeightSampler* heightSampler = nullptr;
+    uint32_t mapId = 0;
 
     bool WorldToScreen(float wx, float wy, float wz,
                        float& sx, float& sy) const override;
@@ -58,6 +70,9 @@ struct EditorProjection3D : EditorProjection {
                          float& wx, float& wy) const override;
     bool IsInViewport(float sx, float sy) const override;
     bool Is3D() const override { return true; }
+    float GetDefaultRefZ() const override;
+    bool ScreenToWorldOnTerrain(float sx, float sy,
+                                float& wx, float& wy) const override;
 };
 
 class GraphEditor {
