@@ -22,12 +22,13 @@ cbuffer TerrainCB : register(b0) {
     float4 tileParams;    // x=textureSlot
 };
 
-struct VS_IN  { float3 pos : POSITION; float3 norm : NORMAL; float2 uv : TEXCOORD0; };
+struct VS_IN  { float3 pos : POSITION; float3 norm : NORMAL; float2 uv : TEXCOORD0; float slotIdx : TEXCOORD1; };
 struct VS_OUT {
     float4 clipPos  : SV_POSITION;
     float3 normal   : TEXCOORD0;
     float3 worldPos : TEXCOORD1;
     float2 uv       : TEXCOORD2;
+    float slotIdx   : TEXCOORD3;
 };
 
 VS_OUT main(VS_IN i) {
@@ -40,6 +41,7 @@ VS_OUT main(VS_IN i) {
     o.normal   = i.norm;
     o.worldPos = i.pos;
     o.uv       = i.uv;
+    o.slotIdx  = i.slotIdx;
     return o;
 }
 )";
@@ -61,6 +63,7 @@ struct PS_IN {
     float3 normal   : TEXCOORD0;
     float3 worldPos : TEXCOORD1;
     float2 uv       : TEXCOORD2;
+    float slotIdx   : TEXCOORD3;
 };
 
 float4 main(PS_IN i) : SV_TARGET {
@@ -88,7 +91,7 @@ float4 main(PS_IN i) : SV_TARGET {
 
     if (mode == 3) {
         // Texture mode: sample atlas
-        color = texAtlas.Sample(samLinear, float3(i.uv, tileParams.x)).rgb;
+        color = texAtlas.Sample(samLinear, float3(i.uv, i.slotIdx)).rgb;
     }
     else if (mode == 1) {
         float t = saturate((i.worldPos.z - heightParams.x) /
@@ -156,13 +159,14 @@ bool TerrainTexturePipeline::Initialize(ID3D11Device* device) {
         return false;
     }
 
-    // Input layout: POSITION(0) + NORMAL(12) + TEXCOORD(24)
+    // Input layout: POSITION(0) + NORMAL(12) + TEXCOORD0(24) + TEXCOORD1(32)
     D3D11_INPUT_ELEMENT_DESC layout[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D11_INPUT_PER_VERTEX_DATA, 0},
         {"NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
         {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT,       0, 32, D3D11_INPUT_PER_VERTEX_DATA, 0},
     };
-    hr = device->CreateInputLayout(layout, 3,
+    hr = device->CreateInputLayout(layout, 4,
                                    vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(),
                                    &m_layout);
     vsBlob->Release();
@@ -207,13 +211,13 @@ bool TerrainTexturePipeline::Initialize(ID3D11Device* device) {
     hr = device->CreateBuffer(&cbd, nullptr, &m_cb);
     if (FAILED(hr)) { Shutdown(); return false; }
 
-    // Sampler: bilinear, clamp
+    // Sampler: anisotropic 8x, clamp
     D3D11_SAMPLER_DESC sd = {};
-    sd.Filter   = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sd.Filter   = D3D11_FILTER_ANISOTROPIC;
     sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
     sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
     sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    sd.MaxAnisotropy = 1;
+    sd.MaxAnisotropy = 8;
     sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
     sd.MaxLOD = D3D11_FLOAT32_MAX;
     hr = device->CreateSamplerState(&sd, &m_sampler);

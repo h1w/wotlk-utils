@@ -1,6 +1,8 @@
 #include "terrain_renderer.h"
 #include "../camera/camera3d.h"
 #include "../mpq/mpq_archive.h"
+#include "../data/adt_texture_parser.h"
+#include "../data/terrain_texture_compositor.h"
 
 #include <glog/logging.h>
 
@@ -33,10 +35,14 @@ bool TerrainRenderer::FrustumIntersectsAABB(const float planes[6][4],
 // LOD selection based on tile distance from camera
 // ---------------------------------------------------------------------------
 
-int TerrainRenderer::SelectLOD(float tileDist) {
-    if (tileDist < 2.0f)  return 1;   // close: full resolution
-    if (tileDist < 5.0f)  return 2;   // mid: half resolution
-    return 4;                           // far: quarter resolution
+int TerrainRenderer::SelectLOD(float tileDist, float cameraDist) {
+    // At larger camera distances, tiles cover fewer pixels — use coarser LOD.
+    // zoomScale=1 at cameraDist<=300, grows linearly beyond that.
+    float zoomScale = (std::max)(1.0f, cameraDist / 300.0f);
+    float adjDist = tileDist * zoomScale;
+    if (adjDist < 1.5f)  return 1;   // close: full resolution
+    if (adjDist < 4.0f)  return 2;   // mid: half resolution
+    return 4;                          // far: quarter resolution
 }
 
 // ---------------------------------------------------------------------------
@@ -45,11 +51,7 @@ int TerrainRenderer::SelectLOD(float tileDist) {
 
 void TerrainRenderer::SetMpqArchive(MpqArchiveSet* mpq) {
     std::lock_guard<std::mutex> lock(m_texMutex);
-    if (m_mpq != mpq) {
-        m_mpq = mpq;
-        if (mpq)
-            m_adtParser.Initialize(mpq);
-    }
+    m_mpq = mpq;
 }
 
 void TerrainRenderer::SetMapName(const std::string& name) {
@@ -68,7 +70,9 @@ void TerrainRenderer::SetTexturesEnabled(bool enabled) {
 
 void TerrainRenderer::StartWorker() {
     m_running = true;
-    m_worker = std::thread(&TerrainRenderer::WorkerLoop, this);
+    m_workers.reserve(kWorkerCount);
+    for (int i = 0; i < kWorkerCount; ++i)
+        m_workers.emplace_back(&TerrainRenderer::WorkerLoop, this);
 }
 
 void TerrainRenderer::StopWorker() {
@@ -77,13 +81,19 @@ void TerrainRenderer::StopWorker() {
         m_running = false;
     }
     m_reqCV.notify_all();
-    if (m_worker.joinable())
-        m_worker.join();
+    for (auto& t : m_workers)
+        if (t.joinable()) t.join();
+    m_workers.clear();
 }
 
 void TerrainRenderer::WorkerLoop() {
-    // Worker has its own loader instance (no shared state with main thread)
+    // Worker owns all its loader/compositor instances (no shared state with main thread).
+    // This avoids holding m_texMutex during CPU-heavy compositing + BC1 compression.
     TerrainLoader loader;
+    AdtTextureParser adtParser;
+    BlpTextureCache blpCache;
+    TerrainTextureCompositor compositor;
+    MpqArchiveSet* lastMpq = nullptr;
 
     while (m_running) {
         LoadRequest req;
@@ -123,18 +133,37 @@ void TerrainRenderer::WorkerLoop() {
 
         // --- Texture compositing (if requested) ---
         if (result.valid && req.loadTextures && !req.mapName.empty()) {
-            std::lock_guard<std::mutex> lock(m_texMutex);
-            if (m_mpq && m_mpq->IsOpen()) {
-                WdtInfo wdt = m_adtParser.ReadWdtMphd(req.mapName);
-                AdtTextureData adt = m_adtParser.Parse(req.mapName, req.tileX, req.tileY,
-                                                        wdt.mphdFlags);
-                if (adt.valid && !adt.texturePaths.empty()) {
-                    m_compositor.SetBlpCache(&m_blpCache);
-                    auto bgra = m_compositor.CompositeTileAtlas(adt, wdt.mphdFlags, *m_mpq);
-                    if (!bgra.empty()) {
-                        result.compressedAtlas = CompressToBC1WithMips(bgra.data(), 1024, 1024);
-                        result.hasTexture = !result.compressedAtlas.bc1Data.empty();
+            // Brief lock: snapshot MPQ pointer only
+            MpqArchiveSet* mpq = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(m_texMutex);
+                mpq = m_mpq;
+            }
+
+            if (mpq && mpq->IsOpen()) {
+                // Re-init parser when MPQ source changes
+                if (mpq != lastMpq) {
+                    adtParser.Initialize(mpq);
+                    lastMpq = mpq;
+                }
+
+                // MPQ reads + compositing serialized (StormLib is not thread-safe)
+                std::vector<uint8_t> bgra;
+                {
+                    std::lock_guard<std::mutex> lock(m_mpqMutex);
+                    WdtInfo wdt = adtParser.ReadWdtMphd(req.mapName);
+                    AdtTextureData adt = adtParser.Parse(req.mapName, req.tileX, req.tileY,
+                                                          wdt.mphdFlags);
+                    if (adt.valid && !adt.texturePaths.empty()) {
+                        compositor.SetBlpCache(&blpCache);
+                        bgra = compositor.CompositeTileAtlas(adt, wdt.mphdFlags, *mpq);
                     }
+                }
+
+                // BC1 compression: CPU-only, runs in parallel across workers
+                if (!bgra.empty()) {
+                    result.compressedAtlas = CompressToBC1WithMips(bgra.data(), 1024, 1024);
+                    result.hasTexture = !result.compressedAtlas.bc1Data.empty();
                 }
             }
         }
@@ -245,48 +274,19 @@ void TerrainRenderer::ReleaseTileGpu(TileGpu& t) {
     t.hasTexture = false;
 }
 
-bool TerrainRenderer::UploadToGpu(const LoadResult& result) {
+bool TerrainRenderer::UploadToGpu(LoadResult& result) {
     if (result.vertices.empty() || result.indices.empty())
         return false;
 
     TileGpu gpu;
 
-    // Create vertex buffer
-    {
-        D3D11_BUFFER_DESC desc = {};
-        desc.ByteWidth = static_cast<UINT>(result.vertices.size() * sizeof(TerrainVertexGpu));
-        desc.Usage     = D3D11_USAGE_IMMUTABLE;
-        desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-
-        D3D11_SUBRESOURCE_DATA init = {};
-        init.pSysMem = result.vertices.data();
-
-        if (FAILED(m_device->CreateBuffer(&desc, &init, &gpu.vb)))
-            return false;
-    }
-
-    // Create index buffer
-    {
-        D3D11_BUFFER_DESC desc = {};
-        desc.ByteWidth = static_cast<UINT>(result.indices.size() * sizeof(uint32_t));
-        desc.Usage     = D3D11_USAGE_IMMUTABLE;
-        desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
-
-        D3D11_SUBRESOURCE_DATA init = {};
-        init.pSysMem = result.indices.data();
-
-        if (FAILED(m_device->CreateBuffer(&desc, &init, &gpu.ib))) {
-            gpu.vb->Release();
-            return false;
-        }
-    }
-
-    // Upload BC1-compressed texture atlas into shared texture array
+    // Allocate texture slot BEFORE creating VB so we can bake slot index into vertices
     if (result.hasTexture && !result.compressedAtlas.bc1Data.empty() && m_texArray.texture) {
         const auto& atlas = result.compressedAtlas;
         int slot = m_texArray.AllocateSlot();
 
         if (slot >= 0 && atlas.mipCount <= m_texArray.mipCount) {
+            // Upload BC1-compressed texture atlas into shared texture array
             uint32_t mw = atlas.width, mh = atlas.height;
             for (uint32_t mip = 0; mip < atlas.mipCount; ++mip) {
                 UINT subresource = D3D11CalcSubresource(mip, static_cast<UINT>(slot), m_texArray.mipCount);
@@ -311,9 +311,55 @@ bool TerrainRenderer::UploadToGpu(const LoadResult& result) {
             }
             gpu.textureSlot = slot;
             gpu.hasTexture = true;
+
+            // Bake slot index into all vertices before creating IMMUTABLE VB
+            float slotF = static_cast<float>(slot);
+            for (auto& v : result.vertices)
+                v.slotIndex = slotF;
         } else if (slot >= 0) {
             // Mip count mismatch — return slot
             m_texArray.FreeSlot(slot);
+        }
+    }
+
+    // Create vertex buffer (with slotIndex already baked in)
+    {
+        D3D11_BUFFER_DESC desc = {};
+        desc.ByteWidth = static_cast<UINT>(result.vertices.size() * sizeof(TerrainVertexGpu));
+        desc.Usage     = D3D11_USAGE_IMMUTABLE;
+        desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+
+        D3D11_SUBRESOURCE_DATA init = {};
+        init.pSysMem = result.vertices.data();
+
+        if (FAILED(m_device->CreateBuffer(&desc, &init, &gpu.vb))) {
+            if (gpu.hasTexture) {
+                m_texArray.FreeSlot(gpu.textureSlot);
+                gpu.textureSlot = -1;
+                gpu.hasTexture = false;
+            }
+            return false;
+        }
+    }
+
+    // Create index buffer
+    {
+        D3D11_BUFFER_DESC desc = {};
+        desc.ByteWidth = static_cast<UINT>(result.indices.size() * sizeof(uint32_t));
+        desc.Usage     = D3D11_USAGE_IMMUTABLE;
+        desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+
+        D3D11_SUBRESOURCE_DATA init = {};
+        init.pSysMem = result.indices.data();
+
+        if (FAILED(m_device->CreateBuffer(&desc, &init, &gpu.ib))) {
+            gpu.vb->Release();
+            if (gpu.hasTexture) {
+                m_texArray.FreeSlot(gpu.textureSlot);
+                gpu.textureSlot = -1;
+                gpu.hasTexture = false;
+            }
+            return false;
         }
     }
 
@@ -486,7 +532,7 @@ void TerrainRenderer::UpdateViewport(uint32_t mapId, float targetX, float target
         TileKey key = {td.tx, td.ty};
 
         // Select LOD based on distance from camera center
-        int lod = SelectLOD(td.dist);
+        int lod = SelectLOD(td.dist, cameraDistance);
 
         // Skip if already pending at equal or better LOD
         auto pendIt = m_pending.find(key);
@@ -666,19 +712,21 @@ void TerrainRenderer::Render(const Camera3D& camera,
         }
     }
 
-    // Draw textured tiles (per-tile CB update for texture slot index only)
+    // Draw textured tiles (single CB update — slot index baked into vertices)
     {
         cb.heightParams[2] = 3.0f;
+        bool cbUpdated = false;
+
         for (const auto& vt : visibleTiles) {
             if (!vt.textured) continue;
 
-            cb.tileParams[0] = static_cast<float>(vt.tile->textureSlot);
-            {
+            if (!cbUpdated) {
                 D3D11_MAPPED_SUBRESOURCE mapped = {};
                 if (SUCCEEDED(ctx->Map(cbBuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
                     std::memcpy(mapped.pData, &cb, sizeof(cb));
                     ctx->Unmap(cbBuf, 0);
                 }
+                cbUpdated = true;
             }
 
             ctx->IASetVertexBuffers(0, 1, &vt.tile->vb, &stride, &offset);

@@ -17,8 +17,6 @@
 #include "terrain_texture_pipeline.h"
 #include "../data/terrain_loader.h"
 #include "../data/terrain_mesh.h"
-#include "../data/adt_texture_parser.h"
-#include "../data/terrain_texture_compositor.h"
 #include "../data/bc1_compressor.h"
 
 namespace mapedit {
@@ -119,11 +117,11 @@ private:
         bool hasTexture = false;
     };
 
-    // Upload a completed result to GPU
-    bool UploadToGpu(const LoadResult& result);
+    // Upload a completed result to GPU (non-const: patches vertex slotIndex)
+    bool UploadToGpu(LoadResult& result);
     void ReleaseTileGpu(TileGpu& tile);
     static bool FrustumIntersectsAABB(const float planes[6][4], const TileGpu& tile);
-    static int SelectLOD(float tileDist);
+    static int SelectLOD(float tileDist, float cameraDist);
 
     // Worker thread
     void WorkerLoop();
@@ -147,18 +145,17 @@ private:
     std::mutex m_pathMutex;
     std::string m_dataPath;
 
-    // Texture loading context (protected by m_texMutex for worker thread)
+    // Texture loading config (protected by m_texMutex — held only briefly)
     std::mutex m_texMutex;
     MpqArchiveSet* m_mpq = nullptr;
     std::string m_mapName;
     bool m_texturesEnabled = false;
-    AdtTextureParser m_adtParser;
-    BlpTextureCache  m_blpCache;
-    TerrainTextureCompositor m_compositor;
 
-    // Worker thread
-    std::thread m_worker;
+    // Worker threads (parallel: mesh loading + BC1 compress, serialized: MPQ reads)
+    static constexpr int kWorkerCount = 3;
+    std::vector<std::thread> m_workers;
     std::atomic<bool> m_running{false};
+    std::mutex m_mpqMutex;  // serializes MPQ reads across workers
 
     std::mutex m_reqMutex;
     std::deque<LoadRequest> m_requests;

@@ -4,12 +4,13 @@
 
 namespace mapedit {
 
-// GPU vertex for terrain: world XYZ + normal + UV
+// GPU vertex for terrain: world XYZ + normal + UV + texture slot
 struct TerrainVertexGpu {
     float x, y, z;       // Position (12 bytes)
     float nx, ny, nz;    // Normal (12 bytes)
     float u, v;           // UV for texture atlas (8 bytes)
-};                        // 32 bytes total
+    float slotIndex;      // Texture array slot index (4 bytes)
+};                        // 36 bytes total
 
 // Constant buffer for terrain rendering (must be 16-byte aligned)
 struct TerrainCB {

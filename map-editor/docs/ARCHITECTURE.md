@@ -165,7 +165,12 @@ Loads TrinityCore `.map` files containing heightmap data (V9 129x129 + V8 128x12
 
 **Data pipeline**: `TerrainLoader` parses `.map` files (int16/int8/float decompression, hole bitmask) → `TerrainMesh` converts to indexed triangle mesh (4 triangles per cell, fan from V8 center, per-vertex normals) → `TerrainRenderer` manages GPU tile cache with background thread loading, frustum culling, LRU eviction (150-tile cap), and max 4 uploads/frame.
 
-**Rendering**: `TerrainPipeline` provides HLSL shaders with directional lighting and 3 color modes (Solid Grey, Height Gradient, Slope Shading). Opaque blend, depth write ON, back-face cull. Renders before navmesh so navmesh overlays as semi-transparent. **Smooth toggle** controls two shader-level behaviors: (1) normal mode — smooth per-vertex normals vs flat ddx/ddy normals (`heightParams.w`: -1.0=smooth, -2.0=flat); (2) slope-dependent Z offset via `baseColor.a` — pushes terrain below navmesh on steep slopes (flat: -1 unit, vertical: -6 units) to prevent grey terrain bumps poking through the navmesh overlay.
+**Rendering**: Two pipelines — `TerrainPipeline` (procedural color modes) and `TerrainTexturePipeline` (textured terrain). Both share the same `TerrainCB` constant buffer layout (128 bytes) and `TerrainVertexGpu` format (36 bytes: position + normal + UV + slotIndex).
+
+- **Procedural** (`colorMode` 0/1/2): Solid Grey, Height Gradient, Slope Shading. Single CB update for entire batch.
+- **Textured** (`colorMode` 3): Samples from a 64-slot `Texture2DArray` (BC1_UNORM, 1024×1024, 11 mips). Texture array slot index is baked into each vertex at upload time (`TerrainVertex.slotIndex`), enabling single CB update for entire textured batch. Anisotropic 8× filtering.
+
+Opaque blend, depth write ON, back-face cull. Renders before navmesh so navmesh overlays as semi-transparent. **Smooth toggle** controls two shader-level behaviors: (1) normal mode — smooth per-vertex normals vs flat ddx/ddy normals (`heightParams.w`: -1.0=smooth, -2.0=flat); (2) slope-dependent Z offset via `baseColor.a` — pushes terrain below navmesh on steep slopes (flat: -1 unit, vertical: -6 units) to prevent grey terrain bumps poking through the navmesh overlay.
 
 ### Terrain Height Sampling (`data/terrain_height_sampler.cpp`)
 
@@ -241,7 +246,7 @@ Layer visibility is controlled by `LayerVisibility` struct, toggled in the Layer
 
 - **Main thread** — Win32 message loop, ImGui frame, all rendering, MPQ reads, D3D11 calls
 - **Minimap worker thread** — BLP texture decoding (CPU-bound DXT decompression)
-- **Terrain worker thread** — `.map` file parsing + mesh generation (disk I/O + CPU)
+- **Terrain worker threads (×3)** — `.map` file parsing, mesh generation, ADT texture compositing, BC1 compression. Each worker has its own `AdtTextureParser`/`BlpTextureCache`/`TerrainTextureCompositor` instances (worker-local, no shared state). MPQ reads serialized via `m_mpqMutex` (StormLib not thread-safe for concurrent reads). BC1 compression runs outside all locks for true parallelism.
 - **Building worker thread** — `.vmtile` parsing + M2/WMO loading + geometry assembly (disk I/O + CPU)
 
 All worker threads communicate via mutex-protected request/result queues with condition variable signaling. D3D11 resource creation (textures, vertex/index buffers) happens on main thread only, throttled to a max number of uploads per frame to avoid stalls.
