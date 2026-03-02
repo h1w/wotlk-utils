@@ -27,6 +27,7 @@
 #include "../navigation/nav_mesh.h"
 #include "../navigation/pathfinder.h"
 #include "../bot/tools/follow_route.h"
+#include "../bot/tools/road_nav.h"
 #include "../bot/radar.h"
 #include "../bot/threat_scanner.h"
 #include "../bot/aggro.h"
@@ -739,6 +740,13 @@ static void RenderRadarWidget()
                 hasPath = !waypoints->empty();
                 detourWPs = &mt->GetDetourWaypoints();
                 isInForcedCombat = mt->IsInForcedCombat();
+            } else if (activeTool->GetType() == bot::ToolType::RoadNav) {
+                auto* rn = static_cast<const bot::RoadNavTool*>(activeTool);
+                waypoints = &rn->GetNavWaypoints();
+                currentWpIdx = rn->GetNavCurrentIndex();
+                destination = rn->GetDestination();
+                hasPath = !waypoints->empty();
+                detourWPs = &rn->GetDetourWaypoints();
             }
         }
 

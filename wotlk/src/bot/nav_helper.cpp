@@ -45,6 +45,12 @@ bool NavHelper::StartNavTo(const game::Vec3& target)
     m_currentPathThroughDanger = false;
     m_currentDangerPolyCount = 0;
     m_reroute = RerouteState{};
+    {
+        uint64_t now = GetTickCount64();
+        m_reroute.lastFallbackCheck = now;
+        m_reroute.lastRerouteTime   = now;
+        m_reroute.windowStart       = now;
+    }
     m_recoveryState = RecoveryState::None;
     m_inMicroPause = false;
     m_microPauseEnd = 0;
@@ -229,19 +235,7 @@ void NavHelper::IssueCTMToCurrentWP()
     if (m_currentIndex >= m_waypoints.size())
         return;
 
-    if (m_humanize) {
-        auto player = game::GetLocalPlayer();
-        game::Vec3 myPos = player ? player->GetPosition() : m_waypoints[m_currentIndex];
-        game::Vec3 target = MovementSynth::GetLookaheadPoint(
-            m_waypoints, m_currentIndex, myPos, kLookaheadDist);
-        target = m_synth.AddNoise(target);
-        // Snap noisy target back onto navmesh to avoid walking off edges
-        auto [snapped, ok] = MovementSynth::SnapToNavmesh(target);
-        if (ok) target = snapped;
-        game::movement::ClickToMove(target);
-    } else {
-        game::movement::ClickToMove(m_waypoints[m_currentIndex]);
-    }
+    game::movement::ClickToMove(m_waypoints[m_currentIndex]);
 }
 
 void NavHelper::RefreshCTM()
@@ -249,18 +243,7 @@ void NavHelper::RefreshCTM()
     if (m_currentIndex >= m_waypoints.size())
         return;
 
-    if (m_humanize) {
-        // Raw lookahead WITHOUT noise or navmesh snap.
-        // Avoids jitter/circling from time-varying noise + snap oscillation.
-        auto player = game::GetLocalPlayer();
-        if (!player) return;
-        game::Vec3 myPos = player->GetPosition();
-        game::Vec3 target = MovementSynth::GetLookaheadPoint(
-            m_waypoints, m_currentIndex, myPos, kLookaheadDist);
-        game::movement::ClickToMove(target);
-    } else {
-        game::movement::ClickToMove(m_waypoints[m_currentIndex]);
-    }
+    game::movement::ClickToMove(m_waypoints[m_currentIndex]);
 }
 
 std::vector<game::Vec3> NavHelper::GetRemainingPath() const

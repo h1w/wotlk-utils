@@ -48,6 +48,12 @@ public:
     void SetAreaCost(uint8_t areaId, float cost);
     void ResetAreaCosts();
 
+    // Portal shrinking margin (yards). Contracts each portal inward by this
+    // amount before string-pulling, keeping the path away from polygon edges.
+    // Set to 0 to disable (uses stock Detour findStraightPath).
+    void  SetPortalMargin(float margin);
+    float GetPortalMargin() const { return m_portalMargin; }
+
 private:
     Pathfinder();
 
@@ -58,6 +64,7 @@ private:
     static constexpr float kLargeExtentXZ    = 30.0f;  // expanded search for fallback
     static constexpr float kLargeExtentY     = 40.0f;
     static constexpr float kZOffset          = 0.5f;   // offset to prevent ground clipping
+    static constexpr float kDefaultPortalMargin = 2.0f; // default portal shrink margin (yards)
 
     // Danger zone constants
     static constexpr uint8_t  kDangerAreaId      = 63;     // area ID for cost marking
@@ -66,6 +73,9 @@ private:
     static constexpr float    kAggroMarginAdd    = 3.0f;   // additive margin (yards)
     static constexpr float    kAggroQueryExtentY = 10.0f;  // Y extent for queryPolygons
     static constexpr int      kMaxDangerPolys    = 256;    // max polys per queryPolygons call
+
+    // Portal shrinking margin
+    float m_portalMargin = kDefaultPortalMargin;
 
     // Area cost storage (applied to dtQueryFilter each query)
     float m_areaCosts[64];
@@ -82,6 +92,12 @@ private:
                                  const float* closestStart, const float* closestEnd,
                                  const dtPolyRef* pathPolys, int pathCount,
                                  bool throughDanger, bool partial);
+
+    // Internal: portal-shrinking funnel, falls back to BuildStraightPath
+    PathResult BuildStraightPathShrunk(dtNavMeshQuery* query,
+                                       const float* closestStart, const float* closestEnd,
+                                       const dtPolyRef* pathPolys, int pathCount,
+                                       bool throughDanger, bool partial);
 
     // Internal: push waypoints away from aggro circles that the string-pulled
     // path clips through. Returns true if any waypoints were nudged.

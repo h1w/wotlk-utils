@@ -37,6 +37,8 @@ public:
     size_t GetNavCurrentIndex() const { return m_nav.GetCurrentWaypointIndex(); }
     size_t GetRoadIndex() const { return m_roadIndex; }
     size_t GetRoadNodeCount() const { return m_plan.roadPath.size(); }
+    const game::Vec3& GetDestination() const { return m_end; }
+    const std::vector<game::Vec3>& GetDetourWaypoints() const { return m_nav.GetDetourWaypoints(); }
 
 private:
     enum class Phase {

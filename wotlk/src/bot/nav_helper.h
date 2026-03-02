@@ -125,7 +125,7 @@ private:
     static constexpr uint32_t kMinReactionDelayMs  = 200;
     static constexpr uint32_t kMaxReactionDelayMs   = 400;
     static constexpr float    kLookaheadDist       = 12.0f;
-    static constexpr float    kArrivalThreshold    = 2.5f;
+    static constexpr float    kArrivalThreshold    = 1.2f;
     static constexpr float    kStuckThreshold      = 1.0f;
     static constexpr uint32_t kStuckCheckMs        = 3000;
     static constexpr uint32_t kCTMRefreshMs        = 1000;  // re-issue CTM every 1s

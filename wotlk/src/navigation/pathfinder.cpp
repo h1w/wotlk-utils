@@ -1,4 +1,5 @@
 #include "pathfinder.h"
+#include "funnel.h"
 #include "nav_mesh.h"
 
 #include <DetourNavMesh.h>
@@ -59,6 +60,10 @@ void Pathfinder::ResetAreaCosts() {
 void Pathfinder::SetAreaCost(uint8_t areaId, float cost) {
     if (areaId < 64)
         m_areaCosts[areaId] = cost;
+}
+
+void Pathfinder::SetPortalMargin(float margin) {
+    m_portalMargin = (margin < 0.0f) ? 0.0f : margin;
 }
 
 void Pathfinder::BuildFilter(dtQueryFilter& filter) const {
@@ -134,10 +139,14 @@ PathResult Pathfinder::FindPathWithFilter(
         return result;
     }
 
-    if (dtStatusDetail(status, DT_PARTIAL_RESULT))
-        result.partial = true;
+    bool partial = dtStatusDetail(status, DT_PARTIAL_RESULT) != 0;
 
-    // String-pull to straight path
+    // Portal-shrinking funnel or stock Detour string-pull
+    if (m_portalMargin > 0.0f)
+        return BuildStraightPathShrunk(query, closestStart, closestEnd,
+                                        pathPolys, pathCount, false, partial);
+
+    // Stock Detour string-pull
     float straightPath[kMaxStraightPath * 3];
     unsigned char straightPathFlags[kMaxStraightPath];
     dtPolyRef straightPathPolys[kMaxStraightPath];
@@ -165,6 +174,7 @@ PathResult Pathfinder::FindPathWithFilter(
     }
 
     result.success = true;
+    result.partial = partial;
 
     LOG(INFO) << "[Nav] Path found: " << result.waypoints.size() << " waypoints"
               << (result.partial ? " (PARTIAL)" : "");
@@ -352,7 +362,12 @@ PathResult Pathfinder::FindPathAvoiding(
               << (dtStatusDetail(status, DT_OUT_OF_NODES) ? " OUT_OF_NODES" : "")
               << " status=0x" << std::hex << status << std::dec;
 
-    auto result = BuildStraightPath(query, closestStart, closestEnd,
+    PathResult result;
+    if (m_portalMargin > 0.0f)
+        result = BuildStraightPathShrunk(query, closestStart, closestEnd,
+                                          pathPolys, pathCount, throughDanger, partial);
+    else
+        result = BuildStraightPath(query, closestStart, closestEnd,
                                     pathPolys, pathCount, throughDanger, partial);
 
     // --- Geometric post-processing: nudge waypoints away from aggro circles ---
@@ -366,6 +381,51 @@ PathResult Pathfinder::FindPathAvoiding(
     }
 
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: portal-shrinking funnel, falls back to stock BuildStraightPath
+// ---------------------------------------------------------------------------
+PathResult Pathfinder::BuildStraightPathShrunk(
+    dtNavMeshQuery* query,
+    const float* closestStart, const float* closestEnd,
+    const dtPolyRef* pathPolys, int pathCount,
+    bool throughDanger, bool partial)
+{
+    auto& navMesh = NavMesh::Instance();
+    const dtNavMesh* mesh = navMesh.GetNavMesh();
+
+    float outPoints[kMaxStraightPath * 3];
+    int outCount = 0;
+
+    if (mesh && FunnelStraightPath(mesh, closestStart, closestEnd,
+                                    pathPolys, pathCount, m_portalMargin,
+                                    outPoints, outCount, kMaxStraightPath))
+    {
+        PathResult result;
+        result.waypoints.reserve(outCount);
+        for (int i = 0; i < outCount; ++i) {
+            game::Vec3 wp;
+            wp.x = outPoints[i * 3 + 2];              // WoW X = Detour[2]
+            wp.y = outPoints[i * 3 + 0];              // WoW Y = Detour[0]
+            wp.z = outPoints[i * 3 + 1] + kZOffset;   // WoW Z = Detour[1]
+            result.waypoints.push_back(wp);
+        }
+        result.success = true;
+        result.partial = partial;
+        result.throughDanger = throughDanger;
+
+        LOG(INFO) << "[Nav] Shrunk path: " << result.waypoints.size() << " waypoints"
+                  << " (margin=" << m_portalMargin << "yd)"
+                  << (result.partial ? " (PARTIAL)" : "")
+                  << (result.throughDanger ? " (THROUGH DANGER)" : "");
+        return result;
+    }
+
+    // Fallback to stock Detour findStraightPath
+    LOG(WARNING) << "[Nav] Custom funnel failed, falling back to findStraightPath";
+    return BuildStraightPath(query, closestStart, closestEnd,
+                              pathPolys, pathCount, throughDanger, partial);
 }
 
 // ---------------------------------------------------------------------------
