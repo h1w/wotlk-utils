@@ -10,6 +10,7 @@
 #include "warden/peb_unlink.h"
 #include "game/game.h"
 #include "navigation/nav_mesh.h"
+#include "navigation/road_graph.h"
 #include "navigation/world_graph.h"
 #include "overlay/overlay.h"
 #include <glog/logging.h>
@@ -115,6 +116,23 @@ DWORD WINAPI MainThread(LPVOID lpParam)
                   << " nodes, " << nav::WorldGraph::Instance().GetEdgeCount() << " edges)";
     } else {
         LOG(WARNING) << "WorldGraph not loaded (non-fatal, long-distance nav unavailable)";
+    }
+
+    // RoadGraph: regional road network (medium-distance navigation)
+    std::string dataDir = outputDir + "data\\";
+    std::string roadPath = dataDir + "Azeroth_roads.json";
+    if (nav::RoadGraph::Instance().LoadFromFile(0, roadPath.c_str())) {
+        LOG(INFO) << "RoadGraph loaded: map 0 ("
+                  << nav::RoadGraph::Instance().GetNodeCount(0)
+                  << " nodes, " << nav::RoadGraph::Instance().GetEdgeCount(0) << " edges)";
+    } else {
+        LOG(WARNING) << "RoadGraph not loaded for map 0 (non-fatal, road nav unavailable)";
+    }
+
+    // Compute bridges between WorldGraph and RoadGraph (only if road graph loaded)
+    if (nav::RoadGraph::Instance().IsLoaded(0)) {
+        nav::RoadGraph::Instance().ComputeBridges();
+        LOG(INFO) << "RoadGraph bridges: " << nav::RoadGraph::Instance().GetBridgeCount();
     }
 
     // Hide our DLL + dependencies from PEB.Ldr (prevents Warden MODULE_CHECK detection).

@@ -23,6 +23,7 @@ enum class ToolType : uint8_t {
     Wait,
     Sequence,
     StrategicNav,
+    RoadNav,
 };
 
 enum class ToolStatus : uint8_t {

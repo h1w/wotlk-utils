@@ -378,52 +378,15 @@ static void RenderToolsTab()
             }
 
             if (navMesh.IsReady()) {
-                // Helper lambda: collect danger zones from radar for avoidance pathfinding
-                auto collectDangers = []() -> std::vector<nav::DangerZone> {
-                    std::vector<nav::DangerZone> dangers;
-                    auto& radar = bot::RadarData::Instance();
-                    for (const auto& e : radar.GetEntries()) {
-                        if (e.isPlayer || e.isDead || e.isInCombat) continue;
-                        if (e.aggroRadiusNav <= 0.0f) continue;
-                        if (e.distToPlayer > 150.0f) continue;
-                        if (e.reaction != game::UnitReaction::Hostile &&
-                            e.reaction != game::UnitReaction::Unfriendly)
-                            continue;
-                        dangers.push_back({ e.position.x, e.position.y, e.position.z, e.aggroRadiusNav });
-                    }
-                    return dangers;
-                };
-
+                // Smart navigation: Tier 3 (strategic) > Tier 2 (road) > Tier 1 (navmesh)
                 if (ImGui::Button("Find Path & Go")) {
-                    auto p = game::GetLocalPlayer();
-                    if (p) {
-                        game::Vec3 start = p->GetPosition();
-                        game::Vec3 end{s_destPos[0], s_destPos[1], s_destPos[2]};
-                        auto dangers = collectDangers();
-                        auto result = dangers.empty()
-                            ? nav::Pathfinder::Instance().FindPath(start, end)
-                            : nav::Pathfinder::Instance().FindPathAvoiding(start, end, dangers);
-                        if (result.success && !result.waypoints.empty()) {
-                            queue.PushBack(std::make_unique<bot::FollowRouteTool>(
-                                std::move(result.waypoints)));
-                        }
-                    }
+                    game::Vec3 end{s_destPos[0], s_destPos[1], s_destPos[2]};
+                    queue.PushBack(bot::MoveToTool::CreateSmart(end));
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Interrupt & Go")) {
-                    auto p = game::GetLocalPlayer();
-                    if (p) {
-                        game::Vec3 start = p->GetPosition();
-                        game::Vec3 end{s_destPos[0], s_destPos[1], s_destPos[2]};
-                        auto dangers = collectDangers();
-                        auto result = dangers.empty()
-                            ? nav::Pathfinder::Instance().FindPath(start, end)
-                            : nav::Pathfinder::Instance().FindPathAvoiding(start, end, dangers);
-                        if (result.success && !result.waypoints.empty()) {
-                            queue.Interrupt(std::make_unique<bot::FollowRouteTool>(
-                                std::move(result.waypoints)));
-                        }
-                    }
+                    game::Vec3 end{s_destPos[0], s_destPos[1], s_destPos[2]};
+                    queue.Interrupt(bot::MoveToTool::CreateSmart(end));
                 }
 
                 // Test: find path only (show info)

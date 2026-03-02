@@ -2,7 +2,7 @@
 
 Этот документ показывает текущее состояние проекта: что уже работает, что не работает, и к чему мы стремимся.
 
-Последнее обновление: 2026-02-20.
+Последнее обновление: 2026-03-02.
 
 ---
 
@@ -537,15 +537,16 @@ MinHook = статическая линковка (нет DLL). miniz = комп
 
 **Bot Framework**:
 - ActionQueue (singleton FIFO) — очередь ITool инструментов, один активен за раз
-- Инструменты: MoveToTool, FollowRouteTool, AttackTool, UseSpellTool, WaitTool, SequenceTool, LootTool, InteractTool
+- Инструменты: MoveToTool, FollowRouteTool, AttackTool, UseSpellTool, WaitTool, SequenceTool, LootTool, InteractTool, RoadNavTool
 - NavHelper — переиспользуемый класс для navmesh pathfinding + waypoint following
 - ThreatScanner — сканер враждебных NPC для avoidance
 - ImGui: панель инструментов + панель очереди + Radar widget
 
-**Navigation (3 уровня)**:
-- **Tier 1 — Strategic Planner**: WorldGraph (JSON граф ключевых точек), A* для macro-маршрутов между зонами/континентами. StrategicNavTool для Walk/Flight/Boat/Teleport сегментов
-- **Tier 2 — Tactical Navigation**: Detour navmesh с danger-aware A* (area cost marking, cost=50), post-validation против реальных aggro-зон. 5x5 tile grid + corridor loading для дальних маршрутов
-- **Tier 3 — Movement Synthesizer**: hash-based noise (±0.8yd), lookahead 12yd, micro-pauses, reaction delay для human-like движения
+**Navigation (4 уровня)**:
+- **Tier 3 — Strategic Planner**: WorldGraph (JSON граф ключевых точек), A* для macro-маршрутов между зонами/континентами (>2000yd). StrategicNavTool для Walk/Flight/Boat/Teleport сегментов
+- **Tier 2 — Regional (Road Graph)**: RoadGraph (JSON граф дорог, 3595 узлов, 3653 рёбер), SpatialGrid (100yd cells), A* pathfinding. Бот предпочитает дороги для маршрутов >50yd. RoadNavTool: Approach → RoadFollow → Departure. Danger avoidance: skip опасных road node'ов, abandon road при >5 consecutive skips
+- **Tier 1 — Tactical Navigation**: Detour navmesh с danger-aware A* (area cost marking, cost=50), post-validation против реальных aggro-зон. 5x5 tile grid + corridor loading для дальних маршрутов
+- **Movement Synthesizer**: hash-based noise (±0.8yd), lookahead 12yd, micro-pauses, reaction delay для human-like движения
 
 **NPC Avoidance**:
 - `FindPathAvoiding`: single-pass area cost marking (`setPolyArea(ref, 63)` + `setAreaCost(63, 50.0)`)
@@ -571,13 +572,77 @@ MinHook = статическая линковка (нет DLL). miniz = комп
 **Ключевые файлы**:
 | Компонент | Файлы |
 |-----------|-------|
-| Navigation | `navigation/nav_mesh.h/.cpp`, `navigation/pathfinder.h/.cpp`, `navigation/world_graph.h/.cpp`, `navigation/corridor_loader.h/.cpp` |
+| Navigation | `navigation/nav_mesh.h/.cpp`, `navigation/pathfinder.h/.cpp`, `navigation/world_graph.h/.cpp`, `navigation/road_graph.h/.cpp`, `navigation/corridor_loader.h/.cpp` |
 | Bot core | `bot/action_queue.h/.cpp`, `bot/tool.h`, `bot/nav_helper.h/.cpp`, `bot/threat_scanner.h/.cpp`, `bot/aggro.h`, `bot/radar.h/.cpp`, `bot/movement_synth.h/.cpp` |
-| Tools | `bot/tools/move_to.h/.cpp`, `bot/tools/follow_route.h/.cpp`, `bot/tools/strategic_nav.h/.cpp`, `bot/tools/attack.h/.cpp`, `bot/tools/sequence.h/.cpp` |
+| Tools | `bot/tools/move_to.h/.cpp`, `bot/tools/follow_route.h/.cpp`, `bot/tools/strategic_nav.h/.cpp`, `bot/tools/road_nav.h/.cpp`, `bot/tools/attack.h/.cpp`, `bot/tools/sequence.h/.cpp` |
 | Movement SDK | `game/movement.h/.cpp` (ClickToMove, ClickToMoveStop, SetFacing, FacePosition, Jump, StopMoving) |
 | Overlay | `overlay/overlay.cpp` (Radar widget, Tools widget, Queue widget) |
 
 **Статус**: CODE COMPLETE (pending in-game testing)
+
+---
+
+### 20. Road Graph Integration (Regional Navigation Layer)
+
+**Описание**: интеграция RoadGraph как **Tier 2 региональной навигации** между стратегическим WorldGraph (Tier 3) и тактическим Detour navmesh (Tier 1). Бот предпочитает ходить по дорогам при доступности для маршрутов >50 ярдов.
+
+**Архитектура навигации (4 уровня)**:
+```
+Tier 3 — Strategic (World Graph)     >2000 yd   cross-zone, flights, boats
+Tier 2 — Regional (Road Graph)       >50 yd     follow roads between POIs    [NEW]
+Tier 1 — Tactical (Detour NavMesh)   <50 yd     local movement, mob avoidance
+Movement Synthesizer                             human-like noise, micro-pauses
+```
+
+**Новые файлы**:
+
+| Файл | Описание |
+|------|----------|
+| `navigation/road_graph.h` | RoadNode, RoadEdge, SpatialGrid, RoadGraph, RoadPlan, Bridge structs |
+| `navigation/road_graph.cpp` | JSON loading, A* pathfinding, spatial grid, PlanRoadPath, ComputeBridges |
+| `bot/tools/road_nav.h` | RoadNavTool class (three-phase road executor) |
+| `bot/tools/road_nav.cpp` | Approach/RoadFollow/Departure phases, danger avoidance, skip logic |
+
+**Изменённые файлы**:
+
+| Файл | Изменения |
+|------|-----------|
+| `bot/tool.h` | Добавлен `ToolType::RoadNav` в enum |
+| `bot/tools/move_to.cpp` | `CreateSmart()` проверяет Tier 2 road routing перед fallback на navmesh |
+| `bot/tools/strategic_nav.cpp` | Walk сегменты пробуют road routing; используют mapId из source node WorldGraph |
+| `dllmain.cpp` | Загрузка `Azeroth_roads.json` при старте, ComputeBridges |
+| `overlay/overlay.cpp` | Кнопки навигации используют `CreateSmart()` (3-tier routing) вместо прямого `Pathfinder + FollowRouteTool` |
+
+**RoadGraph**:
+- **Singleton** с per-map хранилищем (`m_maps[mapId]`)
+- **SpatialGrid**: 100yd ячейки, O(1) nearest-node lookup
+- **A***: 3D Euclidean heuristic (admissible), <1ms для 3600-node графа
+- **Node ID 0**: зарезервирован как sentinel; отклоняется при загрузке
+
+**Road Planning**:
+- **Cost ratio threshold**: road path < 3x прямого расстояния
+- **Approach distance threshold**: approach < 50% прямого расстояния
+- **RoadPlan struct**: entry/exit nodes, полный путь, breakdown стоимости
+
+**RoadNavTool (3-фазный executor)**:
+- **Approach**: navmesh к entry road node
+- **RoadFollow**: node-by-node следование по дороге
+- **Departure**: navmesh к финальной цели
+- **Arrival threshold**: 5.0yd (шире NavHelper's 2.5 для road node placement)
+- **Iterative skip loop**: без рекурсии
+
+**Danger Avoidance (3 уровня)**:
+- **Layer 1**: NavHelper's `FindPathAvoiding()` — обход мобов per segment
+- **Layer 2**: Road node pre-check — skip node'ов в aggro radius (buffered + 5yd margin)
+- **Layer 3**: >5 consecutive skips → abandon road, чистый navmesh к цели
+
+**Bridge Computation**: связывает WorldGraph POI node'ы с ближайшими road node'ами (300yd search radius). Вычисляется один раз после загрузки обоих графов.
+
+**Данные**: `Azeroth_roads.json` (3595 nodes, 3653 edges, map 0)
+
+**Bugfix (2026-03-02)**: кнопки навигации в overlay (`Find Path & Go`, `Interrupt & Go`) обходили `CreateSmart()` и создавали `FollowRouteTool` напрямую через `Pathfinder::FindPath()` — road graph полностью игнорировался. Исправлено: overlay теперь вызывает `MoveToTool::CreateSmart()`.
+
+**Статус**: РАБОТАЕТ (верифицировано in-game 2026-03-02)
 
 ---
 
@@ -628,9 +693,10 @@ wotlk/
       aggro.h                            — CalcAggroRadius() (shared formula)
       radar.h / .cpp                     — RadarData + RadarEntry (data collection every 200ms)
       tools/
-        move_to.h / .cpp                 — MoveToTool (navmesh path + CTM fallback)
+        move_to.h / .cpp                 — MoveToTool (navmesh path + CTM fallback, CreateSmart: 3-tier routing)
         follow_route.h / .cpp            — FollowRouteTool (multi-waypoint route)
-        strategic_nav.h / .cpp           — StrategicNavTool (world graph multi-segment navigation)
+        strategic_nav.h / .cpp           — StrategicNavTool (world graph multi-segment navigation, road routing for walk segments)
+        road_nav.h / .cpp                — RoadNavTool (3-phase road following: Approach → RoadFollow → Departure)
         attack.h / .cpp                  — AttackTool
         use_spell.h / .cpp               — UseSpellTool
         wait.h / .cpp                    — WaitTool
@@ -641,6 +707,7 @@ wotlk/
       nav_mesh.h / .cpp                  — NavMesh (Detour navmesh loading from .mmap/.mmtile)
       pathfinder.h / .cpp                — Pathfinder (A* path queries + danger-aware avoidance)
       world_graph.h / .cpp               — WorldGraph (JSON graph, A* macro-routing)
+      road_graph.h / .cpp                — RoadGraph (JSON road network, A* pathfinding, SpatialGrid, PlanRoadPath, ComputeBridges)
       corridor_loader.h / .cpp           — CorridorLoader (pre-load tiles along long routes)
     overlay/
       overlay.h / .cpp                   — ImGui overlay (EndScene hook, Tools/Queue/Stats/Radar widgets)
@@ -678,11 +745,12 @@ wotlk/
 - ~~Game SDK~~ — 12 модулей (ObjectManager, Unit, LocalPlayer, Spell, Movement, World, Lua bridge)
 - ~~Оффсеты реорганизованы~~ — nested namespaces (offsets::fn, offsets::globals, offsets::objmgr, offsets::fields, ...)
 - ~~Bot Framework~~ — ActionQueue, ITool, NavHelper, ThreatScanner, MoveToTool, FollowRouteTool, AttackTool, SequenceTool, и др.
-- ~~Navigation (Tier 2)~~ — Detour navmesh, NPC avoidance (area cost marking), tile streaming 5x5, corridor loading
-- ~~Navigation (Tier 1)~~ — WorldGraph JSON, A* планировщик, StrategicNavTool (код готов, данных нет)
-- ~~Navigation (Tier 3)~~ — Movement synthesizer (noise, lookahead, micro-pauses)
+- ~~Navigation (Tier 1 — Tactical)~~ — Detour navmesh, NPC avoidance (area cost marking), tile streaming 5x5, corridor loading
+- ~~Navigation (Tier 3 — Strategic)~~ — WorldGraph JSON, A* планировщик, StrategicNavTool
+- ~~Navigation (Movement Synthesizer)~~ — noise, lookahead, micro-pauses
 - ~~Radar Widget~~ — ImGui 2D top-down радар (NPC, aggro-зоны, навигационный путь)
 - ~~CTM Stop~~ — ClickToMoveStop @ 0x0072B3A0 (correct teardown of CTM + CMovement)
+- ~~Road Graph Integration (Tier 2)~~ — RoadGraph JSON (3595 nodes, 3653 edges), A* pathfinding, RoadNavTool (3-phase), danger avoidance, bridge computation
 
 ### Ближайшее
 
@@ -732,7 +800,7 @@ wotlk/
 
 ## Заключение
 
-Проект находится на стадии **активного bypass + Game SDK + Bot Framework + Navigation**. Все основные типы проверок Warden перехвачены и спуфятся. Поверх Warden-слоя реализованы Game SDK, трёхуровневая навигационная система (strategic planner, tactical navmesh, movement synthesizer) с NPC avoidance, Bot Framework с ActionQueue/ITool, ClickToMoveStop для корректного teardown, и ImGui Radar Widget для визуальной отладки:
+Проект находится на стадии **активного bypass + Game SDK + Bot Framework + Navigation**. Все основные типы проверок Warden перехвачены и спуфятся. Поверх Warden-слоя реализованы Game SDK, четырёхуровневая навигационная система (strategic planner, road graph, tactical navmesh, movement synthesizer) с NPC avoidance, Bot Framework с ActionQueue/ITool, ClickToMoveStop для корректного teardown, и ImGui Radar Widget для визуальной отладки:
 
 **Что мы умеем**:
 - Перехватывать и парсить все типы Warden пакетов (SMSG и CMSG)
@@ -753,10 +821,10 @@ wotlk/
 - **Перечислять юнитов** вокруг (ObjectManager traversal), проверять реакцию/расстояние
 - **Выполнять действия** (ClickToMove, ClickToMoveStop, SetFacing, CastSpell, SelectTarget) через C++ вызовы и Lua bridge
 - **Получать информацию о мире** (зона, карта, реалм, LineOfSight, камера)
-- **Навигация (3-tier)**: WorldGraph (JSON, A* macro-routing), Detour navmesh (danger-aware pathfinding, NPC avoidance via area cost marking, 5x5 tile streaming, corridor loading), movement synthesizer (hash-based noise, lookahead, micro-pauses)
+- **Навигация (4-tier)**: WorldGraph (JSON, A* macro-routing, >2000yd), RoadGraph (JSON дорожная сеть, A* pathfinding, бот предпочитает дороги для >50yd), Detour navmesh (danger-aware pathfinding, NPC avoidance via area cost marking, 5x5 tile streaming, corridor loading), movement synthesizer (hash-based noise, lookahead, micro-pauses)
 - **NPC avoidance**: dual-filter poly selection, polygon-circle intersection, post-validation, RAII area restore, hysteresis, rate limiting, event-based rerouting
 - **Recovery protocol**: wait → evaluate (weak/strong) → attack/run-through/failed
-- **Bot Framework** (ActionQueue FIFO, ITool, NavHelper, ThreatScanner, MoveToTool, FollowRouteTool, StrategicNavTool, AttackTool, SequenceTool и др.)
+- **Bot Framework** (ActionQueue FIFO, ITool, NavHelper, ThreatScanner, MoveToTool, FollowRouteTool, StrategicNavTool, RoadNavTool, AttackTool, SequenceTool и др.)
 - **Radar Widget** (ImGui 2D top-down радар: игрок, NPC, aggro-зоны, путь, GameObjects, тултипы)
 
 **Ключевые компоненты**:

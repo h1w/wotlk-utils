@@ -183,9 +183,11 @@
     <ClInclude Include="src\bot\movement_synth.h" />
     <ClInclude Include="src\bot\tools\follow_route.h" />
     <ClInclude Include="src\bot\tools\strategic_nav.h" />
+    <ClInclude Include="src\bot\tools\road_nav.h" />
     <ClInclude Include="src\navigation\nav_mesh.h" />
     <ClInclude Include="src\navigation\pathfinder.h" />
     <ClInclude Include="src\navigation\world_graph.h" />
+    <ClInclude Include="src\navigation\road_graph.h" />
     <ClInclude Include="src\navigation\corridor_loader.h" />
     <ClInclude Include="src\logging\glog_custom_formatter.hpp" />
     <ClInclude Include="src\logging\logger_setup.hpp" />
@@ -234,9 +236,11 @@
     <ClCompile Include="src\bot\movement_synth.cpp" />
     <ClCompile Include="src\bot\tools\follow_route.cpp" />
     <ClCompile Include="src\bot\tools\strategic_nav.cpp" />
+    <ClCompile Include="src\bot\tools\road_nav.cpp" />
     <ClCompile Include="src\navigation\nav_mesh.cpp" />
     <ClCompile Include="src\navigation\pathfinder.cpp" />
     <ClCompile Include="src\navigation\world_graph.cpp" />
+    <ClCompile Include="src\navigation\road_graph.cpp" />
     <ClCompile Include="src\navigation\corridor_loader.cpp" />
     <ClCompile Include="src\logging\glog_custom_formatter.cpp" />
     <ClCompile Include="src\logging\logger_setup.cpp" />

@@ -1,8 +1,10 @@
 #include "strategic_nav.h"
 #include "move_to.h"
+#include "road_nav.h"
 #include "wait.h"
 #include "../../game/game.h"
 #include "../../game/world.h"
+#include "../../navigation/road_graph.h"
 #include "../../navigation/world_graph.h"
 
 #include <cstdio>
@@ -110,11 +112,27 @@ void StrategicNavTool::StartCurrentSegment() {
               << " (node " << seg.fromNodeId << " -> " << seg.toNodeId << ")";
 
     switch (seg.edgeType) {
-    case nav::EdgeType::Walk:
-        // Navigate via navmesh
+    case nav::EdgeType::Walk: {
+        // Try road routing for walk segments (use segment's source node map, not player's current map)
+        const auto* fromNode = nav::WorldGraph::Instance().GetNode(seg.fromNodeId);
+        uint32_t mapId = fromNode ? fromNode->mapId : game::world::GetMapId();
+        auto& rg = nav::RoadGraph::Instance();
+        if (rg.IsLoaded(mapId)) {
+            auto plan = rg.PlanRoadPath(seg.fromPos, seg.toPos, mapId);
+            if (plan.useRoad) {
+                LOG(INFO) << "[StrategicNav] Walk segment using road nav ("
+                          << plan.roadPath.size() << " nodes)";
+                m_activeTool = std::make_unique<RoadNavTool>(seg.fromPos, seg.toPos,
+                                                              std::move(plan));
+                m_activeTool->Start();
+                break;
+            }
+        }
+        // Fallback: direct navmesh
         m_activeTool = std::make_unique<MoveToTool>(seg.toPos);
         m_activeTool->Start();
         break;
+    }
 
     case nav::EdgeType::Flight:
         // TODO: Need to interact with flight master NPC, select destination.

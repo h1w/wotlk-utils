@@ -644,16 +644,17 @@ Framework для автоматизации игровых действий. О�
 | `radar.h/.cpp` | RadarData: сканирование ObjectManager (NPC/игроки/объекты) каждые 200мс, aggro радиусы |
 | `threat_scanner.h/.cpp` | ThreatScanner: обнаружение враждебных NPC + валидация пути на пересечение aggro-зон |
 | `movement_synth.h/.cpp` | MovementSynthesizer: человекоподобное движение (шум, lookahead, микро-паузы) |
-| `tools/move_to.h/.cpp` | MoveToTool: движение к точке через navmesh, обход препятствий |
+| `tools/move_to.h/.cpp` | MoveToTool: движение к точке через navmesh, обход препятствий. CreateSmart(): 3-tier routing (Strategic → Road → NavMesh) |
 | `tools/follow_route.h/.cpp` | FollowRouteTool: следование по маршруту (список точек), цикличность |
-| `tools/strategic_nav.h/.cpp` | StrategicNavTool: multi-segment navigation через world graph (macro-routing) |
+| `tools/strategic_nav.h/.cpp` | StrategicNavTool: multi-segment navigation через world graph (macro-routing), walk сегменты пробуют road routing |
+| `tools/road_nav.h/.cpp` | RoadNavTool: 3-phase road navigation (Approach → RoadFollow → Departure), danger avoidance, skip logic |
 
 ---
 
-### **src/navigation/** — Navigation (Detour + WorldGraph)
+### **src/navigation/** — Navigation (Detour + WorldGraph + RoadGraph)
 
 **Что делает:**
-3-tier архитектура навигации: Strategic (world graph) → Tactical (navmesh) → Movement Synthesizer.
+4-tier архитектура навигации: Strategic (world graph) → Regional (road graph) → Tactical (navmesh) → Movement Synthesizer.
 
 **Модули:**
 
@@ -662,6 +663,7 @@ Framework для автоматизации игровых действий. О�
 | `nav_mesh.h/.cpp` | Detour navmesh загрузка/выгрузка/query. 32-bit poly refs (polyBits=16, tileBits=6, saltBits=10) |
 | `pathfinder.h/.cpp` | A* pathfinding через Detour, динамическая маркировка опасных зон (area 63, cost 50.0) |
 | `world_graph.h/.cpp` | WorldGraph: JSON граф зон (вершины = зоны, рёбра = порталы/пути), A* macro-routing |
+| `road_graph.h/.cpp` | RoadGraph: JSON граф дорог (3595 узлов, 3653 рёбер), SpatialGrid (100yd cells), A* pathfinding, PlanRoadPath, ComputeBridges |
 | `corridor_loader.h/.cpp` | CorridorLoader: pre-loading tiles вдоль маршрута (5x5 grid + corridor), tile streaming |
 
 **Ключевые паттерны:**
@@ -853,4 +855,4 @@ Framework для автоматизации игровых действий. О�
 8. **Game SDK**: C++ модули для чтения данных персонажа/мира (ObjectManager, дескрипторы, vtable) + Lua bridge для действий (каст, движение). SEH-изолированные helper-функции, main thread only.
 9. **Bot Framework**: ActionQueue (FIFO tool scheduling), NavHelper (navmesh pathfinding + waypoint follower), набор Tools (MoveToTool, FollowRouteTool, StrategicNavTool, AttackTool, UseSpellTool, SequenceTool и др.).
 10. **Radar Widget**: ImGui top-down 2D радар для визуальной отладки. RadarData сканирует ObjectManager каждые 200мс, RenderRadarWidget рисует объекты/путь/aggro-зоны. Поддержка North-Up и Player-Facing-Up ориентации.
-11. **3-tier Navigation**: Strategic (WorldGraph JSON + A* macro-routing) → Tactical (Detour navmesh + danger-aware A*) → Movement Synthesizer (human-like noise + lookahead + micro-pauses). NPC avoidance: area cost marking (area 63, cost 50.0). Tile streaming: 5x5 grid + corridor pre-loading. Recovery: wait → evaluate → attack/run-through.
+11. **4-tier Navigation**: Strategic (WorldGraph JSON + A* macro-routing) → Regional (RoadGraph JSON + A* pathfinding, бот предпочитает дороги для >50yd маршрутов) → Tactical (Detour navmesh + danger-aware A*) → Movement Synthesizer (human-like noise + lookahead + micro-pauses). NPC avoidance: area cost marking (area 63, cost 50.0). Tile streaming: 5x5 grid + corridor pre-loading. Recovery: wait → evaluate → attack/run-through.

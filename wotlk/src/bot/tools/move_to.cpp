@@ -1,6 +1,7 @@
 #include "move_to.h"
 #include "attack.h"
 #include "loot.h"
+#include "road_nav.h"
 #include "sequence.h"
 #include "../action_queue.h"
 #include "strategic_nav.h"
@@ -8,6 +9,7 @@
 #include "../../game/movement.h"
 #include "../../game/world.h"
 #include "../../navigation/nav_mesh.h"
+#include "../../navigation/road_graph.h"
 #include "../../navigation/world_graph.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -25,40 +27,49 @@ MoveToTool::MoveToTool(const game::Vec3& target, int forcedCombatCount)
 }
 
 ToolPtr MoveToTool::CreateSmart(const game::Vec3& target) {
-    auto& graph = nav::WorldGraph::Instance();
-    if (!graph.IsLoaded())
-        return std::make_unique<MoveToTool>(target);
-
     auto player = game::GetLocalPlayer();
     if (!player || !game::world::IsInGame())
         return std::make_unique<MoveToTool>(target);
 
     game::Vec3 pos = player->GetPosition();
     float dist = pos.DistanceTo(target);
-
-    // Only use strategic navigation for long distances where direct navmesh
-    // pathfinding may fail due to tile coverage
-    static constexpr float kStrategicThreshold = 2000.0f;
-    if (dist < kStrategicThreshold)
-        return std::make_unique<MoveToTool>(target);
-
-    // Find nearest graph nodes to start and end
     uint32_t mapId = game::world::GetMapId();
-    const auto* startNode = graph.FindNearestNode(mapId, pos.x, pos.y);
-    const auto* endNode   = graph.FindNearestNode(mapId, target.x, target.y);
 
-    if (!startNode || !endNode)
-        return std::make_unique<MoveToTool>(target);
+    // Tier 3: Strategic (World Graph) — cross-zone, >2000 yd
+    static constexpr float kStrategicThreshold = 2000.0f;
+    if (dist > kStrategicThreshold) {
+        auto& graph = nav::WorldGraph::Instance();
+        if (graph.IsLoaded()) {
+            const auto* startNode = graph.FindNearestNode(mapId, pos.x, pos.y);
+            const auto* endNode   = graph.FindNearestNode(mapId, target.x, target.y);
 
-    // Plan route on world graph
-    auto route = graph.PlanRoute(startNode->id, endNode->id);
-    if (route.empty())
-        return std::make_unique<MoveToTool>(target);
+            if (startNode && endNode) {
+                auto route = graph.PlanRoute(startNode->id, endNode->id);
+                if (!route.empty()) {
+                    LOG(INFO) << "[MoveToTool] Long distance (" << dist
+                              << "yd), using strategic nav (" << route.size() << " segments)";
+                    return std::make_unique<StrategicNavTool>(std::move(route));
+                }
+            }
+        }
+    }
 
-    LOG(INFO) << "[MoveToTool] Long distance (" << dist << "yd), using strategic nav ("
-              << route.size() << " segments)";
+    // Tier 2: Regional (Road Graph) — >50 yd
+    static constexpr float kRoadThreshold = 50.0f;
+    if (dist > kRoadThreshold) {
+        auto& rg = nav::RoadGraph::Instance();
+        if (rg.IsLoaded(mapId)) {
+            auto plan = rg.PlanRoadPath(pos, target, mapId);
+            if (plan.useRoad) {
+                LOG(INFO) << "[MoveToTool] Using road nav (" << plan.roadPath.size()
+                          << " nodes, " << plan.roadDist << " yd road)";
+                return std::make_unique<RoadNavTool>(pos, target, std::move(plan));
+            }
+        }
+    }
 
-    return std::make_unique<StrategicNavTool>(std::move(route));
+    // Tier 1: Tactical (pure navmesh)
+    return std::make_unique<MoveToTool>(target);
 }
 
 void MoveToTool::Start()
