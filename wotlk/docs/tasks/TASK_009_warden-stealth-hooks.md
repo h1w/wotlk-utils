@@ -1,6 +1,6 @@
 # Task: Stealth RC4 Hooking (Hardware Breakpoints + VEH)
 
-> **Status**: TODO
+> **Status**: DONE
 > **Created**: 2026-03-03
 > **Phase**: Warden Anti-Detection
 > **Depends on**: nothing

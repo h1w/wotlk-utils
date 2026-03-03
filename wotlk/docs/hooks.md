@@ -517,10 +517,16 @@ __except(EXCEPTION_EXECUTE_HANDLER) {
 - **CDataStore** — структура для чтения бинарных пакетов (buffer + size + readPos)
 - **Naked functions** — для нестандартных calling conventions
 
-Дополнительно, **warden_rc4_hook.cpp** устанавливает до 4 хуков на RC4 PRGA функции **внутри** Warden модуля (не WoW.exe). Эти хуки захватывают CMSG plaintext ДО шифрования и являются основным методом расшифровки CMSG. Кроме того, именно в этой точке вызывается **warden_spoof::SpoofCmsgIfNeeded** — подмена MEM_CHECK / PAGE_CHECK результатов на оригинальные байты из shadow copy перед RC4 шифрованием (Variant A spoofing).
+Дополнительно, **warden_rc4_hook.cpp** перехватывает до 4 RC4 PRGA функций **внутри** Warden модуля (не WoW.exe) через **hardware breakpoints (DR0-DR3) + Vectored Exception Handler (VEH)**. Перехват захватывает CMSG plaintext ДО шифрования и является основным методом расшифровки CMSG. Кроме того, именно в этой точке вызывается **warden_spoof::SpoofCmsgIfNeeded** — подмена MEM_CHECK / PAGE_CHECK результатов на оригинальные байты из shadow copy перед RC4 шифрованием (Variant A spoofing).
 
-**Deferred RC4 hook install**: RC4 хуки устанавливаются в **HASH_REQUEST PostHandler** — ПОСЛЕ того как модуль вычислил integrity hash на чистом коде. В `WardenPreHandler` выполняется только `FindModuleInMemory` + `ScanForRC4States` + `CloneAllStates` (read-only, без Install). Это предотвращает RC4 re-key desync: если установить MinHook патчи до HASH_REQUEST, модуль вычислит corrupted hash → обе стороны re-key с разными ключами → disconnect.
+**ZERO bytes modified**: в отличие от предыдущей MinHook реализации (JMP патчи), hardware breakpoints не модифицируют ни одного байта в памяти модуля. VEH handler ловит `EXCEPTION_SINGLE_STEP`, читает регистры из `CONTEXT`, вызывает `HandleRC4Intercept()`, и устанавливает Resume Flag (`EFlags |= 0x10000`) для продолжения исполнения оригинальной инструкции.
 
-**HASH_REQUEST/RESULT**: `WardenPostHandlerImpl` парсит HASH_REQUEST seed (16 байт), `RC4DetourHandler` + `SendPacketHandler` перехватывают и логируют HASH_RESULT (21 байт: [0x04][SHA1:20]).
+**NtGetContextThread hook** (defense-in-depth): `hooks.cpp` хукает `ntdll!NtGetContextThread` через MinHook для обнуления DR0-DR7 в возвращаемом CONTEXT. Хук **создаётся отключённым** в `Initialize()` и **включается по требованию** через `EnableContextGuard()` только когда hardware breakpoints активны (не мешает login/authentication фазе).
+
+**KSA фильтрация**: `LooksLikeKSA()` сканирует первые 80 байт найденной функции на CMP/SUB с immediate 0x100 (identity init loop). KSA функции пропускаются и не занимают слоты DR (максимум 4).
+
+**Deferred RC4 hook install**: RC4 хуки устанавливаются в **HASH_REQUEST PostHandler** — ПОСЛЕ того как модуль вычислил integrity hash на чистом коде. В `WardenPreHandler` выполняется только `FindModuleInMemory` + `ScanForRC4States` + `CloneAllStates` (read-only, без Install). Это предотвращает RC4 re-key desync.
+
+**HASH_REQUEST/RESULT**: `WardenPostHandlerImpl` парсит HASH_REQUEST seed (16 байт), `HandleRC4Intercept` + `SendPacketHandler` перехватывают и логируют HASH_RESULT (21 байт: [0x04][SHA1:20]).
 
 Все хуки работают вместе для полного анализа и обхода Warden системы античита.

@@ -142,6 +142,41 @@ static volatile LONG g_sendPacketDiagCount = 0;
 
 static void* g_originalARC4Process = nullptr;
 
+// ===========================================================================
+// NtGetContextThread — hide hardware breakpoints (DR0-DR7)
+// Defense-in-depth: zeroes debug register fields in returned CONTEXT.
+//
+// IMPORTANT: This hook is CREATED (but disabled) in Initialize() and only
+// ENABLED when warden_rc4_hook sets hardware breakpoints. This avoids any
+// interference with the login/authentication phase. NtGetContextThread alone
+// is sufficient — all GetThreadContext calls go through it internally.
+// ===========================================================================
+
+#ifndef NT_SUCCESS
+#define NT_SUCCESS(Status) (((LONG)(Status)) >= 0)
+#endif
+
+using NtGetContextThread_t = LONG(NTAPI*)(HANDLE, PCONTEXT);
+static NtGetContextThread_t g_origNtGetContextThread = nullptr;
+static LPVOID g_pNtGetContextThread = nullptr;  // target address for enable/disable
+
+static LONG NTAPI HookedNtGetContextThread(HANDLE hThread, PCONTEXT ctx)
+{
+    LONG status = g_origNtGetContextThread(hThread, ctx);
+    // Check bit 0x10 specifically (debug registers flag within CONTEXT_i386 group).
+    // CONTEXT_DEBUG_REGISTERS = CONTEXT_i386 | 0x10, but CONTEXT_i386 (0x10000) is
+    // always set in valid x86 contexts, so we must check the 0x10 bit alone.
+    if (NT_SUCCESS(status) && ctx && (ctx->ContextFlags & 0x10)) {
+        ctx->Dr0 = 0;
+        ctx->Dr1 = 0;
+        ctx->Dr2 = 0;
+        ctx->Dr3 = 0;
+        ctx->Dr6 = 0;
+        ctx->Dr7 = 0;
+    }
+    return status;
+}
+
 // Flag: true while inside Warden handler (between Pre and Post)
 static bool g_insideWardenHandler = false;
 static int  g_wardenArc4CallNum   = 0;
@@ -1333,6 +1368,28 @@ FrameScriptExecuteFn GetOriginalFrameScriptExecute()
     return g_originalFrameScriptExecute;
 }
 
+void EnableContextGuard()
+{
+    if (g_pNtGetContextThread && g_origNtGetContextThread) {
+        MH_STATUS s = MH_EnableHook(g_pNtGetContextThread);
+        if (s == MH_OK)
+            LOG(INFO) << "NtGetContextThread hook ENABLED (DR hiding active)";
+        else
+            LOG(ERROR) << "MH_EnableHook(NtGetContextThread) failed: " << MH_StatusToString(s);
+    }
+}
+
+void DisableContextGuard()
+{
+    if (g_pNtGetContextThread && g_origNtGetContextThread) {
+        MH_STATUS s = MH_DisableHook(g_pNtGetContextThread);
+        if (s == MH_OK)
+            LOG(INFO) << "NtGetContextThread hook DISABLED (DR hiding inactive)";
+        else if (s != MH_ERROR_DISABLED)
+            LOG(ERROR) << "MH_DisableHook(NtGetContextThread) failed: " << MH_StatusToString(s);
+    }
+}
+
 bool TryExtractHashSeedFromCurrentPacket(uint8_t outSeed[16])
 {
     if (!g_savedCDataStore)
@@ -1457,6 +1514,27 @@ bool Initialize()
         }
     }
 
+    // --- NtGetContextThread hook (hide debug registers from inspection) ---
+    // Created but NOT enabled here. Enabled lazily by EnableContextGuard()
+    // when hardware breakpoints are set (avoids interference during login).
+    {
+        HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+        if (ntdll) {
+            g_pNtGetContextThread = reinterpret_cast<LPVOID>(
+                GetProcAddress(ntdll, "NtGetContextThread"));
+            if (g_pNtGetContextThread) {
+                status = MH_CreateHook(g_pNtGetContextThread,
+                    reinterpret_cast<LPVOID>(&HookedNtGetContextThread),
+                    reinterpret_cast<LPVOID*>(&g_origNtGetContextThread));
+                if (status == MH_OK)
+                    LOG(INFO) << "Hook created (disabled): NtGetContextThread (ntdll.dll)";
+                else
+                    LOG(ERROR) << "MH_CreateHook(NtGetContextThread) failed: "
+                               << MH_StatusToString(status);
+            }
+        }
+    }
+
     // Try to extract Warden module type IDs at startup
     // (module may already be loaded before DLL injection)
     warden_scan::ScanAndExtractTypeIDs();
@@ -1468,6 +1546,10 @@ void Shutdown()
 {
     warden_rc4_hook::Remove();
     warden_rc4_hook::Cleanup();
+
+    // Disable NtGetContextThread hook (may already be disabled)
+    if (g_pNtGetContextThread)
+        MH_DisableHook(g_pNtGetContextThread);
 
     MH_DisableHook(reinterpret_cast<LPVOID>(offsets::fn::ARC4_Process));
     MH_DisableHook(reinterpret_cast<LPVOID>(offsets::fn::SendPacket));

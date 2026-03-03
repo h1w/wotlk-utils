@@ -1,10 +1,11 @@
 #include "warden_rc4_hook.h"
 #include "warden_types.h"
 #include "warden_spoof.h"
+#include "../hooks/hooks.h"
 
 #define NOMINMAX
 #include <Windows.h>
-#include <MinHook.h>
+#include <TlHelp32.h>
 #include <glog/logging.h>
 
 #include <cstring>
@@ -14,16 +15,22 @@
 #include <iomanip>
 
 // ===========================================================================
-// Internal RC4 hook: hooks RC4 PRGA functions INSIDE the Warden module blob
-// to capture CMSG plaintext directly before encryption.
+// Internal RC4 hook: intercepts RC4 PRGA functions INSIDE the Warden module
+// blob using hardware breakpoints (DR0-DR3) + Vectored Exception Handler.
+//
+// ZERO bytes are modified in Warden module memory — the module's code remains
+// byte-for-byte identical to what the server expects. This eliminates detection
+// by MEM_CHECK, PAGE_CHECK, and self-integrity verification.
+//
+// How it works:
+//   1. Pattern scanner finds RC4 PRGA functions (0x100/0x101 displacements)
+//   2. Up to 4 addresses are loaded into DR0-DR3 on all threads
+//   3. VEH handler catches EXCEPTION_SINGLE_STEP at those addresses
+//   4. Handler reads plaintext, spoofs if needed, writes back
+//   5. Resume Flag (RF) lets original instruction execute without re-trigger
 //
 // The Warden module's RC4 context uses [S[256]][i][j] layout, so i/j fields
 // are at offsets +0x100 and +0x101 from the context base pointer.
-// The scanner finds RC4 functions by looking for MOVZX/MOV instructions
-// with these distinctive displacements.
-//
-// Modules may contain multiple RC4 implementations (main thread vs module
-// thread), so we hook ALL viable clusters, not just the largest one.
 // ===========================================================================
 
 namespace {
@@ -32,12 +39,11 @@ static constexpr size_t kMaxCaptureSize = 4096;
 static constexpr int    kMaxRC4Hooks    = 4;
 
 // ---------------------------------------------------------------------------
-// Multi-hook state: up to kMaxRC4Hooks simultaneous hooks
+// Hardware breakpoint state
 // ---------------------------------------------------------------------------
-static void*     g_trampolines[kMaxRC4Hooks] = {};
 static uintptr_t g_hookedAddrs[kMaxRC4Hooks] = {};
-static bool      g_hooksActive[kMaxRC4Hooks] = {};
 static int       g_numHooks = 0;
+static PVOID     g_vehHandle = nullptr;
 
 // Module memory range (for diagnostics/validation)
 static uintptr_t g_moduleBase = 0;
@@ -309,10 +315,51 @@ static size_t FindFunctionPrologue(const uint8_t* buf, size_t size, size_t clust
     return funcOffset;
 }
 
+// ===========================================================================
+// KSA detection heuristic (Phase 2)
+//
+// KSA (Key Schedule Algorithm) has a distinctive identity initialization loop:
+//   for (i = 0; i < 256; i++) S[i] = i;
+// This produces CMP/SUB instructions with IMMEDIATE value 0x100 as loop bound.
+// PRGA uses 0x100/0x101 only as memory DISPLACEMENTS in ModRM addressing.
+//
+// Hooking KSA is useless (it doesn't process plaintext) and wastes a precious
+// hardware breakpoint slot (max 4), so we skip KSA functions during scanning.
+// ===========================================================================
+
+static bool LooksLikeKSA(const uint8_t* buf, size_t funcOffset, size_t moduleSize)
+{
+    size_t limit = funcOffset + 80;
+    if (limit > moduleSize) limit = moduleSize;
+
+    for (size_t i = funcOffset; i + 5 <= limit; ++i) {
+        // CMP EAX, imm32  (opcode 3D xx xx xx xx)
+        if (buf[i] == 0x3D) {
+            uint32_t imm;
+            std::memcpy(&imm, &buf[i + 1], 4);
+            if (imm == 0x100)
+                return true;
+        }
+        // Group 1 (opcode 81) with mod=11 (register direct):
+        // CMP/SUB/AND/XOR/etc reg, imm32  (81 [C0-FF] xx xx xx xx)
+        if (buf[i] == 0x81 && i + 6 <= limit) {
+            uint8_t modrm = buf[i + 1];
+            if ((modrm >> 6) == 3) {  // mod=11 = register operand
+                uint32_t imm;
+                std::memcpy(&imm, &buf[i + 2], 4);
+                if (imm == 0x100)
+                    return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 // Scan module memory and return ALL viable RC4 function addresses.
 // Groups matches into clusters (120-byte gap between adjacent matches),
 // then for each cluster with both 0x100 and 0x101 references, walks back
-// to find the function prologue.
+// to find the function prologue. KSA functions are filtered out.
 static std::vector<uintptr_t> ScanRuntimeForAllRC4(uintptr_t base, size_t size)
 {
     std::vector<uintptr_t> result;
@@ -436,7 +483,7 @@ static std::vector<uintptr_t> ScanRuntimeForAllRC4(uintptr_t base, size_t size)
 
         // Validate prologue: must start with push ebp; mov ebp, esp (55 8B EC).
         // Without this check, FindFunctionPrologue may resolve to mid-function
-        // code (e.g., SBB EAX, imm32) causing MH_ERROR_UNSUPPORTED_FUNCTION.
+        // code (e.g., SBB EAX, imm32) causing incorrect hook placement.
         if (funcOffset + 2 < size &&
             !(buf[funcOffset] == 0x55 && buf[funcOffset + 1] == 0x8B && buf[funcOffset + 2] == 0xEC))
         {
@@ -445,6 +492,13 @@ static std::vector<uintptr_t> ScanRuntimeForAllRC4(uintptr_t base, size_t size)
                       << BytesToHex(buf.data() + funcOffset,
                                     (size - funcOffset < 8) ? (size - funcOffset) : 8)
                       << "])";
+            continue;
+        }
+
+        // KSA filter (Phase 2): skip Key Schedule Algorithm functions.
+        // KSA has an identity init loop (CMP with immediate 0x100) that PRGA lacks.
+        if (LooksLikeKSA(buf.data(), funcOffset, size)) {
+            LOG(INFO) << "[RC4_HOOK]   -> skipped (looks like KSA: identity init loop detected)";
             continue;
         }
 
@@ -547,28 +601,23 @@ static bool TrySpeculativeCmsgScan(
 }
 
 // ===========================================================================
-// Naked hook stubs and detour handler
+// HandleRC4Intercept: core RC4 hook logic.
+// Called from the VEH handler with register/stack values from CONTEXT.
+//
+// This function:
+//   1. Auto-detects calling convention (6 variants)
+//   2. Extracts dataPtr and dataLen
+//   3. Reads plaintext BEFORE RC4 modifies it
+//   4. Validates as CMSG structure
+//   5. Spoofs results if needed (writes back to original buffer)
+//   6. Stores copy in g_capturedPlaintext for SendPacket correlation
 // ===========================================================================
 
-// Stack layout after pushad+pushfd (36 bytes):
-//   s[0]=EFLAGS s[1]=EDI s[2]=ESI s[3]=EBP s[4]=ESP_orig
-//   s[5]=EBX s[6]=EDX s[7]=ECX s[8]=EAX
-//   s[9]=retaddr s[10]=stk1 s[11]=stk2 s[12]=stk3
-
-static void __cdecl RC4DetourHandler(uintptr_t savedEsp)
+static void HandleRC4Intercept(
+    uint32_t eax, uint32_t ecx, uint32_t edx, uint32_t ebx,
+    uint32_t esi, uint32_t edi,
+    uint32_t stk1, uint32_t stk2, uint32_t stk3)
 {
-    uint32_t* s = reinterpret_cast<uint32_t*>(savedEsp);
-
-    uint32_t eax  = s[8];
-    uint32_t ecx  = s[7];
-    uint32_t edx  = s[6];
-    uint32_t ebx  = s[5];
-    uint32_t esi  = s[2];
-    uint32_t edi  = s[1];
-    uint32_t stk1 = s[10];
-    uint32_t stk2 = s[11];
-    uint32_t stk3 = s[12];
-
     int callNum = InterlockedIncrement(reinterpret_cast<volatile LONG*>(&g_callCount));
 
     // Diagnostic logging for first few calls — dump ALL registers + stack args
@@ -725,76 +774,145 @@ static void __cdecl RC4DetourHandler(uintptr_t savedEsp)
     }
 }
 
-// Each hook slot needs its own naked stub that jumps to its own trampoline.
-// MSVC inline asm allows static array indexing with compile-time offsets.
+// ===========================================================================
+// Vectored Exception Handler: intercepts hardware breakpoint exceptions
+// at RC4 PRGA function entry points.
+//
+// When a hardware execution breakpoint fires, the CPU generates
+// EXCEPTION_SINGLE_STEP (0x80000004) BEFORE the instruction executes.
+// EIP points directly at the breakpoint address.
+//
+// After handling, the Resume Flag (RF) suppresses the breakpoint for
+// exactly one instruction, allowing the original function to execute
+// completely unmodified.
+// ===========================================================================
 
-__declspec(naked) static void HookedRC4Naked_0()
+static LONG CALLBACK WardenRC4ExceptionHandler(EXCEPTION_POINTERS* pExInfo)
 {
-    __asm {
-        pushad
-        pushfd
-        mov eax, esp
-        push eax
-        call RC4DetourHandler
-        add esp, 4
-        popfd
-        popad
-        jmp dword ptr [g_trampolines + 0]
+    // Quick rejection: only handle hardware breakpoint exceptions
+    if (pExInfo->ExceptionRecord->ExceptionCode != static_cast<DWORD>(EXCEPTION_SINGLE_STEP))
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    DWORD eip = pExInfo->ContextRecord->Eip;
+
+    // Match EIP against our breakpoint addresses
+    int slot = -1;
+    for (int i = 0; i < g_numHooks; ++i) {
+        if (eip == static_cast<DWORD>(g_hookedAddrs[i])) {
+            slot = i;
+            break;
+        }
     }
+    if (slot < 0)
+        return EXCEPTION_CONTINUE_SEARCH;  // Not our breakpoint
+
+    // Read function parameters from stack.
+    // At function entry: [ESP]=retAddr, [ESP+4]=stk1, [ESP+8]=stk2, [ESP+12]=stk3
+    DWORD esp = pExInfo->ContextRecord->Esp;
+    DWORD stk1 = *reinterpret_cast<DWORD*>(esp + 4);
+    DWORD stk2 = *reinterpret_cast<DWORD*>(esp + 8);
+    DWORD stk3 = *reinterpret_cast<DWORD*>(esp + 12);
+
+    // Call core handler with register values from CONTEXT
+    HandleRC4Intercept(
+        pExInfo->ContextRecord->Eax,
+        pExInfo->ContextRecord->Ecx,
+        pExInfo->ContextRecord->Edx,
+        pExInfo->ContextRecord->Ebx,
+        pExInfo->ContextRecord->Esi,
+        pExInfo->ContextRecord->Edi,
+        stk1, stk2, stk3);
+
+    // Set Resume Flag (bit 16 of EFLAGS) to suppress breakpoint for one instruction.
+    // After the original first instruction executes, RF clears automatically.
+    pExInfo->ContextRecord->EFlags |= 0x10000;
+
+    // Clear DR6 status bits (acknowledge breakpoint)
+    pExInfo->ContextRecord->Dr6 = 0;
+
+    return EXCEPTION_CONTINUE_EXECUTION;
 }
 
-__declspec(naked) static void HookedRC4Naked_1()
+// ===========================================================================
+// Hardware breakpoint management
+// ===========================================================================
+
+// Compute DR7 value for N execution breakpoints.
+// Each breakpoint needs: local enable bit (L0..L3), R/W=00 (execute), LEN=00 (1 byte).
+static DWORD ComputeDR7(int numBreakpoints)
 {
-    __asm {
-        pushad
-        pushfd
-        mov eax, esp
-        push eax
-        call RC4DetourHandler
-        add esp, 4
-        popfd
-        popad
-        jmp dword ptr [g_trampolines + 4]
-    }
+    DWORD dr7 = 0;
+    for (int i = 0; i < numBreakpoints && i < 4; ++i)
+        dr7 |= (1u << (i * 2));  // Set L0, L1, L2, L3 as needed
+    // R/W and LEN bits remain 0 = execution breakpoint, 1-byte (mandatory for execute)
+    return dr7;
 }
 
-__declspec(naked) static void HookedRC4Naked_2()
+// Apply or clear hardware breakpoints on ALL threads in the process.
+// enable=true:  set DR0-DR3 to g_hookedAddrs[], DR7 with local enables
+// enable=false: clear all DR registers
+static bool SetHardwareBreakpoints(bool enable)
 {
-    __asm {
-        pushad
-        pushfd
-        mov eax, esp
-        push eax
-        call RC4DetourHandler
-        add esp, 4
-        popfd
-        popad
-        jmp dword ptr [g_trampolines + 8]
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        LOG(ERROR) << "[RC4_HOOK] CreateToolhelp32Snapshot failed: " << GetLastError();
+        return false;
     }
-}
 
-__declspec(naked) static void HookedRC4Naked_3()
-{
-    __asm {
-        pushad
-        pushfd
-        mov eax, esp
-        push eax
-        call RC4DetourHandler
-        add esp, 4
-        popfd
-        popad
-        jmp dword ptr [g_trampolines + 12]
+    DWORD pid = GetCurrentProcessId();
+    DWORD myTid = GetCurrentThreadId();
+    DWORD dr7 = enable ? ComputeDR7(g_numHooks) : 0;
+    int updated = 0;
+
+    THREADENTRY32 te = {};
+    te.dwSize = sizeof(te);
+
+    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != pid)
+            continue;
+
+        bool isCurrent = (te.th32ThreadID == myTid);
+        HANDLE hThread;
+
+        if (isCurrent) {
+            // Current thread: use pseudo-handle (no suspend needed for DR changes)
+            hThread = GetCurrentThread();
+        } else {
+            hThread = OpenThread(THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME,
+                                 FALSE, te.th32ThreadID);
+            if (!hThread)
+                continue;
+            SuspendThread(hThread);
+        }
+
+        CONTEXT ctx = {};
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+
+        if (enable) {
+            ctx.Dr0 = (g_numHooks > 0) ? static_cast<DWORD>(g_hookedAddrs[0]) : 0;
+            ctx.Dr1 = (g_numHooks > 1) ? static_cast<DWORD>(g_hookedAddrs[1]) : 0;
+            ctx.Dr2 = (g_numHooks > 2) ? static_cast<DWORD>(g_hookedAddrs[2]) : 0;
+            ctx.Dr3 = (g_numHooks > 3) ? static_cast<DWORD>(g_hookedAddrs[3]) : 0;
+            ctx.Dr6 = 0;
+            ctx.Dr7 = dr7;
+        }
+        // When !enable: all fields are already 0 from zero-initialization
+
+        if (SetThreadContext(hThread, &ctx))
+            ++updated;
+
+        if (!isCurrent) {
+            ResumeThread(hThread);
+            CloseHandle(hThread);
+        }
     }
-}
 
-typedef void (*NakedHookFn)();
-static NakedHookFn g_nakedStubs[kMaxRC4Hooks] = {
-    HookedRC4Naked_0,
-    HookedRC4Naked_1,
-    HookedRC4Naked_2,
-    HookedRC4Naked_3,
-};
+    CloseHandle(snap);
+
+    LOG(INFO) << "[RC4_HOOK] SetHardwareBreakpoints(" << (enable ? "enable" : "disable")
+              << "): updated " << std::dec << updated << " thread(s)";
+    return updated > 0;
+}
 
 } // anonymous namespace
 
@@ -849,76 +967,58 @@ bool Install(uintptr_t moduleBase, size_t moduleSize)
         return false;
     }
 
-    int installed = 0;
-    for (size_t i = 0; i < funcAddrs.size() && installed < kMaxRC4Hooks; ++i) {
-        uintptr_t funcAddr = funcAddrs[i];
-
-        MH_STATUS status = MH_CreateHook(
-            reinterpret_cast<LPVOID>(funcAddr),
-            reinterpret_cast<LPVOID>(g_nakedStubs[installed]),
-            &g_trampolines[installed]);
-
-        if (status != MH_OK) {
-            LOG(ERROR) << "[RC4_HOOK] MH_CreateHook(0x" << std::hex << funcAddr
-                       << ") failed: " << MH_StatusToString(status);
-            continue;
+    // Register VEH on first install (stays registered across module changes)
+    if (!g_vehHandle) {
+        g_vehHandle = AddVectoredExceptionHandler(1, WardenRC4ExceptionHandler);
+        if (!g_vehHandle) {
+            LOG(ERROR) << "[RC4_HOOK] AddVectoredExceptionHandler failed: " << GetLastError();
+            return false;
         }
+        LOG(INFO) << "[RC4_HOOK] VEH handler registered (first handler in chain)";
+    }
 
-        status = MH_EnableHook(reinterpret_cast<LPVOID>(funcAddr));
-        if (status != MH_OK) {
-            LOG(ERROR) << "[RC4_HOOK] MH_EnableHook(0x" << std::hex << funcAddr
-                       << ") failed: " << MH_StatusToString(status);
-            MH_RemoveHook(reinterpret_cast<LPVOID>(funcAddr));
-            g_trampolines[installed] = nullptr;
-            continue;
-        }
+    // Store hook addresses (up to 4)
+    g_numHooks = 0;
+    for (size_t i = 0; i < funcAddrs.size() && g_numHooks < kMaxRC4Hooks; ++i) {
+        g_hookedAddrs[g_numHooks] = funcAddrs[i];
+        ++g_numHooks;
 
-        g_hookedAddrs[installed] = funcAddr;
-        g_hooksActive[installed] = true;
-        ++installed;
-
-        LOG(INFO) << "[RC4_HOOK] Hook #" << installed << " installed at 0x"
-                  << std::hex << std::setfill('0') << std::setw(8) << funcAddr
+        LOG(INFO) << "[RC4_HOOK] HW breakpoint #" << g_numHooks << " at 0x"
+                  << std::hex << std::setfill('0') << std::setw(8) << funcAddrs[i]
                   << " (module base=0x" << std::setw(8) << moduleBase
                   << " size=0x" << moduleSize << ")";
     }
 
-    g_numHooks = installed;
+    // Enable NtGetContextThread hook BEFORE setting breakpoints (no gap)
+    hooks::EnableContextGuard();
 
-    if (installed == 0) {
-        LOG(WARNING) << "[RC4_HOOK] Failed to install any hooks";
+    // Set hardware breakpoints on all threads
+    if (!SetHardwareBreakpoints(true)) {
+        LOG(ERROR) << "[RC4_HOOK] Failed to set hardware breakpoints";
+        hooks::DisableContextGuard();
+        g_numHooks = 0;
         return false;
     }
 
-    LOG(INFO) << "[RC4_HOOK] " << installed << " hook(s) installed successfully"
-              << " (out of " << funcAddrs.size() << " candidate(s))";
+    LOG(INFO) << "[RC4_HOOK] " << g_numHooks << " hardware breakpoint(s) installed"
+              << " (out of " << funcAddrs.size() << " candidate(s))"
+              << " — zero bytes modified in module memory";
     return true;
 }
 
 void Remove()
 {
-    for (int i = 0; i < kMaxRC4Hooks; ++i) {
-        if (!g_hooksActive[i])
-            continue;
-
-        MH_STATUS status = MH_DisableHook(reinterpret_cast<LPVOID>(g_hookedAddrs[i]));
-        if (status != MH_OK) {
-            LOG(WARNING) << "[RC4_HOOK] MH_DisableHook(0x" << std::hex << g_hookedAddrs[i]
-                         << ") failed: " << MH_StatusToString(status);
-        }
-
-        status = MH_RemoveHook(reinterpret_cast<LPVOID>(g_hookedAddrs[i]));
-        if (status != MH_OK) {
-            LOG(WARNING) << "[RC4_HOOK] MH_RemoveHook(0x" << std::hex << g_hookedAddrs[i]
-                         << ") failed: " << MH_StatusToString(status);
-        }
-
-        g_hooksActive[i]  = false;
-        g_hookedAddrs[i]  = 0;
-        g_trampolines[i]  = nullptr;
+    if (g_numHooks > 0) {
+        // Clear hardware breakpoints on all threads
+        SetHardwareBreakpoints(false);
+        // Disable NtGetContextThread hook (no DR registers to hide anymore)
+        hooks::DisableContextGuard();
     }
 
     LOG(INFO) << "[RC4_HOOK] All hooks removed (total calls: " << std::dec << g_callCount << ")";
+
+    for (int i = 0; i < kMaxRC4Hooks; ++i)
+        g_hookedAddrs[i] = 0;
     g_numHooks = 0;
 }
 
@@ -949,6 +1049,13 @@ bool ConsumePlaintext(uint8_t* out, size_t outSize, size_t* outLen)
 
 void Cleanup()
 {
+    // Unregister VEH handler
+    if (g_vehHandle) {
+        RemoveVectoredExceptionHandler(g_vehHandle);
+        g_vehHandle = nullptr;
+        LOG(INFO) << "[RC4_HOOK] VEH handler unregistered";
+    }
+
     if (g_lockInit) {
         DeleteCriticalSection(&g_lock);
         g_lockInit = false;

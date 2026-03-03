@@ -22,4 +22,10 @@ bool TryExtractHashSeedFromCurrentPacket(uint8_t outSeed[16]);
 using FrameScriptExecuteFn = void(__cdecl*)(const char*, const char*, int);
 FrameScriptExecuteFn GetOriginalFrameScriptExecute();
 
+// Enable/disable NtGetContextThread hook that hides debug registers (DR0-DR7).
+// Called by warden_rc4_hook when hardware breakpoints are set/cleared.
+// The hook is created (but disabled) in Initialize(); these toggle it on demand.
+void EnableContextGuard();
+void DisableContextGuard();
+
 } // namespace hooks

@@ -117,20 +117,22 @@ Warden общается по схеме request-response:
 ## 4. Решение: внутренний хук RC4 (PRIMARY — warden_rc4_hook.cpp)
 
 ### 4.1 Идея
-Вместо клонирования S-box'ов из памяти (подход с race condition), мы **хукаем RC4 PRGA функцию** внутри Warden модуля.
+Вместо клонирования S-box'ов из памяти (подход с race condition), мы **перехватываем RC4 PRGA функцию** внутри Warden модуля через **hardware breakpoints (DR0-DR3) + Vectored Exception Handler (VEH)**.
 
 **Преимущества**:
 - Захватываем plaintext **ДО** шифрования (на входе функции)
 - Нет зависимости от timing (не важно, когда клонировать S-box)
 - Работает на всех известных модулях (подтверждено на 10/10)
+- **ZERO bytes modified** в памяти модуля — не детектируется MEM_CHECK, PAGE_CHECK, self-integrity
 
 **Как это работает**:
 1. Находим RC4 PRGA функцию в памяти модуля (pattern scanner)
-2. Устанавливаем MinHook на эту функцию
-3. Наш detour перехватывает вызов ПЕРЕД оригинальной функцией
-4. Проверяем: это CMSG encryption (третий вызов после SMSG decryption)?
-5. Если да — сохраняем plaintext в thread-safe буфер
-6. SendPacketHandler забирает plaintext через ConsumePlaintext()
+2. Загружаем адреса в DR0-DR3 на всех потоках процесса
+3. VEH handler ловит `EXCEPTION_SINGLE_STEP` при вызове функции
+4. Handler читает регистры и стек из `CONTEXT`, определяет calling convention
+5. Проверяем: это CMSG encryption? Если да — сохраняем plaintext + вызываем spoof
+6. Resume Flag (`EFlags |= 0x10000`) — оригинальная инструкция выполняется без модификации
+7. SendPacketHandler забирает plaintext через ConsumePlaintext()
 
 ### 4.2 Pattern Scanner (ScanRuntimeForAllRC4)
 
@@ -224,55 +226,45 @@ struct RC4_Context {
 
 **Результат**: 100% автоматическое определение без hardcode
 
-### 4.4 Hook Implementation (Multi-Hook)
+### 4.4 Hook Implementation (Hardware Breakpoints + VEH)
 
-**Архитектура**: до 4 одновременных хуков, каждый со своим naked stub и trampoline.
+**Архитектура**: до 4 одновременных hardware breakpoints (DR0-DR3) + один VEH handler.
 
-**4 отдельных naked stub'а** (необходимы, потому что каждый прыгает в свой trampoline):
-```cpp
-__declspec(naked) static void HookedRC4Naked_0() {
-    __asm {
-        pushad
-        pushfd
-        mov eax, esp
-        push eax
-        call RC4DetourHandler    // Общий handler для всех слотов
-        add esp, 4
-        popfd
-        popad
-        jmp dword ptr [g_trampolines + 0]   // Trampoline слота 0
-    }
-}
+**VEH handler** (`WardenRC4ExceptionHandler`):
+- Регистрируется через `AddVectoredExceptionHandler(1, ...)` — первый в цепочке
+- Ловит `EXCEPTION_SINGLE_STEP` (0x80000004) — исключение ДО выполнения инструкции
+- Сопоставляет EIP с g_hookedAddrs[0..3]
+- Извлекает все регистры (EAX, ECX, EDX, EBX, ESI, EDI) + стековые аргументы из CONTEXT
+- Вызывает `HandleRC4Intercept()` — convention detection, plaintext capture, spoof
+- Resume Flag (`EFlags |= 0x10000`) — подавляет breakpoint на одну инструкцию
+- Очищает DR6 (acknowledge breakpoint)
 
-// HookedRC4Naked_1 → g_trampolines + 4
-// HookedRC4Naked_2 → g_trampolines + 8
-// HookedRC4Naked_3 → g_trampolines + 12
-```
-
-**Общий detour handler** (`RC4DetourHandler`):
-- Получает ESP, извлекает ВСЕ регистры из pushad/pushfd стека
+**Основной handler** (`HandleRC4Intercept`):
+- Принимает значения регистров и стековых аргументов напрямую как параметры
 - Convention detection и plaintext capture — shared для всех слотов
 - Thread-safe call counting через `InterlockedIncrement`
 
 **Массивы состояния**:
 ```cpp
 static constexpr int kMaxRC4Hooks = 4;
-static void*     g_trampolines[kMaxRC4Hooks];  // Trampoline для каждого хука
-static uintptr_t g_hookedAddrs[kMaxRC4Hooks];  // Адрес хука
-static bool      g_hooksActive[kMaxRC4Hooks];  // Активен ли хук
-static int       g_numHooks;                    // Сколько хуков установлено
+static uintptr_t g_hookedAddrs[kMaxRC4Hooks];  // Адреса breakpoints
+static int       g_numHooks;                    // Количество активных breakpoints
+static PVOID     g_vehHandle;                   // Handle VEH handler'а
 ```
 
-**MinHook** (для каждой найденной функции):
+**Установка breakpoints** (для каждой найденной функции):
 ```cpp
-for (size_t i = 0; i < funcAddrs.size() && installed < kMaxRC4Hooks; ++i) {
-    MH_CreateHook(funcAddrs[i], g_nakedStubs[installed], &g_trampolines[installed]);
-    MH_EnableHook(funcAddrs[i]);
-    g_hookedAddrs[installed] = funcAddrs[i];
-    g_hooksActive[installed] = true;
-    ++installed;
+for (size_t i = 0; i < funcAddrs.size() && g_numHooks < kMaxRC4Hooks; ++i) {
+    g_hookedAddrs[g_numHooks] = funcAddrs[i];
+    ++g_numHooks;
 }
+hooks::EnableContextGuard();     // Включаем NtGetContextThread hook (hide DR)
+SetHardwareBreakpoints(true);    // Устанавливаем DR0-DR3 на всех потоках
 ```
+
+**SetHardwareBreakpoints**: перебирает все потоки процесса через `CreateToolhelp32Snapshot`, устанавливает/очищает DR0-DR3 + DR7 через `SetThreadContext`. DR7 конфигурируется как execution breakpoints (R/W=00, LEN=00).
+
+**KSA фильтрация**: `LooksLikeKSA()` сканирует первые 80 байт функции на CMP/SUB с immediate 0x100 (identity init loop bound). KSA пропускаются — бесполезны (не обрабатывают plaintext) и занимают DR слот.
 
 **Thread safety**: CRITICAL_SECTION защищает:
 - `g_capturedPlaintext` (буфер с plaintext)
@@ -372,16 +364,14 @@ bool LooksLikeRC4Context(void* ptr) {
 
 **ВАЖНО**: RC4 хуки устанавливаются **ПОСЛЕ** обработки HASH_REQUEST, не раньше.
 
-После HASH_RESULT обе стороны (модуль и сервер) re-key свой RC4 cipher хешем. Если наши 5-byte JMP патчи
-стоят в коде модуля во время вычисления hash — модуль получит corrupted hash, re-key произойдёт с разными
-ключами (RC4 desync → disconnect).
+После HASH_RESULT обе стороны (модуль и сервер) re-key свой RC4 cipher хешем. Deferred install гарантирует что модуль вычисляет integrity hash на чистом коде. С hardware breakpoints это технически менее критично (байты не модифицированы), но порядок сохранён для единообразия.
 
 **Порядок**:
-1. **MODULE_USE** → `Remove()` — снимаем все хуки от предыдущего модуля
+1. **MODULE_USE** → `Remove()` — снимаем breakpoints от предыдущего модуля
 2. **WardenPreHandler** → `FindModuleInMemory` + `ScanForRC4States` + `CloneAllStates` (read-only, **без Install**)
 3. **MODULE_INITIALIZE** → сканирование dispatch chain / remap (**без Install**)
-4. **HASH_REQUEST handler** → модуль вычисляет SHA1 на **чистом** (unpatched) коде
-5. **HASH_REQUEST PostHandler** → `Install(addr, rtSize)` — **теперь безопасно** ставить хуки
+4. **HASH_REQUEST handler** → модуль вычисляет SHA1 на чистом коде
+5. **HASH_REQUEST PostHandler** → `Install(addr, rtSize)` — устанавливаем hardware breakpoints
 
 **Installation** (в HASH_REQUEST PostHandler):
 ```cpp
@@ -397,16 +387,20 @@ if (!warden_rc4_hook::IsActive()) {
 
 **Removal** (в MODULE_USE handler + Shutdown):
 ```cpp
-// MODULE_USE: сервер загружает новый модуль → старые хуки станут invalid
-for (int i = 0; i < kMaxRC4Hooks; ++i) {
-    if (!g_hooksActive[i]) continue;
-    MH_DisableHook(g_hookedAddrs[i]);
-    MH_RemoveHook(g_hookedAddrs[i]);
-    g_hooksActive[i] = false;
-    g_hookedAddrs[i] = 0;
-    g_trampolines[i] = nullptr;
+// MODULE_USE: сервер загружает новый модуль → старые breakpoints невалидны
+if (g_numHooks > 0) {
+    SetHardwareBreakpoints(false);    // Очистить DR0-DR3 на всех потоках
+    hooks::DisableContextGuard();     // Отключить NtGetContextThread hook
 }
+for (int i = 0; i < kMaxRC4Hooks; ++i)
+    g_hookedAddrs[i] = 0;
 g_numHooks = 0;
+```
+
+**Cleanup** (при выгрузке DLL):
+```cpp
+RemoveVectoredExceptionHandler(g_vehHandle);  // Снять VEH handler
+DeleteCriticalSection(&g_lock);
 ```
 
 **IsActive**: возвращает `g_numHooks > 0`
@@ -478,7 +472,7 @@ if (decrypted) {
 
 ## 6. Реальные результаты из лога
 
-### Установка хуков (multi-hook)
+### Установка hardware breakpoints
 ```
 [RC4_HOOK] Found 15 instructions referencing 0x100/0x101 in module memory
 [RC4_HOOK] 3 cluster(s) found in module
@@ -488,14 +482,17 @@ if (decrypted) {
 [RC4_HOOK]   -> function at 0x1bea10e0 (module+0x10e0) prologue=[55 8B EC ...]
 [RC4_HOOK] Cluster #3: 4 matches at module+0x13c7-0x13d7 [has i] [has j]
 [RC4_HOOK]   -> function at 0x1bea13b0 (module+0x13b0) prologue=[55 8B EC ...]
-[RC4_HOOK] Hook #1 installed at 0x1bea10e0
-[RC4_HOOK] Hook #2 installed at 0x1bea13b0
-[RC4_HOOK] 2 hook(s) installed successfully (out of 2 candidate(s))
+[RC4_HOOK] VEH handler registered (first handler in chain)
+[RC4_HOOK] HW breakpoint #1 at 0x1bea10e0
+[RC4_HOOK] HW breakpoint #2 at 0x1bea13b0
+NtGetContextThread hook ENABLED (DR hiding active)
+[RC4_HOOK] SetHardwareBreakpoints(enable): updated 8 thread(s)
+[RC4_HOOK] 2 hardware breakpoint(s) installed — zero bytes modified in module memory
 ```
 
 **Cluster #1** (3 matches, only i) = KSA (Key Scheduling Algorithm) — пропущен
-**Cluster #2** (6 matches, i+j) = RC4 PRGA основная функция — хук #1
-**Cluster #3** (4 matches, i+j) = вторая RC4 функция (module thread) — хук #2
+**Cluster #2** (6 matches, i+j) = RC4 PRGA основная функция — breakpoint #1
+**Cluster #3** (4 matches, i+j) = вторая RC4 функция (module thread) — breakpoint #2
 
 ### Захват CMSG
 ```
@@ -604,11 +601,14 @@ bool ConsumePlaintext(uint8_t* out, uint32_t outSize, uint32_t* outLen) {
 
 ### PRIMARY (warden_rc4_hook.cpp)
 - **Статус**: ПОЛНОСТЬЮ РАБОТАЕТ
+- **Метод**: hardware breakpoints (DR0-DR3) + VEH (zero bytes modified)
 - **Success rate**: 100% (6/6 CMSG packets decrypted)
 - **Pattern scanner**: работает на 10/10 модулях (offline Python analysis + runtime)
-- **Multi-hook**: до 4 одновременных хуков (для модулей с несколькими RC4 функциями)
+- **Multi-hook**: до 4 одновременных breakpoints (для модулей с несколькими RC4 функциями)
+- **KSA фильтрация**: KSA функции пропускаются (CMP immediate 0x100 heuristic)
 - **Calling convention**: auto-detected (6 вариантов: ECX/EDX/EAX/stack-based, обычный/swapped порядок)
 - **Thread safety**: CRITICAL_SECTION + InterlockedIncrement (Warden module thread vs main thread)
+- **NtGetContextThread hook**: defense-in-depth, обнуление DR0-DR7 в возвращаемом CONTEXT
 - **Stability**: нет crashes, нет disconnects, Warden integrity checks pass
 
 ### FALLBACK (warden_rc4.cpp)
@@ -625,8 +625,8 @@ bool ConsumePlaintext(uint8_t* out, uint32_t outSize, uint32_t* outLen) {
 
 **Runtime testing**:
 - Все протестированные модули (7C4ABC97, DA3BF29E, 9A95D199): pattern scanner успешно находит PRGA
-- Hook устанавливается без ошибок
-- Trampoline создаётся MinHook на PAGE_EXECUTE_READWRITE страницах
+- Hardware breakpoints устанавливаются без ошибок
+- Нет модификации памяти модуля (zero bytes modified)
 
 ## 9. Что реализовано после RC4 расшифровки
 
@@ -662,20 +662,24 @@ bool ConsumePlaintext(uint8_t* out, uint32_t outSize, uint32_t* outLen) {
 ### 9.5 Что осталось (TODO)
 - **LUA_EVAL spoofing**: подмена LUA results в CMSG
 - **Module RC4 offset caching**: кеширование offsets RC4 функций по hash модуля (optimization)
+- **Scan function output buffer hooking** (Phase 4): дополнительный уровень защиты для хуков в WoW.exe (FrameScript_Execute и т.д.)
 
 ---
 
 ## Заключение
 
-**RC4 расшифровка CMSG полностью решена** через internal hook на RC4 PRGA функцию внутри Warden модуля. **MEM_CHECK / PAGE_CHECK spoofing реализован** через Variant A (модификация plaintext перед RC4 шифрованием).
+**RC4 расшифровка CMSG полностью решена** через hardware breakpoints + VEH на RC4 PRGA функцию внутри Warden модуля. **MEM_CHECK / PAGE_CHECK spoofing реализован** через Variant A (модификация plaintext перед RC4 шифрованием).
 
 **Ключевые достижения**:
+- **Zero bytes modified** в памяти Warden модуля (hardware breakpoints, не JMP патчи)
 - 100% success rate расшифровки CMSG
 - Module-agnostic pattern scanner (10/10 offline modules, все runtime-тесты)
-- Multi-hook: до 4 одновременных хуков (модули с несколькими RC4 функциями)
+- Multi-hook: до 4 одновременных hardware breakpoints (модули с несколькими RC4 функциями)
+- KSA фильтрация: пропуск Key Schedule Algorithm функций (экономия DR слотов)
+- NtGetContextThread hook: обнуление DR0-DR7 при внешнем чтении (defense-in-depth)
 - 6 поддерживаемых calling conventions (auto-detection)
 - Checksum: SHA1 XOR-fold — решён, валидируется, пересчитывается
 - **Spoofing (Variant A)**: MEM_CHECK/PAGE_CHECK результаты подменяются на оригинальные байты из shadow copy
 - Request-response correlation через FIFO queue
 - Thread-safe (CRITICAL_SECTION + InterlockedIncrement)
-- Two-tier architecture (primary RC4 hook + S-box cloning fallback)
+- Two-tier architecture (primary HW breakpoint hook + S-box cloning fallback)
