@@ -25,4 +25,13 @@ int         GetInt(const char* expr);
 float       GetFloat(const char* expr);
 bool        GetBool(const char* expr);
 
+// Install a Lua-level seterrorhandler that captures error messages into the
+// _dlua_err global. Safe to call multiple times (idempotent). Must be called
+// from the game thread while Lua is initialized and IsInGame() is true.
+void SetupErrorCapture();
+
+// Retrieve and LOG(WARNING)-print any errors captured by SetupErrorCapture(),
+// then clear the _dlua_err global. Call once per frame from the overlay.
+void FlushCapturedErrors();
+
 } // namespace game::lua

@@ -1,6 +1,6 @@
 # Task: Reverse-Engineer Gossip Quest List Structure
 
-> **Status**: TODO
+> **Status**: DONE
 > **Created**: 2026-03-04
 > **Phase**: Game Internals RE
 > **Depends on**: nothing

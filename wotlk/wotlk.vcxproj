@@ -153,9 +153,13 @@
     <ClInclude Include="src\game\types.h" />
     <ClInclude Include="src\game\unit.h" />
     <ClInclude Include="src\game\world.h" />
+    <ClInclude Include="src\game\quest.h" />
     <ClInclude Include="src\overlay\overlay.h" />
     <ClInclude Include="src\offsets\offsets.h" />
     <ClInclude Include="src\offsets\functions.h" />
+    <ClInclude Include="src\offsets\gossip.h" />
+    <ClInclude Include="src\offsets\questgiver.h" />
+    <ClInclude Include="src\offsets\questlog.h" />
     <ClInclude Include="src\hooks\hooks.h" />
     <ClInclude Include="src\warden\mpq_cache.h" />
     <ClInclude Include="src\warden\module_dump.h" />
@@ -177,6 +181,11 @@
     <ClInclude Include="src\bot\tools\sequence.h" />
     <ClInclude Include="src\bot\tools\loot.h" />
     <ClInclude Include="src\bot\tools\interact.h" />
+    <ClInclude Include="src\bot\tools\quest_approach.h" />
+    <ClInclude Include="src\bot\tools\query_quests.h" />
+    <ClInclude Include="src\bot\tools\accept_quest.h" />
+    <ClInclude Include="src\bot\tools\query_rewards.h" />
+    <ClInclude Include="src\bot\tools\complete_quest.h" />
     <ClInclude Include="src\bot\aggro.h" />
     <ClInclude Include="src\bot\radar.h" />
     <ClInclude Include="src\bot\threat_scanner.h" />
@@ -211,6 +220,7 @@
     <ClCompile Include="src\game\spell.cpp" />
     <ClCompile Include="src\game\unit.cpp" />
     <ClCompile Include="src\game\world.cpp" />
+    <ClCompile Include="src\game\quest.cpp" />
     <ClCompile Include="src\overlay\overlay.cpp" />
     <ClCompile Include="src\dllmain.cpp" />
     <ClCompile Include="src\hooks\hooks.cpp" />
@@ -232,6 +242,11 @@
     <ClCompile Include="src\bot\tools\sequence.cpp" />
     <ClCompile Include="src\bot\tools\loot.cpp" />
     <ClCompile Include="src\bot\tools\interact.cpp" />
+    <ClCompile Include="src\bot\tools\quest_approach.cpp" />
+    <ClCompile Include="src\bot\tools\query_quests.cpp" />
+    <ClCompile Include="src\bot\tools\accept_quest.cpp" />
+    <ClCompile Include="src\bot\tools\query_rewards.cpp" />
+    <ClCompile Include="src\bot\tools\complete_quest.cpp" />
     <ClCompile Include="src\bot\radar.cpp" />
     <ClCompile Include="src\bot\threat_scanner.cpp" />
     <ClCompile Include="src\bot\movement_synth.cpp" />

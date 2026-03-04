@@ -13,6 +13,7 @@
 
 #include "../game/game.h"
 #include "../game/world.h"
+#include "../game/lua_bridge.h"
 #include "../game/spell.h"
 #include "../game/player_stats.h"
 #include "../offsets/offsets.h"
@@ -24,6 +25,10 @@
 #include "../bot/tools/sequence.h"
 #include "../bot/tools/loot.h"
 #include "../bot/tools/interact.h"
+#include "../bot/tools/query_quests.h"
+#include "../bot/tools/accept_quest.h"
+#include "../bot/tools/query_rewards.h"
+#include "../bot/tools/complete_quest.h"
 #include "../navigation/nav_mesh.h"
 #include "../navigation/pathfinder.h"
 #include "../bot/tools/follow_route.h"
@@ -444,6 +449,81 @@ static void RenderToolsTab()
             } else {
                 ImGui::TextDisabled("No target selected");
             }
+            ImGui::EndTabItem();
+        }
+
+        // ---- Quests ----
+        if (ImGui::BeginTabItem("Quests")) {
+            static int s_questId = 0;
+
+            // NPC = current target
+            auto target = game::GetTarget();
+
+            if (target) {
+                ImGui::Text("NPC: %s", target->GetUnitName().c_str());
+                game::GUID guid = target->GetGUID();
+
+                ImGui::Separator();
+
+                // --- QueryQuests ---
+                ImGui::TextDisabled("QueryQuests — read all quests from NPC (IDs in log)");
+                if (ImGui::Button("PushBack##qquery"))
+                    queue.PushBack(std::make_unique<bot::QueryQuestsTool>(guid));
+                ImGui::SameLine();
+                if (ImGui::Button("Interrupt##qquery"))
+                    queue.Interrupt(std::make_unique<bot::QueryQuestsTool>(guid));
+
+                ImGui::Separator();
+
+                // --- AcceptQuest / QueryRewards / CompleteQuest (need quest ID) ---
+                ImGui::TextDisabled("Quest ID (see log after QueryQuests):");
+                ImGui::InputInt("Quest ID", &s_questId);
+
+                if (s_questId > 0) {
+                    // AcceptQuest
+                    ImGui::TextDisabled("AcceptQuest");
+                    if (ImGui::Button("PushBack##qaccept"))
+                        queue.PushBack(std::make_unique<bot::AcceptQuestTool>(guid, s_questId));
+                    ImGui::SameLine();
+                    if (ImGui::Button("Interrupt##qaccept"))
+                        queue.Interrupt(std::make_unique<bot::AcceptQuestTool>(guid, s_questId));
+
+                    ImGui::Separator();
+
+                    // QueryRewards
+                    ImGui::TextDisabled("QueryRewards — preview reward screen, then close");
+                    if (ImGui::Button("PushBack##qrewards"))
+                        queue.PushBack(std::make_unique<bot::QueryRewardsTool>(guid, s_questId));
+                    ImGui::SameLine();
+                    if (ImGui::Button("Interrupt##qrewards"))
+                        queue.Interrupt(std::make_unique<bot::QueryRewardsTool>(guid, s_questId));
+
+                    ImGui::Separator();
+
+                    // CompleteQuest — auto-picks first choice (or no-choice)
+                    ImGui::TextDisabled("CompleteQuest — turn in (picks choice[1] if any)");
+                    if (ImGui::Button("PushBack##qcomplete")) {
+                        auto cb = [](const std::vector<game::quest::QuestReward>& choices) -> int {
+                            LOG(INFO) << "[UI] CompleteQuest callback: " << choices.size()
+                                      << " choices, picking #1";
+                            return choices.empty() ? 0 : 1;
+                        };
+                        queue.PushBack(std::make_unique<bot::CompleteQuestTool>(guid, s_questId, cb));
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Interrupt##qcomplete")) {
+                        auto cb = [](const std::vector<game::quest::QuestReward>& choices) -> int {
+                            return choices.empty() ? 0 : 1;
+                        };
+                        queue.Interrupt(std::make_unique<bot::CompleteQuestTool>(guid, s_questId, cb));
+                    }
+                } else {
+                    ImGui::TextDisabled("Set Quest ID > 0 for AcceptQuest / QueryRewards / CompleteQuest");
+                }
+            } else {
+                ImGui::TextDisabled("Select an NPC as target first");
+            }
+
             ImGui::EndTabItem();
         }
 
@@ -1125,6 +1205,11 @@ static HRESULT WINAPI HookedEndScene(IDirect3DDevice9* pDevice)
             }
         }
     }
+
+    // Lua error capture: install handler once, flush errors each frame
+    if (game::world::IsInGame())
+        game::lua::SetupErrorCapture();
+    game::lua::FlushCapturedErrors();
 
     // Bot: tick the action queue + render widgets
     bot::ActionQueue::Instance().Tick();

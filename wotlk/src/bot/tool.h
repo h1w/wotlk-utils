@@ -24,6 +24,10 @@ enum class ToolType : uint8_t {
     Sequence,
     StrategicNav,
     RoadNav,
+    QueryQuests,
+    AcceptQuest,
+    QueryRewards,
+    CompleteQuest,
 };
 
 enum class ToolStatus : uint8_t {

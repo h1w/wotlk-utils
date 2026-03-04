@@ -648,6 +648,11 @@ Framework для автоматизации игровых действий. О�
 | `tools/follow_route.h/.cpp` | FollowRouteTool: следование по маршруту (список точек), цикличность |
 | `tools/strategic_nav.h/.cpp` | StrategicNavTool: multi-segment navigation через world graph (macro-routing), walk сегменты пробуют road routing |
 | `tools/road_nav.h/.cpp` | RoadNavTool: 3-phase road navigation (Approach → RoadFollow → Departure), danger avoidance, skip logic |
+| `tools/quest_approach.h/.cpp` | QuestApproachHelper: shared NPC approach + gossip-open helper (composition). Handles navmesh/CTM, already-open detection, 300 ms stale-data guard, QUEST_GREETING vs GOSSIP_SHOW vs auto-select (`GetTitleText()`) detection |
+| `tools/query_quests.h/.cpp` | QueryQuestsTool: читает available/active квесты из окна NPC |
+| `tools/accept_quest.h/.cpp` | AcceptQuestTool: принимает квест по ID, count-based верификация в лог |
+| `tools/query_rewards.h/.cpp` | QueryRewardsTool: превью наград без завершения квеста (чтение + CloseQuest) |
+| `tools/complete_quest.h/.cpp` | CompleteQuestTool: полный флоу сдачи квеста с RewardCallback, авто-детект autoComplete квестов |
 
 ---
 

@@ -10,6 +10,7 @@
 #include <cstdarg>
 #include <cstring>
 #include <cstdlib>
+#include <glog/logging.h>
 
 namespace game::lua {
 
@@ -79,6 +80,35 @@ bool GetBool(const char* expr)
 {
     std::string val = GetValue(expr);
     return !val.empty() && val != "nil" && val != "0" && val != "false";
+}
+
+void SetupErrorCapture()
+{
+    static bool s_installed = false;
+    if (s_installed) return;
+    s_installed = true;
+
+    // Chain before the existing error handler so WoW's UI still shows errors.
+    Execute(
+        "_dlua_prev_err = geterrorhandler();"
+        "seterrorhandler(function(e)"
+        "  _dlua_err = (_dlua_err or '') .. tostring(e) .. '\\n';"
+        "  if _dlua_prev_err then _dlua_prev_err(e) end;"
+        "end);"
+    );
+}
+
+
+void FlushCapturedErrors()
+{
+    const char* raw = CallGetText("_dlua_err");
+    if (!raw || raw[0] == '\0') return;
+
+    std::string errors(raw);
+    if (errors == "nil") return;
+
+    LOG(WARNING) << "[LUA] Captured Lua error(s):\n" << errors;
+    Execute("_dlua_err = nil");
 }
 
 } // namespace game::lua

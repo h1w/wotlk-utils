@@ -1,6 +1,6 @@
 # Task: Quest Interaction Tools
 
-> **Status**: TODO
+> **Status**: DONE
 > **Created**: 2026-03-04
 > **Phase**: Bot Tools
 > **Depends on**: TASK_010_reverse-gossip-quest-structure
